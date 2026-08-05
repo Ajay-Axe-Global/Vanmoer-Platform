@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Vanmoer — SABIC Outbound</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'DM Sans', sans-serif; background: #0f1115; color: #e8eaed; }
+  header { display: flex; align-items: center; justify-content: space-between; padding: 18px 32px; border-bottom: 1px solid #262a33; }
+  header button { background: transparent; border: 1px solid #2a2f3a; color: #8b93a1; padding: 8px 14px; border-radius: 8px; cursor: pointer; font-size: 13px; }
+  main { max-width: 640px; margin: 0 auto; padding: 40px 24px; }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  p.sub { font-family: 'DM Mono', monospace; font-size: 12px; color: #8b93a1; margin-bottom: 24px; }
+  .dropzone {
+    border: 1.5px dashed #2a2f3a; border-radius: 12px; padding: 32px;
+    text-align: center; cursor: pointer; margin-bottom: 20px; background: #171a21;
+  }
+  .dropzone.drag { border-color: #4f7cff; }
+  .dropzone p { font-size: 13px; color: #8b93a1; }
+  #file-list { font-size: 12px; font-family: 'DM Mono', monospace; color: #c7cbd3; margin-bottom: 20px; }
+  #file-list div { padding: 4px 0; }
+  button.primary {
+    width: 100%; background: #4f7cff; border: none; border-radius: 8px; padding: 12px;
+    color: #fff; font-weight: 700; cursor: pointer; font-size: 14px;
+  }
+  button.primary:disabled { opacity: 0.5; cursor: default; }
+  #status { font-size: 13px; margin-top: 16px; display: none; }
+  #status.err { color: #ff6b6b; }
+  #status.ok { color: #4fd18b; }
+  #download-link { display: none; margin-top: 12px; }
+  #download-link a { color: #4f7cff; }
+</style>
+</head>
+<body>
+  <header>
+    <h1 style="font-size:16px">Vanmoer</h1>
+    <button id="logout-btn">Log out</button>
+  </header>
+  <main>
+    <h1>{{ label }}</h1>
+    <p class="sub">upload dispatch advice PDF(s) to generate the output Excel</p>
+
+    <div class="dropzone" id="dropzone">
+      <p>Drag &amp; drop PDF file(s) here, or click to browse</p>
+      <input type="file" id="file-input" accept=".pdf" multiple style="display:none" />
+    </div>
+    <div id="file-list"></div>
+
+    <button class="primary" id="submit-btn" disabled>Process &amp; Generate Excel</button>
+    <div id="status"></div>
+    <div id="download-link"><a id="download-anchor" href="#">Download Excel</a></div>
+  </main>
+
+  <script src="/auth/client.js"></script>
+  <script>
+    const auth = VanmoerAuth.requireAuth();
+    document.getElementById("logout-btn").addEventListener("click", () => VanmoerAuth.logout());
+
+    let selectedFiles = [];
+    const dropzone = document.getElementById("dropzone");
+    const fileInput = document.getElementById("file-input");
+    const fileList = document.getElementById("file-list");
+    const submitBtn = document.getElementById("submit-btn");
+    const status = document.getElementById("status");
+    const downloadLink = document.getElementById("download-link");
+
+    dropzone.addEventListener("click", () => fileInput.click());
+    dropzone.addEventListener("dragover", (e) => { e.preventDefault(); dropzone.classList.add("drag"); });
+    dropzone.addEventListener("dragleave", () => dropzone.classList.remove("drag"));
+    dropzone.addEventListener("drop", (e) => {
+      e.preventDefault();
+      dropzone.classList.remove("drag");
+      addFiles(e.dataTransfer.files);
+    });
+    fileInput.addEventListener("change", (e) => addFiles(e.target.files));
+
+    function addFiles(fileListObj) {
+      for (const f of fileListObj) {
+        if (f.name.toLowerCase().endsWith(".pdf")) selectedFiles.push(f);
+      }
+      renderFileList();
+    }
+
+    function renderFileList() {
+      fileList.innerHTML = selectedFiles.map(f => `<div>${f.name}</div>`).join("");
+      submitBtn.disabled = selectedFiles.length === 0;
+    }
+
+    submitBtn.addEventListener("click", async () => {
+      status.style.display = "none";
+      downloadLink.style.display = "none";
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Processing…";
+
+      const fd = new FormData();
+      selectedFiles.forEach(f => fd.append("dispatch_advice", f));
+
+      try {
+        const res = await VanmoerAuth.authFetch(window.location.pathname + "process", {
+          method: "POST",
+          body: fd,
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Processing failed");
+
+        status.textContent = `Processed ${data.summary.documents_processed} document(s).`;
+        status.className = "ok";
+        status.style.display = "block";
+        downloadLink.style.display = "block";
+        document.getElementById("download-anchor").onclick = async (e) => {
+          e.preventDefault();
+          await VanmoerAuth.downloadFile(data.download_url, "Sabic_Outbound_Output.xlsx");
+        };
+      } catch (err) {
+        status.textContent = err.message;
+        status.className = "err";
+        status.style.display = "block";
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = "Process & Generate Excel";
+      }
+    });
+  </script>
+</body>
+</html>

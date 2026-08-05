@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Vanmoer — Carpenter Inbound</title>
+<style>
+  :root {
+    --bg: #f5f6f8;
+    --surface: #ffffff;
+    --border: #d1d5db;
+    --border-active: #3b6cce;
+    --text: #1a1a2e;
+    --text-muted: #6b7280;
+    --accent: #2b5ea7;
+    --accent-hover: #1e4a8a;
+    --green: #16a34a;
+    --green-bg: #f0fdf4;
+    --red: #dc2626;
+    --red-bg: #fef2f2;
+    --amber: #d97706;
+    --amber-bg: #fffbeb;
+    --radius: 8px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+  }
+
+  .header {
+    background: var(--accent);
+    color: white;
+    padding: 20px 32px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .header h1 { font-size: 20px; font-weight: 600; letter-spacing: -0.3px; }
+  .header p { font-size: 13px; opacity: 0.8; margin-top: 4px; }
+  .header button {
+    background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.3);
+    color: white; padding: 8px 14px; border-radius: 8px; cursor: pointer; font-size: 13px;
+  }
+
+  .container { max-width: 960px; margin: 0 auto; padding: 28px 24px 80px; }
+
+  .upload-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+  .upload-section { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; }
+  .upload-section.full-width { grid-column: 1 / -1; }
+  .upload-section h2 { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+  .upload-section .desc { font-size: 12px; color: var(--text-muted); margin-bottom: 12px; }
+
+  .drop-zone {
+    border: 2px dashed var(--border); border-radius: var(--radius); padding: 28px 16px;
+    text-align: center; cursor: pointer; transition: border-color 0.2s, background 0.2s; position: relative;
+  }
+  .drop-zone:hover, .drop-zone.dragover { border-color: var(--border-active); background: #f0f5ff; }
+  .drop-zone input[type="file"] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+  .drop-zone .icon { font-size: 28px; margin-bottom: 6px; display: block; }
+  .drop-zone .label { font-size: 13px; color: var(--text-muted); }
+  .drop-zone .label strong { color: var(--accent); }
+
+  .file-list { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+  .file-item {
+    display: flex; align-items: center; justify-content: space-between; font-size: 13px;
+    padding: 6px 10px; background: #f9fafb; border-radius: 6px; border: 1px solid #e5e7eb;
+  }
+  .file-item .name { display: flex; align-items: center; gap: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
+  .file-item .size { color: var(--text-muted); font-size: 11px; margin-left: 8px; white-space: nowrap; }
+  .file-item .remove { background: none; border: none; color: var(--red); cursor: pointer; font-size: 16px; padding: 0 4px; line-height: 1; flex-shrink: 0; }
+
+  .actions { margin-top: 24px; text-align: center; }
+  .btn-generate {
+    background: var(--accent); color: white; border: none; padding: 12px 40px; font-size: 15px;
+    font-weight: 600; border-radius: var(--radius); cursor: pointer; transition: background 0.2s;
+  }
+  .btn-generate:hover:not(:disabled) { background: var(--accent-hover); }
+  .btn-generate:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .status-panel { margin-top: 20px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; display: none; }
+  .status-panel.visible { display: block; }
+
+  .spinner {
+    display: inline-block; width: 18px; height: 18px; border: 2px solid var(--border);
+    border-top-color: var(--accent); border-radius: 50%; animation: spin 0.6s linear infinite;
+    vertical-align: middle; margin-right: 8px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .status-title { font-size: 15px; font-weight: 600; margin-bottom: 12px; }
+  .validation-list { list-style: none; font-size: 13px; line-height: 1.8; }
+
+  .summary-stat {
+    display: inline-block; background: #f0f5ff; border: 1px solid #d0ddf5; padding: 6px 14px;
+    border-radius: 6px; font-size: 13px; margin: 4px 4px 4px 0;
+  }
+  .summary-stat strong { color: var(--accent); }
+
+  .btn-download {
+    display: inline-block; margin-top: 14px; background: var(--green); color: white;
+    text-decoration: none; padding: 10px 28px; font-size: 14px; font-weight: 600;
+    border-radius: var(--radius); transition: background 0.2s; border: none; cursor: pointer;
+  }
+  .btn-download:hover { background: #138a3e; }
+
+  .error-msg { background: var(--red-bg); color: var(--red); padding: 12px 16px; border-radius: var(--radius); font-size: 13px; border: 1px solid #fecaca; }
+
+  @media (max-width: 640px) {
+    .upload-grid { grid-template-columns: 1fr; }
+    .container { padding: 16px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <h1>{{ label }}</h1>
+    <p>Upload Order List, Arrival Notice, and Packing Lists → Generate final Excel</p>
+  </div>
+  <button id="logout-btn">Log out</button>
+</div>
+
+<div class="container">
+
+  <div class="upload-grid">
+    <div class="upload-section">
+      <h2>Order List</h2>
+      <p class="desc">Receipt Report Excel (.xlsx)</p>
+      <div class="drop-zone" id="dz-order" data-input="file-order">
+        <span class="icon">📊</span>
+        <span class="label">Drop file or <strong>browse</strong></span>
+        <input type="file" id="file-order" accept=".xlsx,.xls">
+      </div>
+      <div class="file-list" id="list-order"></div>
+    </div>
+
+    <div class="upload-section">
+      <h2>Arrival Notice (Optional)</h2>
+      <p class="desc">ACL Arrival Notice PDF</p>
+      <div class="drop-zone" id="dz-arrival" data-input="file-arrival">
+        <span class="icon">🚢</span>
+        <span class="label">Drop files or <strong>browse</strong></span>
+        <input type="file" id="file-arrival" accept=".pdf" multiple>
+      </div>
+      <div class="file-list" id="list-arrival"></div>
+    </div>
+
+    <div class="upload-section full-width">
+      <h2>Packing Lists</h2>
+      <p class="desc">One PDF per container — upload multiple files</p>
+      <div class="drop-zone" id="dz-packing" data-input="file-packing">
+        <span class="icon">📦</span>
+        <span class="label">Drop files or <strong>browse</strong></span>
+        <input type="file" id="file-packing" accept=".pdf" multiple>
+      </div>
+      <div class="file-list" id="list-packing"></div>
+    </div>
+  </div>
+
+  <div class="actions">
+    <button class="btn-generate" id="btn-generate" disabled>Generate Output</button>
+  </div>
+
+  <div class="status-panel" id="status-panel">
+    <div id="status-content"></div>
+  </div>
+
+</div>
+
+<script src="/auth/client.js"></script>
+<script>
+(function() {
+  const auth = VanmoerAuth.requireAuth();
+  document.getElementById('logout-btn').addEventListener('click', () => VanmoerAuth.logout());
+
+  const state = { order: null, arrival: [], packing: [] };
+  const btnGenerate = document.getElementById('btn-generate');
+
+  function fmtSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024*1024) return (bytes/1024).toFixed(1) + ' KB';
+    return (bytes/(1024*1024)).toFixed(1) + ' MB';
+  }
+
+  function renderList(containerId, files, removeCallback) {
+    const el = document.getElementById(containerId);
+    el.innerHTML = '';
+    const arr = Array.isArray(files) ? files : (files ? [files] : []);
+    arr.forEach((f, i) => {
+      const div = document.createElement('div');
+      div.className = 'file-item';
+      div.innerHTML = `
+        <span class="name">📄 ${f.name}</span>
+        <span class="size">${fmtSize(f.size)}</span>
+        <button class="remove" title="Remove">&times;</button>
+      `;
+      div.querySelector('.remove').onclick = () => removeCallback(i);
+      el.appendChild(div);
+    });
+    updateBtn();
+  }
+
+  function updateBtn() {
+    btnGenerate.disabled = !(state.order && state.packing.length > 0);
+  }
+
+  function wireDropZone(dzId, inputId, onFiles) {
+    const dz = document.getElementById(dzId);
+    const inp = document.getElementById(inputId);
+
+    ['dragenter','dragover'].forEach(ev => {
+      dz.addEventListener(ev, e => { e.preventDefault(); dz.classList.add('dragover'); });
+    });
+    ['dragleave','drop'].forEach(ev => {
+      dz.addEventListener(ev, e => { e.preventDefault(); dz.classList.remove('dragover'); });
+    });
+    dz.addEventListener('drop', e => { onFiles(Array.from(e.dataTransfer.files)); });
+    inp.addEventListener('change', () => { onFiles(Array.from(inp.files)); inp.value = ''; });
+  }
+
+  wireDropZone('dz-order', 'file-order', files => {
+    if (files[0]) {
+      state.order = files[0];
+      renderList('list-order', state.order, () => {
+        state.order = null;
+        renderList('list-order', null, ()=>{});
+      });
+    }
+  });
+
+  function removeArrival(idx) {
+    state.arrival.splice(idx, 1);
+    renderList('list-arrival', state.arrival, removeArrival);
+  }
+  wireDropZone('dz-arrival', 'file-arrival', files => {
+    const pdfs = files.filter(f => f.name.toLowerCase().endsWith('.pdf'));
+    pdfs.forEach(f => {
+      if (!state.arrival.some(a => a.name === f.name && a.size === f.size)) {
+        state.arrival.push(f);
+      }
+    });
+    renderList('list-arrival', state.arrival, removeArrival);
+  });
+
+  function removePacking(idx) {
+    state.packing.splice(idx, 1);
+    renderList('list-packing', state.packing, removePacking);
+  }
+  wireDropZone('dz-packing', 'file-packing', files => {
+    const pdfs = files.filter(f => f.name.toLowerCase().endsWith('.pdf'));
+    pdfs.forEach(f => {
+      if (!state.packing.some(p => p.name === f.name && p.size === f.size)) {
+        state.packing.push(f);
+      }
+    });
+    renderList('list-packing', state.packing, removePacking);
+  });
+
+  btnGenerate.addEventListener('click', async () => {
+    const panel = document.getElementById('status-panel');
+    const content = document.getElementById('status-content');
+    panel.classList.add('visible');
+    content.innerHTML = '<span class="spinner"></span> Processing documents…';
+    btnGenerate.disabled = true;
+
+    const fd = new FormData();
+    fd.append('order_list', state.order);
+    state.arrival.forEach(f => fd.append('arrival_notices', f));
+    state.packing.forEach(f => fd.append('packing_lists', f));
+
+    try {
+      const res = await VanmoerAuth.authFetch(window.location.pathname + 'process', { method: 'POST', body: fd });
+      const data = await res.json();
+
+      if (!res.ok || data.error) {
+        content.innerHTML = `<div class="error-msg">⛔ ${data.error || 'Processing failed.'}</div>`;
+        updateBtn();
+        return;
+      }
+
+      let html = `<div class="status-title">Processing Complete</div>`;
+
+      html += `<div style="margin-bottom:12px">`;
+      html += `<span class="summary-stat"><strong>${data.summary.total_rows}</strong> rows</span>`;
+      html += `<span class="summary-stat"><strong>${data.summary.containers_parsed}</strong> containers parsed</span>`;
+      html += `<span class="summary-stat"><strong>${data.summary.arrival_containers.length}</strong> in arrival notice</span>`;
+      html += `</div>`;
+
+      if (data.summary.parse_results && data.summary.parse_results.length) {
+        html += `<div style="font-size:13px;margin-bottom:8px"><strong>Packing Lists:</strong></div>`;
+        data.summary.parse_results.forEach(pr => {
+          html += `<div style="font-size:12px;color:#374151;margin-left:12px">
+            📦 ${pr.file} → ${pr.container} → <strong>${pr.hu_count} HUs</strong></div>`;
+        });
+      }
+
+      if (data.summary.validation && data.summary.validation.length) {
+        html += `<div style="font-size:13px;margin:12px 0 6px"><strong>Validation:</strong></div>`;
+        html += `<ul class="validation-list">`;
+        data.summary.validation.forEach(v => {
+          html += `<li style="margin-left:12px">${v}</li>`;
+        });
+        html += `</ul>`;
+      }
+
+      html += `<div style="margin-top:16px;text-align:center">
+        <button class="btn-download" id="btn-download">⬇ Download Excel</button>
+      </div>`;
+
+      content.innerHTML = html;
+      document.getElementById('btn-download').addEventListener('click', async () => {
+        await VanmoerAuth.downloadFile(data.download_url, 'Shipment_Output.xlsx');
+      });
+
+    } catch (err) {
+      content.innerHTML = `<div class="error-msg">⛔ Network error: ${err.message}</div>`;
+    }
+
+    updateBtn();
+  });
+
+})();
+</script>
+</body>
+</html>

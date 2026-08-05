@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Vanmoer — Admin</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'DM Sans', sans-serif; background: #0f1115; color: #e8eaed; }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 18px 32px; border-bottom: 1px solid #262a33;
+  }
+  header h1 { font-size: 18px; }
+  header button {
+    background: transparent; border: 1px solid #2a2f3a; color: #8b93a1;
+    padding: 8px 14px; border-radius: 8px; cursor: pointer; font-size: 13px;
+  }
+  main { max-width: 1080px; margin: 0 auto; padding: 32px; display: grid; gap: 24px; grid-template-columns: 1fr 1fr; }
+  .panel {
+    background: #171a21; border: 1px solid #262a33; border-radius: 14px; padding: 24px;
+  }
+  .panel.full { grid-column: 1 / -1; }
+  .panel h2 { font-size: 15px; margin-bottom: 16px; }
+  label { display: block; font-size: 12px; color: #8b93a1; margin: 10px 0 4px; font-family: 'DM Mono', monospace; }
+  input, select {
+    width: 100%; background: #0f1115; border: 1px solid #2a2f3a; border-radius: 8px;
+    padding: 9px 10px; color: #e8eaed; font-size: 13px;
+  }
+  .row { display: flex; gap: 10px; }
+  .row > * { flex: 1; }
+  button.primary {
+    margin-top: 16px; width: 100%; background: #4f7cff; border: none; border-radius: 8px;
+    padding: 10px; color: #fff; font-weight: 700; cursor: pointer; font-size: 13px;
+  }
+  button.primary:hover { background: #3d67e8; }
+  .msg { font-size: 12px; margin-top: 8px; display: none; }
+  .msg.ok { color: #4fd18b; }
+  .msg.err { color: #ff6b6b; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid #262a33; }
+  th { color: #8b93a1; font-family: 'DM Mono', monospace; font-weight: 500; font-size: 11px; text-transform: uppercase; }
+  .badge { font-family: 'DM Mono', monospace; font-size: 11px; background: #262a33; padding: 2px 8px; border-radius: 999px; }
+  .badge.inactive { color: #ff6b6b; }
+  .row-actions { display: flex; gap: 8px; }
+  .row-actions button {
+    background: transparent; border: 1px solid #2a2f3a; color: #8b93a1;
+    padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 12px;
+  }
+  .row-actions button.danger { border-color: #5a2a2a; color: #ff6b6b; }
+  .row-actions button.reactivate { border-color: #2a5a3a; color: #4fd18b; }
+  tr.inactive { opacity: 0.55; }
+  #user-form-title { font-size: 15px; margin-bottom: 16px; }
+  #cancel-edit-btn { display: none; margin-top: 8px; }
+  .grant-add-row { display: flex; gap: 8px; align-items: flex-end; }
+  .grant-add-row > * { flex: 1; }
+  .grant-add-row button {
+    flex: 0 0 auto; background: #262a33; border: 1px solid #2a2f3a; color: #e8eaed;
+    padding: 9px 14px; border-radius: 8px; cursor: pointer; font-size: 13px;
+  }
+  .grant-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; min-height: 20px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px; background: #1b2330;
+    border: 1px solid #2a3a52; border-radius: 999px; padding: 4px 6px 4px 12px;
+    font-size: 12px; font-family: 'DM Mono', monospace;
+  }
+  .chip button {
+    background: none; border: none; color: #8b93a1; cursor: pointer; font-size: 14px;
+    line-height: 1; padding: 2px 6px; border-radius: 999px;
+  }
+  .chip button:hover { color: #ff6b6b; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>Vanmoer — Admin</h1>
+    <div>
+      <button id="backup-btn">Backup DB now</button>
+      <button id="logout-btn">Log out</button>
+    </div>
+  </header>
+
+  <main>
+    <div class="panel">
+      <h2>Add client</h2>
+      <label for="client-name">Client name</label>
+      <input id="client-name" placeholder="e.g. Kaneka" />
+      <button class="primary" id="add-client-btn">Add client</button>
+      <div class="msg" id="client-msg"></div>
+    </div>
+
+    <div class="panel">
+      <h2 id="user-form-title">Add user</h2>
+      <label for="user-name">Full name</label>
+      <input id="user-name" />
+      <div class="row">
+        <div><label for="user-username">Username</label><input id="user-username" /></div>
+        <div><label for="user-password">Password</label><input id="user-password" type="password" placeholder="" /></div>
+      </div>
+      <label for="user-role">Role</label>
+      <select id="user-role">
+        <option value="user">User</option>
+        <option value="admin">Admin</option>
+      </select>
+      <div id="assignment-block">
+        <label>Client / task grants</label>
+        <p style="font-size:11px;color:#8b93a1;margin-bottom:6px">
+          Add one grant per client+task this user should access. One person needing
+          both Carpenter Inbound and Outbound gets two grants on the same login.
+        </p>
+        <div class="grant-add-row">
+          <div><select id="user-client"></select></div>
+          <div><select id="user-task"></select></div>
+          <button type="button" id="add-grant-btn">+ Add</button>
+        </div>
+        <div class="grant-chips" id="grant-chips"></div>
+      </div>
+      <button class="primary" id="add-user-btn">Add user</button>
+      <button class="primary" id="cancel-edit-btn" style="background:#2a2f3a">Cancel edit</button>
+      <div class="msg" id="user-msg"></div>
+    </div>
+
+    <div class="panel full">
+      <h2>Users</h2>
+      <table id="users-table">
+        <thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Grants</th><th>Status</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div class="panel">
+      <h2>Files by user</h2>
+      <table id="jobs-by-user-table">
+        <thead><tr><th>User</th><th>Files generated</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div class="panel">
+      <h2>Files by client</h2>
+      <table id="jobs-by-client-table">
+        <thead><tr><th>Client</th><th>Files generated</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </main>
+
+  <script src="/auth/client.js"></script>
+  <script src="/admin/admin.js"></script>
+</body>
+</html>

@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Vanmoer — Choose a task</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'DM Sans', sans-serif; background: #0f1115; color: #e8eaed; min-height: 100vh; }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 18px 32px; border-bottom: 1px solid #262a33;
+  }
+  header button {
+    background: transparent; border: 1px solid #2a2f3a; color: #8b93a1;
+    padding: 8px 14px; border-radius: 8px; cursor: pointer; font-size: 13px;
+  }
+  main { max-width: 640px; margin: 0 auto; padding: 48px 24px; }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  p.sub { font-family: 'DM Mono', monospace; font-size: 12px; color: #8b93a1; margin-bottom: 28px; }
+  .grid { display: grid; gap: 14px; }
+  .card {
+    display: block; text-decoration: none; color: inherit;
+    background: #171a21; border: 1px solid #262a33; border-radius: 12px;
+    padding: 18px 20px; transition: border-color 0.15s;
+  }
+  .card:hover { border-color: #4f7cff; }
+  .card .client { font-size: 15px; font-weight: 700; }
+  .card .task { font-family: 'DM Mono', monospace; font-size: 12px; color: #8b93a1; margin-top: 4px; }
+</style>
+</head>
+<body>
+  <header>
+    <h1 style="font-size:16px">Vanmoer</h1>
+    <button id="logout-btn">Log out</button>
+  </header>
+  <main>
+    <h1>Choose a task</h1>
+    <p class="sub">this account has access to more than one client/task</p>
+    <div class="grid" id="grid"></div>
+  </main>
+
+  <script src="/auth/client.js"></script>
+  <script src="/auth/dashboard.js"></script>
+</body>
+</html>

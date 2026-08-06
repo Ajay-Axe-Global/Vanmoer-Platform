@@ -270,7 +270,7 @@ def extract_scanned_pages(
                 "gross_weight_raw": weight_raw,
                 "net_weight_raw": weight_raw,
                 "container_no": container_no,
-                "category": "dynamic",
+                "category": "DYNAMET",
                 "pallet": 1,
                 "pieces": 1,
                 "pkg_label": "1 BOX",

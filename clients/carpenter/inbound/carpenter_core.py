@@ -145,7 +145,9 @@ def _clean_instruction(raw) -> str:
       - 'SHIP ASAP -  MID-JUNE, CWD ...'   → 'SHIP ASAP'
       - 'SHIP ASAP - JUNE: CWD ...'        → 'SHIP ASAP'
       - 'NO INS'                           → 'VMR STOCK'
-      - 'KEEP VM' / 'KEPT VM'              → 'VMR STOCK'
+      - '0'                                → 'VMR STOCK'
+      - 'KEEP VM' / 'KEPT VM' (+ any '- suffix') → 'VMR STOCK'
+      - 'CIF' / 'CIF DIRECT' / 'CIF DIRECT - COLLECT' → 'COLLECT BY CUSTOMER'
       - NaN / empty                        → ''
     """
     if pd.isna(raw) or raw is None:
@@ -156,8 +158,23 @@ def _clean_instruction(raw) -> str:
 
     upper = val.upper()
 
-    if upper in ("NO INS", "KEEP VM", "KEPT VM"):
+    if upper == "NO INS":
         return "VMR STOCK"
+
+    # Literal zero (numeric "0" or "0.0" from Excel) → no instruction given
+    try:
+        if float(upper) == 0:
+            return "VMR STOCK"
+    except ValueError:
+        pass
+
+    # "KEEP VM" / "KEPT VM", with or without a trailing "- suffix"
+    if re.match(r"^(KEEP|KEPT)\s+VM\b", upper):
+        return "VMR STOCK"
+
+    # "CIF", "CIF DIRECT", "CIF DIRECT - COLLECT" (hyphen/spacing tolerant)
+    if re.match(r"^CIF(\s+DIRECT(\s*[-–]\s*COLLECT)?)?$", upper):
+        return "COLLECT BY CUSTOMER"
 
     # Strip any trailing suffix after "SHIP ASAP - ..."
     m = re.match(r"^(SHIP\s+ASAP)\s*[-–].*", upper)
@@ -842,9 +859,29 @@ def merge_data(
     gross_kg_series = gross_col.apply(_truncate2)
     net_kg_series = net_col.apply(_truncate2)
 
+    # ── Combine Ref No per container ──
+    # If a container has more than one distinct ref_no across its Order List
+    # rows (e.g. two deliveries under one container each with their own ref),
+    # every output row for that container gets the same "/"-joined string
+    # (e.g. "ref1/ref2"), not just its own individual ref.
+    container_ref_map = {}
+    for _, row in df_orders.iterrows():
+        c = str(row.get("container_no", "")).strip()
+        r = str(row.get("ref_no", "")).strip()
+        if not c or not r or r.lower() == "nan":
+            continue
+        refs = container_ref_map.setdefault(c, [])
+        if r not in refs:
+            refs.append(r)
+    container_ref_map = {c: "/".join(refs) for c, refs in container_ref_map.items()}
+
+    container_no_series = (
+        df_merged.get("container_no", pd.Series(dtype=str)).fillna("").astype(str).str.strip()
+    )
+
     # Build final output
     final = pd.DataFrame()
-    final["Ref No"] = df_merged.get("ref_no", "")
+    final["Ref No"] = container_no_series.apply(lambda c: container_ref_map.get(c, ""))
     final["ETA Date"] = df_merged.get("eta", "")
     final["Container No"] = df_merged.get("container_no", "")
     final["Customer"] = "CARPENTER (CPTR)"                      # ← NEW (always fixed)

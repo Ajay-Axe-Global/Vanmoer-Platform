@@ -40,24 +40,29 @@ def call_gemini(
     prompt: str,
     pdf_path: str | None = None,
     pdf_bytes: bytes | None = None,
+    mime_type: str = "application/pdf",
     model: str = DEFAULT_MODEL,
     temperature: float = 0.0,
     max_output_tokens: int = 8192,
 ):
     """
-    Sends `prompt` (+ an optional PDF, as a path or raw bytes) to Gemini and
+    Sends `prompt` (+ an optional file, as a path or raw bytes) to Gemini and
     returns the response parsed as JSON (dict or list). Raises RuntimeError if
     all retries are exhausted or the response isn't valid JSON.
+
+    `pdf_path`/`pdf_bytes` accept any file Gemini supports (PDF, PNG, JPEG,
+    ...) despite the name — pass `mime_type` to match (e.g. "image/png").
+    Defaults to "application/pdf" so existing PDF-only callers are unaffected.
     """
     _configure()
     gm = genai.GenerativeModel(model)
 
     parts: list = [prompt]
     if pdf_bytes is not None:
-        parts.append({"mime_type": "application/pdf", "data": pdf_bytes})
+        parts.append({"mime_type": mime_type, "data": pdf_bytes})
     elif pdf_path is not None:
         with open(pdf_path, "rb") as f:
-            parts.append({"mime_type": "application/pdf", "data": f.read()})
+            parts.append({"mime_type": mime_type, "data": f.read()})
 
     last_err = None
     for attempt in range(MAX_RETRIES + 1):

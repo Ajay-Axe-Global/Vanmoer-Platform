@@ -8,9 +8,11 @@ That's it — main.py and routes/__init__.py never need to change.
 """
 
 from clients.carpenter.inbound.task import bp as carpenter_inbound_bp
+from clients.carpenter.outbound.task import bp as carpenter_outbound_bp
 from clients.sabic.outbound.task import bp as sabic_outbound_bp
 
 TASK_REGISTRY = [
     sabic_outbound_bp,
     carpenter_inbound_bp,
+    carpenter_outbound_bp,
 ]

@@ -26,6 +26,7 @@ from helpers.jobs import job_output_path, log_job, new_job_dir
 
 from .extractor import (
     build_rows,
+    cross_check_containers,
     extract_invoice,
     extract_mbl,
     extract_packing_list,
@@ -80,6 +81,7 @@ class SabicInboundTask(BaseTask):
         # ── Step 1: LLM extraction ──────────────────────────────────
         mbl_data = extract_mbl(files["mbl"])
         pkl_data = extract_packing_list(files["packing_list"])
+        pkl_data = cross_check_containers(mbl_data, pkl_data)
         inv_data = extract_invoice(files["invoice"])
 
         # ── Step 2: Cross-document validation ───────────────────────

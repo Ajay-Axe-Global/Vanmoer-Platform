@@ -566,7 +566,15 @@ def _dump_json(pdf_path: str, suffix: str, data):
 MBL_PROMPT = """You are a shipping-document data extractor. Extract the following fields from this Master Bill of Lading (MBL / Sea Waybill) PDF and return ONLY a JSON object — no markdown, no explanation.
 
 RULES:
-- "ref_nos": Find ALL Sales Order Numbers ("SALES ORDER NO.:XXXXXXX"). Look across ALL rider pages. Return as array.
+- "ref_nos": Find ALL Sales Order / STO numbers. They appear with ONLY these labels:
+    "SALES ORDER NO.:XXXXXXX" or "STO NO : XXXXXXX" or "STO NO:XXXXXXX"
+  ⚠️ ONLY extract values that follow these exact labels. Do NOT extract:
+    - "OBD#" values (that is a delivery reference, NOT a sales order)
+    - "DELIVERY NO." values
+    - Any other unlabeled numbers
+  Sales order numbers always start with "450..." (10 digits). If a number does not
+  start with "450", it is NOT a sales order — do not include it.
+  Look across ALL rider pages. Return as array.
 - "delivery_no": The Delivery Number ("DELIVERY NO.:XXXXXXX").
 - "port_of_loading": Port of Loading.
 - "port_of_discharge": Port of Discharge.
@@ -696,9 +704,9 @@ PKG_LIST_PROMPT = """You are a shipping-document data extractor. Extract all dat
 HEADER FIELDS
 ══════════════════════════════════════════
 - Order/STO: appears as "Sharq Order/STO:" or "Petrokemya Order/STO:" etc.
-- Delivery: appears as "Sharq Delivery:" or "Petrokemya Delivery:" etc.
+- Delivery: appears as "Sharq Delivery:" or "Petrokemya Delivery:" etc But Need to take only Sabic Delivery According to Different Layout.
 - Sabic PO: "Sabic PO:" — base number only (e.g. "4506618575" not "4506618575 000010").
-- Sabic Delivery: "Sabic Delivery:".
+- Sabic Delivery: "Sabic Delivery:" - this is the PRIMARY delivery number.
 
 ══════════════════════════════════════════
 TABLE STRUCTURE
@@ -720,12 +728,39 @@ For each row:
 - "seal": the Seal No. printed on THIS row. Empty string "" if not printed here.
 - "has_vgm": true if this row has a value in the Verified Gross Mass column,
   false if that column is blank on this row.
-- "product", "pkg_code", "lot", "unit", "pkg_type", "bags", "gross_weight",
-  "net_weight": as normal, from this row.
+- "product": Material name (e.g. "LLDPE 318BJ 149")
+- "pkg_code": PKG CODE column value (e.g. "149")
+- "lot": Batch column value (e.g. "0061861590")
+- "pallet_qty": The NUMERIC part of the Unit column (e.g. "17 PAL" → 17, "1 PAL" → 1).
+  This is the number of PALLETS — always much SMALLER than bags.
+  If the Unit column shows only "MT" (no number + PAL), set pallet_qty to 0.
+- "bags": The BAGS column — total number of bags (e.g. 1020, 360, 980).
+  ⚠️ bags is ALWAYS LARGER than pallet_qty. If bags < pallet_qty, you swapped them — fix it.
+- "gross_weight": Gross Weight number only (e.g. 25.993)
+- "net_weight": Net Weight number only (e.g. 25.5)
+- "weight_unit": The unit shown in the weight columns. "MT" if weights say "25.9930 MT",
+  "KG" if weights say "25993 KG". Default to "MT" if unclear.
 
 NOTE : This is the single most common extraction mistake: attaching a no-VGM row
 to the container printed BELOW it instead of the container that opened ABOVE
 it . You Must place the that Row to the Last container or Above container.
+══════════════════════════════════════════
+ALTERNATIVE TABLE LAYOUTS
+══════════════════════════════════════════
+Some packing lists (e.g. from KNC / Korea Nexlene) have a DIFFERENT column layout:
+  CONTAINER ID | SEAL NO. | MATERIAL | Grade | BATCH | UNIT | BAGS | GROSS WEIGHT | NET WEIGHT
+
+Key differences from the standard layout:
+- Container ID and Seal No. are in SEPARATE columns (not stacked vertically).
+- There is a "Grade" column (e.g. "OS") — map this to "pkg_code", NOT to "lot".
+- The "BATCH" column (e.g. "C902Q7C501") — this is the LOT number. Map to "lot".
+- There is NO "Verified Gross Mass" column — set has_vgm = true for ALL rows.
+- "UNIT" column shows "MT" (unit of measure) — this is NOT the pkg_type.
+  Set pkg_type = "PAL" and unit = 0 when UNIT shows "MT".
+
+How to detect: if the column headers include "Grade" and "BATCH" as separate columns,
+OR if the seal numbers start with "FJ" or "M" followed by digits, use this mapping.
+
 ══════════════════════════════════════════
 WORKED EXAMPLE 1 — mid-page (the case most often gotten wrong)
 ══════════════════════════════════════════
@@ -752,15 +787,15 @@ OUTPUT FORMAT
     {
       "container_id": "string or empty",
       "seal": "string or empty",
-      "has_vgm": boolean,
+      "has_vgm": true,
       "product": "string",
       "pkg_code": "string",
       "lot": "string",
-      "unit": number,
-      "pkg_type": "string",
-      "bags": number,
-      "gross_weight": number,
-      "net_weight": number
+      "pallet_qty": 17,
+      "bags": 1020,
+      "gross_weight": 25.993,
+      "net_weight": 25.5,
+      "weight_unit": "MT"
     }
   ]
 }"""
@@ -982,6 +1017,23 @@ INVOICE_PROMPT = """You are a shipping-document data extractor. Extract fields f
 # ═══════════════════════════════════════════════════════════════════════════
 # EXTRACTION FUNCTIONS
 # ═══════════════════════════════════════════════════════════════════════════
+def _to_kg(value, unit="MT"):
+    """Convert weight to KG. MT × 1000, KG passthrough."""
+    val = _num(value, 0)
+    if not val:
+        return 0
+    if unit.upper().strip() == "MT":
+        return round(val * 1000, 3)
+    return round(val, 3)
+
+
+def _determine_pkg_type(net_weight_kg, bags):
+    """net_weight_kg / bags > 50 → 'Big Bags', else 'Bags'."""
+    if not bags or bags == 0:
+        return "Bags"
+    per_bag = net_weight_kg / bags
+    return "Big Bags" if per_bag > 50 else "Bags"
+
 
 def extract_mbl(pdf_path: str) -> dict:
     data = call_gemini(MBL_PROMPT, pdf_path=pdf_path, max_output_tokens=16384)
@@ -1065,34 +1117,37 @@ def extract_packing_list(pdf_path: str) -> dict:
     """
     Gemini returns FLAT, order-preserved rows[] (one row = one table line,
     transcribed as-is, no grouping decisions). Python groups them into
-    containers deterministically using has_vgm — removing the LLM's need to
-    hold cross-row state, which is where it kept failing.
+    containers deterministically using has_vgm.
     """
     data = call_gemini(PKG_LIST_PROMPT, pdf_path=pdf_path, max_output_tokens=16384)
     _dump_json(pdf_path, "pkg_list_raw.json", data)
-
+ 
     flat_lines = []
     current_cid, current_seal = None, None
-
+ 
     for row in data.get("rows", []):
         has_vgm = row.get("has_vgm")
         if isinstance(has_vgm, str):
             has_vgm = has_vgm.strip().lower() == "true"
-
+ 
         raw_cid = (row.get("container_id") or "").strip()
-
+ 
         if has_vgm and raw_cid:
             cid, seal = _fix_container_id(raw_cid, row.get("seal", ""))
             current_cid, current_seal = cid, seal
-
+ 
         if current_cid is None:
-            # Malformed first row with no container context yet — skip
             continue
-
+ 
+        # Skip total/summary rows
+        product = (row.get("product") or "").strip()
+        if product.upper().replace(":", "").strip() in ("TOTAL", "SUB TOTAL", "SUBTOTAL", "GRAND TOTAL"):
+            continue
+ 
         flat_lines.append({
             "container_id": current_cid,
             "seal":         current_seal,
-            "product":      row.get("product", ""),
+            "product":      product,
             "pkg_code":     row.get("pkg_code", ""),
             "lot":          row.get("lot", ""),
             "unit":         row.get("unit", 0),
@@ -1101,7 +1156,7 @@ def extract_packing_list(pdf_path: str) -> dict:
             "gross_weight": _num(row.get("gross_weight"), 0),
             "net_weight":   _num(row.get("net_weight"), 0),
         })
-
+ 
     result = {
         "delivery_no":    data.get("delivery_no", ""),
         "sto":            data.get("sto", ""),
@@ -1109,7 +1164,7 @@ def extract_packing_list(pdf_path: str) -> dict:
         "sabic_delivery": data.get("sabic_delivery", ""),
         "lines":          flat_lines,
     }
-
+ 
     _dump_json(pdf_path, "pkg_list.json", result)
     n_containers = len({ln["container_id"] for ln in flat_lines})
     print(f"  [PKG LIST] Grouped {len(flat_lines)} rows into {n_containers} containers")
@@ -1237,7 +1292,7 @@ def _build_ref(ref_nos: list) -> str:
         base = str(r).split("/")[0].strip()
         if base and base not in cleaned:
             cleaned.append(base)
-    return "+".join(cleaned)
+    return " ".join(cleaned)
 
 
 def validate(mbl: dict, pkl: dict, inv: dict) -> list[str]:
@@ -1245,7 +1300,7 @@ def validate(mbl: dict, pkl: dict, inv: dict) -> list[str]:
 
     mbl_ref = _build_ref(mbl.get("ref_nos", []))
     inv_ref = _build_ref([inv.get("sales_ref", "")])
-    pkl_ref = _build_ref([pkl.get("sabic_po", "")])
+    pkl_ref = _build_ref([pkl.get("sabic_po", "")]) or _build_ref([pkl.get("sto", "")])
 
     if mbl_ref and inv_ref:
         if mbl_ref == inv_ref:
@@ -1274,6 +1329,14 @@ def validate(mbl: dict, pkl: dict, inv: dict) -> list[str]:
             results.append(f"[OK] DELIVERY — MBL({mbl_del}) = Packing List Sabic({pkl_sabic_del})")
         else:
             results.append(f"[!]  DELIVERY — MBL({mbl_del}) vs Packing List Sabic({pkl_sabic_del})")
+    
+        # Fallback: check delivery_no from PKG list when sabic_delivery is empty
+    pkl_del = str(pkl.get("delivery_no", "")).split("/")[0]
+    if mbl_del and pkl_del and not pkl_sabic_del:
+        if mbl_del == pkl_del:
+            results.append(f"[OK] DELIVERY — MBL({mbl_del}) = Packing List({pkl_del})")
+        else:
+            results.append(f"[!]  DELIVERY — MBL({mbl_del}) vs Packing List({pkl_del})")
 
     inv_product = str(inv.get("product", "")).upper()
     pkl_products = set()
@@ -1308,7 +1371,16 @@ def validate(mbl: dict, pkl: dict, inv: dict) -> list[str]:
 def build_rows(mbl: dict, pkl: dict) -> list[dict]:
     ref_no = _build_ref(mbl.get("ref_nos", []))
 
-    delivery_no = str(pkl.get("delivery_no", "")).strip()
+    delivery_no = (
+    pkl.get("sabic_delivery")
+    or pkl.get("delivery_no")
+    or pkl.get("sto")
+    or ""
+)   
+
+    delivery_no = str(delivery_no).strip()
+    if delivery_no == "None":
+        delivery_no = ""
     if not delivery_no:
         delivery_no = str(pkl.get("sto", "")).strip()
 
@@ -1341,8 +1413,9 @@ def build_rows(mbl: dict, pkl: dict) -> list[dict]:
             "net_weight":      ln.get("net_weight", 0),
             "gross_weight":    ln.get("gross_weight", 0),
             "seal_no":         seal,
-            "container_ref":   f"{cid}+{ref_no}",
+            "container_ref":   f"{cid} {ref_no}",
             "container_type":  ctype,
         })
 
     return rows
+

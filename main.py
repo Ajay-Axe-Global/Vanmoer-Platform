@@ -16,7 +16,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from flask import Flask, send_from_directory
 
 from database.backup import backup_now
-from database.db import init_db
+from database.seed import seed
 from routes import register_all
 
 BASE_DIR = Path(__file__).parent
@@ -51,7 +51,10 @@ def create_app() -> Flask:
     app = Flask(__name__, static_folder=None)
     app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50MB max upload
 
-    init_db()
+    # Idempotent: creates clients/tasks/the default admin only if missing, so
+    # it's safe to run on every boot instead of requiring a manual
+    # `python -m database.seed` before first login.
+    seed()
     register_all(app)
     _start_backup_scheduler()
 

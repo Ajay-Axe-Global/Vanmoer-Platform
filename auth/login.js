@@ -3,6 +3,16 @@
   const errorBox = document.getElementById("error");
   const submitBtn = document.getElementById("submit-btn");
 
+  // Bfcache restores (e.g. navigating back to /login after logout) can
+  // resurrect the DOM exactly as it was left mid-submit — button stuck on
+  // "Signing in…" — since we never got the chance to reset it before the
+  // page navigated away. Reset on every show, cached or not.
+  window.addEventListener("pageshow", () => {
+    submitBtn.disabled = false;
+    submitBtn.textContent = "Sign in";
+    errorBox.style.display = "none";
+  });
+
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     errorBox.style.display = "none";

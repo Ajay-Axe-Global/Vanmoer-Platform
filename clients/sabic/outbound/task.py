@@ -145,27 +145,53 @@ class SabicOutboundTask(BaseTask):
         m = re.search(r"Transportation zone:\s*\n([A-Z]{2})", t, re.IGNORECASE)
         return m.group(1).upper() if m else ""
 
-    def _item_block(self, t):
-        m = re.search(
-            r"Country of origin\s+Commodity\s+Gross price\s+Per\s*\n"
-            r"(\d{6})\s*\n(\d{7,9})\s*\n(.+?)\s*\n(.+?)\s*\n(.+?)\s*\n\s*([\d.,]+)\s*KG",
-            t, re.DOTALL | re.IGNORECASE
-        )
-        if not m:
-            return {}
-        return {
-            "product_description": m.group(4).strip(),
-            "packaging": m.group(5).strip(),
-            "net_weight_raw": m.group(6).strip(),
-        }
+    _ITEM_PATTERN = re.compile(
+        r"(\d{6})\s*\n(\d{7,9})\s*\n(.+?)\s*\n(.+?)\s*\n(.+?)\s*\n\s*([\d.,]+)\s*KG",
+        re.DOTALL | re.IGNORECASE,
+    )
 
-    def _net_weight(self, raw):
+    def _item_blocks(self, t):
+        # The "Country of origin / Commodity / Gross price / Per" table header
+        # only appears once per document even when it lists multiple items
+        # (000010, 000020, ...), so anchor on it once and then scan for every
+        # item row after it instead of re.search-ing for a single match.
+        header = re.search(r"Country of origin\s+Commodity\s+Gross price\s+Per\s*\n", t, re.IGNORECASE)
+        if not header:
+            return []
+        body = t[header.end():]
+        return [
+            {
+                "product_description": m.group(4).strip(),
+                "packaging": m.group(5).strip(),
+                "net_weight_raw": m.group(6).strip(),
+            }
+            for m in self._ITEM_PATTERN.finditer(body)
+        ]
+
+    def _decimal_separator(self, t: str) -> str:
+        """
+        Dispatch advice PDFs show up in two different number formats depending
+        on the customer/locale that generated them: US-style (1,120.00 =
+        thousands comma, decimal dot) or European-style (1.360,00 = thousands
+        dot, decimal comma). Detect which one this document uses from a value
+        that shows both separators together — e.g. a gross price or gross
+        weight like "13.756,500" — where the rightmost separator is always
+        the decimal point. Falls back to "." (US-style) if no such anchor
+        value is found anywhere in the document.
+        """
+        m = re.search(r"\d+[.,]\d{3}[.,]\d{1,3}\b", t)
+        if not m:
+            return "."
+        tok = m.group(0)
+        return "," if tok.rfind(",") > tok.rfind(".") else "."
+
+    def _net_weight(self, raw, decimal_sep="."):
         raw = raw.strip().replace(" ", "")
-        if "," in raw:
-            raw = raw.replace(".", "").replace(",", ".")
-            val = float(raw)
-        else:
-            val = float(raw.replace(".", ""))
+        thousands_sep = "," if decimal_sep == "." else "."
+        raw = raw.replace(thousands_sep, "")
+        if decimal_sep != ".":
+            raw = raw.replace(decimal_sep, ".")
+        val = float(raw)
         return f"{int(val):,} KG" if val == int(val) else f"{val:,.1f} KG"
 
     def _loading_date(self, t):
@@ -219,44 +245,59 @@ class SabicOutboundTask(BaseTask):
             return f"{extra_remark} - {SILO_SUFFIX}" if extra_remark else SILO_SUFFIX
         return extra_remark
 
-    def _extract_fields(self, text: str) -> dict:
-        item = self._item_block(text)
+    def _extract_rows(self, text: str) -> list[dict]:
+        # Document-level fields apply once per dispatch advice, regardless of
+        # how many line items (000010, 000020, ...) it lists.
         transport_zone = self._transport_zone(text)
-        packaging = item.get("packaging", "")
-        product_desc = item.get("product_description", "")
-
         if transport_zone == "GB":
             transport_zone = "NI" if self._is_mallusk(text) else "GB"
 
-        operation_type = self._operation_type(packaging, transport_zone, product_desc)
-        io_description = self._io_description(operation_type, product_desc)
+        decimal_sep = self._decimal_separator(text)
+        external_id = self._external_id(text)
+        ref_po_number = self._customer_po(text)
+        ref_delivery_no = self._delivery_no(text)
+        ref_cust_material = self._customer_material(text)
+        public_id = self._carrier_name(text) or "FCA"
+        planned_date = self._loading_date(text)
 
-        return {
-            "client": FIXED_CLIENT,
-            "external_id": self._external_id(text),
-            "cost_center": FIXED_COST_CENTER,
-            "product_code": product_desc,
-            "net_weight": self._net_weight(item.get("net_weight_raw", "0")),
-            "description": f"{self._net_weight(item.get('net_weight_raw', '0'))} - {product_desc}",
-            "operation_type": operation_type,
-            "io_description": io_description,
-            "ref_po_number": self._customer_po(text),
-            "ref_delivery_no": self._delivery_no(text),
-            "ref_cust_material": self._customer_material(text),
-            "public_id": self._carrier_name(text) or "FCA",
-            "dest_country_code": transport_zone,
-            "transport_type": "Silo-Truck" if "SILO" in packaging.upper() else "Truck",
-            "planned_date": self._loading_date(text),
-            "remarks": "EXPORT DOCUMENT" if "export" in operation_type.lower() else "",
-        }
+        rows = []
+        for item in self._item_blocks(text):
+            packaging = item.get("packaging", "")
+            product_desc = item.get("product_description", "")
+            net_weight = self._net_weight(item.get("net_weight_raw", "0"), decimal_sep)
+
+            operation_type = self._operation_type(packaging, transport_zone, product_desc)
+            io_description = self._io_description(operation_type, product_desc)
+
+            rows.append({
+                "client": FIXED_CLIENT,
+                "external_id": external_id,
+                "cost_center": FIXED_COST_CENTER,
+                "product_code": product_desc,
+                "net_weight": net_weight,
+                "description": f"{net_weight} - {product_desc}",
+                "operation_type": operation_type,
+                "io_description": io_description,
+                "ref_po_number": ref_po_number,
+                "ref_delivery_no": ref_delivery_no,
+                "ref_cust_material": ref_cust_material,
+                "public_id": public_id,
+                "dest_country_code": transport_zone,
+                "transport_type": "Silo-Truck" if "SILO" in packaging.upper() else "Truck",
+                "planned_date": planned_date,
+                "remarks": "EXPORT DOCUMENT" if "export" in operation_type.lower() else "",
+            })
+        return rows
 
     # ── BaseTask entry point ────────────────────────────────────────────────
     def process(self, files: dict, output_path: str | None = None) -> dict:
         paths = files.get("dispatch_advice", [])
         if isinstance(paths, str):
             paths = [paths]
-        rows = [self._extract_fields(extract_text(p)) for p in paths]
-        return {"rows": rows, "summary": {"documents_processed": len(rows)}}
+        rows = []
+        for p in paths:
+            rows.extend(self._extract_rows(extract_text(p)))
+        return {"rows": rows, "summary": {"documents_processed": len(paths)}}
 
 
 # ── Flask Blueprint ──────────────────────────────────────────────────────────

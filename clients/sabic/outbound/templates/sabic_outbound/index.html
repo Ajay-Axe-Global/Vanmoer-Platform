@@ -5,54 +5,191 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Vanmoer — SABIC Outbound</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
-<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: 'DM Sans', sans-serif; background: #0f1115; color: #e8eaed; }
-  header { display: flex; align-items: center; justify-content: space-between; padding: 18px 32px; border-bottom: 1px solid #262a33; }
-  header button { background: transparent; border: 1px solid #2a2f3a; color: #8b93a1; padding: 8px 14px; border-radius: 8px; cursor: pointer; font-size: 13px; }
-  main { max-width: 640px; margin: 0 auto; padding: 40px 24px; }
-  h1 { font-size: 20px; margin-bottom: 4px; }
-  p.sub { font-family: 'DM Mono', monospace; font-size: 12px; color: #8b93a1; margin-bottom: 24px; }
+
+  html, body {
+    font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: #0f172a;
+    color: #e2e8f0;
+    min-height: 100vh;
+  }
+
+  ::selection { background: #3b82f6; color: #fff; }
+
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 18px 32px; border-bottom: 1px solid #1e293b;
+    background: rgba(15, 23, 42, 0.85); backdrop-filter: blur(6px);
+    position: sticky; top: 0; z-index: 10;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; }
+  .brand .mark {
+    width: 26px; height: 26px; border-radius: 7px;
+    background: linear-gradient(135deg, #3b82f6, #2563eb);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; font-weight: 800; color: #fff;
+  }
+  .brand span { font-size: 15px; font-weight: 700; color: #f8fafc; letter-spacing: -0.01em; }
+  header button {
+    background: transparent; border: 1px solid #334155; color: #94a3b8;
+    padding: 8px 16px; border-radius: 8px; cursor: pointer; font-size: 13px;
+    font-weight: 500; font-family: inherit; transition: border-color .15s, color .15s, background .15s;
+  }
+  header button:hover { border-color: #475569; color: #e2e8f0; background: #1e293b; }
+
+  .container { max-width: 640px; margin: 0 auto; padding: 48px 24px 64px; }
+
+  @media (max-width: 480px) {
+    .container { padding: 32px 16px 48px; }
+    header { padding: 14px 20px; }
+  }
+
+  .page-header { margin-bottom: 32px; }
+  .page-header h1 { font-size: 24px; font-weight: 700; color: #f8fafc; letter-spacing: -0.015em; margin-bottom: 6px; }
+  .page-header p {
+    font-family: 'JetBrains Mono', monospace; font-size: 12.5px; color: #64748b;
+  }
+
+  /* ── Dropzone ─────────────────────────────────────────── */
   .dropzone {
-    border: 1.5px dashed #2a2f3a; border-radius: 12px; padding: 32px;
-    text-align: center; cursor: pointer; margin-bottom: 20px; background: #171a21;
+    border: 2px dashed #334155; border-radius: 14px; padding: 40px 24px;
+    text-align: center; cursor: pointer; margin-bottom: 20px;
+    background: #1e293b; transition: border-color .2s, background .2s, transform .1s;
   }
-  .dropzone.drag { border-color: #4f7cff; }
-  .dropzone p { font-size: 13px; color: #8b93a1; }
-  #file-list { font-size: 12px; font-family: 'DM Mono', monospace; color: #c7cbd3; margin-bottom: 20px; }
-  #file-list div { padding: 4px 0; }
+  .dropzone:hover { border-color: #475569; background: #22304a; }
+  .dropzone.drag { border-color: #3b82f6; background: #1c2942; transform: scale(1.005); }
+  .dropzone .icon { font-size: 30px; display: block; margin-bottom: 10px; opacity: .85; }
+  .dropzone p { font-size: 13.5px; color: #94a3b8; font-weight: 500; }
+  .dropzone p.hint { font-size: 11.5px; color: #64748b; margin-top: 4px; font-weight: 400; }
+
+  /* ── File chips ───────────────────────────────────────── */
+  #file-list { margin-bottom: 20px; display: flex; flex-direction: column; gap: 8px; }
+  .file-chip {
+    display: flex; align-items: center; gap: 10px;
+    background: #1e293b; border: 1px solid #334155; border-radius: 10px;
+    padding: 10px 12px; animation: chip-in .15s ease-out;
+  }
+  @keyframes chip-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+  .file-chip .file-icon {
+    font-size: 15px; width: 28px; height: 28px; border-radius: 7px;
+    background: #0f172a; display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+  }
+  .file-chip .file-name {
+    flex: 1; font-family: 'JetBrains Mono', monospace; font-size: 12px;
+    color: #cbd5e1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .file-chip .file-remove {
+    background: none; border: none; color: #64748b; font-size: 17px; line-height: 1;
+    cursor: pointer; padding: 2px 6px; border-radius: 5px; transition: color .15s, background .15s;
+  }
+  .file-chip .file-remove:hover { color: #f87171; background: #3b1219; }
+
+  /* ── Primary button ───────────────────────────────────── */
   button.primary {
-    width: 100%; background: #4f7cff; border: none; border-radius: 8px; padding: 12px;
-    color: #fff; font-weight: 700; cursor: pointer; font-size: 14px;
+    width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px;
+    background: linear-gradient(135deg, #3b82f6, #2563eb); border: none; border-radius: 10px;
+    padding: 14px; color: #fff; font-weight: 700; font-size: 14.5px; cursor: pointer;
+    font-family: inherit; transition: opacity .2s, transform .1s;
   }
-  button.primary:disabled { opacity: 0.5; cursor: default; }
-  #status { font-size: 13px; margin-top: 16px; display: none; }
-  #status.err { color: #ff6b6b; }
-  #status.ok { color: #4fd18b; }
-  #download-link { display: none; margin-top: 12px; }
-  #download-link a { color: #4f7cff; }
+  button.primary:hover:not(:disabled) { opacity: .92; }
+  button.primary:active:not(:disabled) { transform: scale(.98); }
+  button.primary:disabled { opacity: .35; cursor: not-allowed; }
+
+  .spinner {
+    width: 15px; height: 15px; border: 2px solid rgba(255,255,255,.35);
+    border-top-color: #fff; border-radius: 50%; animation: spin .7s linear infinite; display: none;
+  }
+  button.primary.loading .spinner { display: inline-block; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Status / error ───────────────────────────────────── */
+  #status {
+    font-size: 13px; margin-top: 18px; padding: 13px 16px; border-radius: 10px;
+    display: none; font-weight: 500;
+  }
+  #status.err { display: block; color: #fca5a5; background: #3b1219; border: 1px solid #7f1d1d; }
+  #status.ok { display: block; color: #86efac; background: #0f2b1c; border: 1px solid #14532d; }
+
+  /* ── Results panel ────────────────────────────────────── */
+  #results { display: none; margin-top: 22px; }
+  #results.visible { display: block; animation: chip-in .2s ease-out; }
+
+  .stats-row { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 18px; }
+  .stat-chip {
+    background: #1e293b; border: 1px solid #334155; border-radius: 10px;
+    padding: 14px 12px; text-align: center;
+  }
+  .stat-chip .value { font-size: 22px; font-weight: 700; color: #f8fafc; }
+  .stat-chip .label {
+    font-size: 10.5px; color: #94a3b8; text-transform: uppercase;
+    letter-spacing: .06em; margin-top: 3px; font-weight: 600;
+  }
+
+  #download-link {
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    width: 100%; background: linear-gradient(135deg, #22c55e, #16a34a);
+    border: none; border-radius: 10px; padding: 13px; color: #fff;
+    font-weight: 700; font-size: 14.5px; cursor: pointer; text-decoration: none;
+    transition: opacity .2s, transform .1s;
+  }
+  #download-link:hover { opacity: .92; }
+  #download-link:active { transform: scale(.98); }
+
+  .reset-link {
+    display: block; text-align: center; margin-top: 16px; font-size: 12.5px;
+    color: #64748b; cursor: pointer; text-decoration: underline; text-underline-offset: 2px;
+  }
+  .reset-link:hover { color: #94a3b8; }
 </style>
 </head>
 <body>
   <header>
-    <h1 style="font-size:16px">Vanmoer</h1>
+    <div class="brand">
+      <div class="mark">V</div>
+      <span>Vanmoer</span>
+    </div>
     <button id="logout-btn">Log out</button>
   </header>
-  <main>
-    <h1>{{ label }}</h1>
-    <p class="sub">upload dispatch advice PDF(s) to generate the output Excel</p>
+
+  <div class="container">
+    <div class="page-header">
+      <h1>{{ label }}</h1>
+      <p>Upload dispatch advice PDF(s) → generate the output Excel</p>
+    </div>
 
     <div class="dropzone" id="dropzone">
+      <span class="icon">📄</span>
       <p>Drag &amp; drop PDF file(s) here, or click to browse</p>
+      <p class="hint">Accepts one or more dispatch advice PDFs</p>
       <input type="file" id="file-input" accept=".pdf" multiple style="display:none" />
     </div>
     <div id="file-list"></div>
 
-    <button class="primary" id="submit-btn" disabled>Process &amp; Generate Excel</button>
+    <button class="primary" id="submit-btn" disabled>
+      <span class="spinner"></span>
+      <span class="btn-label">Process &amp; Generate Excel</span>
+    </button>
+
     <div id="status"></div>
-    <div id="download-link"><a id="download-anchor" href="#">Download Excel</a></div>
-  </main>
+
+    <div id="results">
+      <div class="stats-row">
+        <div class="stat-chip">
+          <div class="value" id="stat-docs">0</div>
+          <div class="label">Documents</div>
+        </div>
+        <div class="stat-chip">
+          <div class="value" id="stat-rows">0</div>
+          <div class="label">Rows Generated</div>
+        </div>
+      </div>
+      <a id="download-link" href="#"><span>⬇</span> Download Excel</a>
+      <span class="reset-link" id="reset-link">← Process another batch</span>
+    </div>
+  </div>
 
   <script src="/auth/client.js"></script>
   <script>
@@ -64,7 +201,9 @@
     const fileInput = document.getElementById("file-input");
     const fileList = document.getElementById("file-list");
     const submitBtn = document.getElementById("submit-btn");
+    const btnLabel = submitBtn.querySelector(".btn-label");
     const status = document.getElementById("status");
+    const results = document.getElementById("results");
     const downloadLink = document.getElementById("download-link");
 
     dropzone.addEventListener("click", () => fileInput.click());
@@ -75,7 +214,10 @@
       dropzone.classList.remove("drag");
       addFiles(e.dataTransfer.files);
     });
-    fileInput.addEventListener("change", (e) => addFiles(e.target.files));
+    fileInput.addEventListener("change", (e) => {
+      addFiles(e.target.files);
+      fileInput.value = "";
+    });
 
     function addFiles(fileListObj) {
       for (const f of fileListObj) {
@@ -84,16 +226,32 @@
       renderFileList();
     }
 
+    function removeFile(index) {
+      selectedFiles.splice(index, 1);
+      renderFileList();
+    }
+
     function renderFileList() {
-      fileList.innerHTML = selectedFiles.map(f => `<div>${f.name}</div>`).join("");
+      fileList.innerHTML = selectedFiles.map((f, i) => `
+        <div class="file-chip">
+          <span class="file-icon">📄</span>
+          <span class="file-name">${f.name}</span>
+          <button type="button" class="file-remove" data-index="${i}">&times;</button>
+        </div>
+      `).join("");
+      fileList.querySelectorAll(".file-remove").forEach(btn => {
+        btn.addEventListener("click", () => removeFile(Number(btn.dataset.index)));
+      });
       submitBtn.disabled = selectedFiles.length === 0;
     }
 
     submitBtn.addEventListener("click", async () => {
+      status.className = "";
       status.style.display = "none";
-      downloadLink.style.display = "none";
+      results.classList.remove("visible");
       submitBtn.disabled = true;
-      submitBtn.textContent = "Processing…";
+      submitBtn.classList.add("loading");
+      btnLabel.textContent = "Processing…";
 
       const fd = new FormData();
       selectedFiles.forEach(f => fd.append("dispatch_advice", f));
@@ -106,11 +264,11 @@
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Processing failed");
 
-        status.textContent = `Processed ${data.summary.documents_processed} document(s).`;
-        status.className = "ok";
-        status.style.display = "block";
-        downloadLink.style.display = "block";
-        document.getElementById("download-anchor").onclick = async (e) => {
+        document.getElementById("stat-docs").textContent = data.summary.documents_processed;
+        document.getElementById("stat-rows").textContent = (data.rows || []).length;
+        results.classList.add("visible");
+
+        downloadLink.onclick = async (e) => {
           e.preventDefault();
           await VanmoerAuth.downloadFile(data.download_url, "Sabic_Outbound_Output.xlsx");
         };
@@ -120,8 +278,16 @@
         status.style.display = "block";
       } finally {
         submitBtn.disabled = false;
-        submitBtn.textContent = "Process & Generate Excel";
+        submitBtn.classList.remove("loading");
+        btnLabel.textContent = "Process & Generate Excel";
       }
+    });
+
+    document.getElementById("reset-link").addEventListener("click", () => {
+      selectedFiles = [];
+      renderFileList();
+      results.classList.remove("visible");
+      status.style.display = "none";
     });
   </script>
 </body>

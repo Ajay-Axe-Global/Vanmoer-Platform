@@ -22,7 +22,7 @@ from database.db import SessionLocal
 from helpers.base_task import BaseTask
 from helpers.decorators import task_access_required
 from helpers.excel_writer import write_excel
-from helpers.jobs import job_output_path, log_job, new_job_dir
+from helpers.jobs import build_reference, job_output_path, log_job, new_job_dir
 
 from .extractor import (
     build_rows,
@@ -159,7 +159,16 @@ def process():
         write_excel(rows, COLUMN_CONFIG, output_path)
 
         # ── Log the job ─────────────────────────────────────────────
-        log_job(session, g.user["user_id"], CLIENT_SLUG, TASK_SLUG, f"{job_id}/output.xlsx", "success")
+        # summary["ref_no"] is the Sales Order/STO number(s) off the MBL —
+        # the real order reference — space-joined when one MBL legitimately
+        # covers more than one sales order (see extractor._build_ref).
+        reference, reference_count = build_reference((summary.get("ref_no") or "").split())
+        source_filename = ", ".join(
+            request.files[doc["key"]].filename for doc in _task.required_documents
+        )
+        log_job(session, g.user["user_id"], CLIENT_SLUG, TASK_SLUG, f"{job_id}/output.xlsx", "success",
+                reference=reference, source_filename=source_filename,
+                row_count=len(rows), reference_count=reference_count)
 
         return jsonify({
             "success": True,

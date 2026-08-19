@@ -5,49 +5,130 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Vanmoer — Admin</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
-<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
 <style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --panel-2: #1c202a;
+    --border: #262a33;
+    --border-2: #2a2f3a;
+    --text: #e8eaed;
+    --text-secondary: #9299a8;
+    --text-muted: #6b7280;
+    --accent: #4f7cff;
+    --accent-dim: #1b2436;
+    --good: #0ca30c;
+  }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: 'DM Sans', sans-serif; background: #0f1115; color: #e8eaed; }
+  body { font-family: 'Inter', 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); }
+  ::selection { background: var(--accent); color: #fff; }
+
   header {
     display: flex; align-items: center; justify-content: space-between;
-    padding: 18px 32px; border-bottom: 1px solid #262a33;
+    padding: 16px 32px; border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; background: rgba(15,17,21,.9); backdrop-filter: blur(6px); z-index: 20;
   }
-  header h1 { font-size: 18px; }
-  header button {
-    background: transparent; border: 1px solid #2a2f3a; color: #8b93a1;
-    padding: 8px 14px; border-radius: 8px; cursor: pointer; font-size: 13px;
+  header h1 { font-size: 16px; font-weight: 700; letter-spacing: -.01em; }
+  .header-right { display: flex; align-items: center; gap: 20px; }
+  .tabs { display: flex; gap: 4px; background: var(--panel-2); border: 1px solid var(--border-2); border-radius: 10px; padding: 3px; }
+  .tab-btn {
+    background: transparent; border: none; color: var(--text-secondary); padding: 7px 16px;
+    border-radius: 7px; cursor: pointer; font-size: 13px; font-weight: 600; font-family: inherit;
+    transition: background .15s, color .15s;
   }
-  main { max-width: 1080px; margin: 0 auto; padding: 32px; display: grid; gap: 24px; grid-template-columns: 1fr 1fr; }
-  .panel {
-    background: #171a21; border: 1px solid #262a33; border-radius: 14px; padding: 24px;
+  .tab-btn.active { background: var(--accent); color: #fff; }
+  .tab-btn:not(.active):hover { color: var(--text); }
+  header button.plain {
+    background: transparent; border: 1px solid var(--border-2); color: var(--text-secondary);
+    padding: 8px 14px; border-radius: 8px; cursor: pointer; font-size: 13px; font-family: inherit;
+    transition: border-color .15s, color .15s;
   }
+  header button.plain:hover { border-color: #475569; color: var(--text); }
+
+  main { max-width: 1180px; margin: 0 auto; padding: 28px 32px 64px; }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  .grid-2 { display: grid; gap: 20px; grid-template-columns: 1fr 1fr; margin-bottom: 20px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 22px; }
   .panel.full { grid-column: 1 / -1; }
-  .panel h2 { font-size: 15px; margin-bottom: 16px; }
-  label { display: block; font-size: 12px; color: #8b93a1; margin: 10px 0 4px; font-family: 'DM Mono', monospace; }
-  input, select {
-    width: 100%; background: #0f1115; border: 1px solid #2a2f3a; border-radius: 8px;
-    padding: 9px 10px; color: #e8eaed; font-size: 13px;
+  .panel h2 { font-size: 14px; font-weight: 700; margin-bottom: 4px; }
+  .panel .panel-sub { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text-muted); margin-bottom: 16px; }
+
+  /* ── Stat tiles ───────────────────────────────────────── */
+  .stat-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 20px; }
+  .stat-tile { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 18px 20px; }
+  .stat-tile .label { font-size: 11.5px; color: var(--text-secondary); font-weight: 600; margin-bottom: 8px; }
+  .stat-tile .value { font-size: 28px; font-weight: 700; letter-spacing: -.01em; }
+  .stat-tile .value.good { color: var(--good); }
+
+  /* ── Chart ────────────────────────────────────────────── */
+  #chart-wrap { position: relative; }
+  #chart-tooltip {
+    position: absolute; pointer-events: none; background: #0b0d12; border: 1px solid var(--border-2);
+    border-radius: 8px; padding: 8px 11px; font-size: 12px; line-height: 1.5; opacity: 0;
+    transition: opacity .1s; transform: translate(-50%, -100%); white-space: nowrap; z-index: 5;
+    box-shadow: 0 8px 24px rgba(0,0,0,.4);
+  }
+  #chart-tooltip .t-date { color: var(--text-muted); font-family: 'JetBrains Mono', monospace; font-size: 10.5px; margin-bottom: 3px; }
+  #chart-tooltip .t-row { display: flex; align-items: center; gap: 6px; }
+  #chart-tooltip .t-dot { width: 7px; height: 7px; border-radius: 2px; }
+
+  /* ── Filters ──────────────────────────────────────────── */
+  .filter-row { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+  .filter-row select {
+    background: var(--panel-2); border: 1px solid var(--border-2); border-radius: 8px;
+    padding: 8px 12px; color: var(--text); font-size: 12.5px; font-family: inherit; cursor: pointer;
+  }
+  .search-input {
+    background: var(--panel-2); border: 1px solid var(--border-2); border-radius: 8px;
+    padding: 8px 12px 8px 32px; color: var(--text); font-size: 12.5px; font-family: inherit;
+    box-sizing: border-box; width: 5cm; flex: 0 0 auto; align-self: flex-start;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='8'/%3E%3Cpath d='m21 21-4.35-4.35'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: 10px center;
+  }
+  .search-input::placeholder { color: var(--text-muted); }
+  .search-input:focus { outline: none; border-color: var(--accent); }
+  .search-input::-webkit-search-cancel-button { cursor: pointer; }
+  .filter-row .search-input { margin-left: auto; }
+
+  /* ── Tables ───────────────────────────────────────────── */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--border); }
+  th { color: var(--text-secondary); font-family: 'JetBrains Mono', monospace; font-weight: 500; font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; }
+  tbody tr.clickable { cursor: pointer; transition: background .12s; }
+  tbody tr.clickable:hover { background: var(--panel-2); }
+  td.num { font-variant-numeric: tabular-nums; }
+  .badge { font-family: 'JetBrains Mono', monospace; font-size: 11px; background: #262a33; padding: 2px 8px; border-radius: 999px; }
+  .badge.inactive { color: #ff6b6b; }
+  .badge.status-success { color: var(--good); background: #0f2b1c; }
+  .badge.status-failed { color: #ff8080; background: #2b1414; }
+  .count-pill { display: inline-flex; gap: 6px; align-items: center; font-family: 'JetBrains Mono', monospace; font-size: 11.5px; }
+  .count-pill .fail { color: #ff8080; }
+  .mono { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--text-secondary); }
+  .empty-row td { text-align: center; color: var(--text-muted); padding: 28px; }
+
+  /* ── Users tab (unchanged behavior, restyled) ────────── */
+  label { display: block; font-size: 12px; color: var(--text-secondary); margin: 10px 0 4px; font-family: 'JetBrains Mono', monospace; }
+  input, select.form-input {
+    width: 100%; background: #0f1115; border: 1px solid var(--border-2); border-radius: 8px;
+    padding: 9px 10px; color: var(--text); font-size: 13px; font-family: inherit;
   }
   .row { display: flex; gap: 10px; }
   .row > * { flex: 1; }
   button.primary {
-    margin-top: 16px; width: 100%; background: #4f7cff; border: none; border-radius: 8px;
-    padding: 10px; color: #fff; font-weight: 700; cursor: pointer; font-size: 13px;
+    margin-top: 16px; width: 100%; background: var(--accent); border: none; border-radius: 8px;
+    padding: 10px; color: #fff; font-weight: 700; cursor: pointer; font-size: 13px; font-family: inherit;
   }
   button.primary:hover { background: #3d67e8; }
   .msg { font-size: 12px; margin-top: 8px; display: none; }
   .msg.ok { color: #4fd18b; }
   .msg.err { color: #ff6b6b; }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
-  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid #262a33; }
-  th { color: #8b93a1; font-family: 'DM Mono', monospace; font-weight: 500; font-size: 11px; text-transform: uppercase; }
-  .badge { font-family: 'DM Mono', monospace; font-size: 11px; background: #262a33; padding: 2px 8px; border-radius: 999px; }
-  .badge.inactive { color: #ff6b6b; }
   .row-actions { display: flex; gap: 8px; }
   .row-actions button {
-    background: transparent; border: 1px solid #2a2f3a; color: #8b93a1;
-    padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 12px;
+    background: transparent; border: 1px solid var(--border-2); color: var(--text-secondary);
+    padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 12px; font-family: inherit;
   }
   .row-actions button.danger { border-color: #5a2a2a; color: #ff6b6b; }
   .row-actions button.reactivate { border-color: #2a5a3a; color: #4fd18b; }
@@ -57,95 +138,166 @@
   .grant-add-row { display: flex; gap: 8px; align-items: flex-end; }
   .grant-add-row > * { flex: 1; }
   .grant-add-row button {
-    flex: 0 0 auto; background: #262a33; border: 1px solid #2a2f3a; color: #e8eaed;
-    padding: 9px 14px; border-radius: 8px; cursor: pointer; font-size: 13px;
+    flex: 0 0 auto; background: #262a33; border: 1px solid var(--border-2); color: var(--text);
+    padding: 9px 14px; border-radius: 8px; cursor: pointer; font-size: 13px; font-family: inherit;
   }
   .grant-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; min-height: 20px; }
   .chip {
-    display: inline-flex; align-items: center; gap: 6px; background: #1b2330;
+    display: inline-flex; align-items: center; gap: 6px; background: var(--accent-dim);
     border: 1px solid #2a3a52; border-radius: 999px; padding: 4px 6px 4px 12px;
-    font-size: 12px; font-family: 'DM Mono', monospace;
+    font-size: 12px; font-family: 'JetBrains Mono', monospace;
   }
-  .chip button {
-    background: none; border: none; color: #8b93a1; cursor: pointer; font-size: 14px;
-    line-height: 1; padding: 2px 6px; border-radius: 999px;
-  }
+  .chip button { background: none; border: none; color: var(--text-secondary); cursor: pointer; font-size: 14px; line-height: 1; padding: 2px 6px; border-radius: 999px; }
   .chip button:hover { color: #ff6b6b; }
+
+  /* ── Modal (drill-down) ──────────────────────────────── */
+  #modal-overlay {
+    display: none; position: fixed; inset: 0; background: rgba(5,6,9,.65);
+    align-items: flex-start; justify-content: center; padding: 6vh 20px; z-index: 100; overflow-y: auto;
+  }
+  #modal-overlay.open { display: flex; }
+  #modal {
+    background: var(--panel); border: 1px solid var(--border-2); border-radius: 16px;
+    width: 100%; max-width: 880px; padding: 26px 28px; max-height: 88vh; display: flex; flex-direction: column;
+  }
+  #modal-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 6px; }
+  #modal-title { font-size: 16px; font-weight: 700; }
+  #modal-sub { font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--text-muted); margin-bottom: 18px; }
+  #modal-close { background: transparent; border: 1px solid var(--border-2); color: var(--text-secondary); width: 30px; height: 30px; border-radius: 8px; cursor: pointer; font-size: 15px; flex-shrink: 0; }
+  #modal-close:hover { color: var(--text); border-color: #475569; }
+  #modal-body { overflow-y: auto; }
+  .dl-btn {
+    display: inline-flex; align-items: center; gap: 5px; background: var(--accent-dim); color: #9db4ff;
+    border: 1px solid #2a3a52; border-radius: 6px; padding: 4px 10px; font-size: 11.5px; cursor: pointer; font-family: inherit;
+  }
+  .dl-btn:hover { background: #223050; }
+
+  @media (max-width: 860px) {
+    .grid-2, .stat-row { grid-template-columns: 1fr; }
+    main { padding: 20px 16px 48px; }
+  }
 </style>
 </head>
 <body>
   <header>
     <h1>Vanmoer — Admin</h1>
-    <div>
-      <button id="backup-btn">Backup DB now</button>
-      <button id="logout-btn">Log out</button>
+    <div class="header-right">
+      <div class="tabs">
+        <button class="tab-btn active" data-tab="dashboard">Dashboard</button>
+        <button class="tab-btn" data-tab="users">Users</button>
+      </div>
+      <button class="plain" id="backup-btn">Backup DB</button>
+      <button class="plain" id="logout-btn">Log out</button>
     </div>
   </header>
 
   <main>
-    <div class="panel">
-      <h2>Add client</h2>
-      <label for="client-name">Client name</label>
-      <input id="client-name" placeholder="e.g. Kaneka" />
-      <button class="primary" id="add-client-btn">Add client</button>
-      <div class="msg" id="client-msg"></div>
-    </div>
-
-    <div class="panel">
-      <h2 id="user-form-title">Add user</h2>
-      <label for="user-name">Full name</label>
-      <input id="user-name" />
-      <div class="row">
-        <div><label for="user-username">Username</label><input id="user-username" /></div>
-        <div><label for="user-password">Password</label><input id="user-password" type="password" placeholder="" /></div>
+    <!-- ═══════════════════ DASHBOARD TAB ═══════════════════ -->
+    <div class="tab-panel active" id="tab-dashboard">
+      <div class="stat-row">
+        <div class="stat-tile"><div class="label">Total files</div><div class="value" id="stat-total">—</div></div>
+        <div class="stat-tile"><div class="label">Success rate</div><div class="value good" id="stat-rate">—</div></div>
+        <div class="stat-tile"><div class="label">Files today</div><div class="value" id="stat-today">—</div></div>
+        <div class="stat-tile"><div class="label">Files this week</div><div class="value" id="stat-week">—</div></div>
       </div>
-      <label for="user-role">Role</label>
-      <select id="user-role">
-        <option value="user">User</option>
-        <option value="admin">Admin</option>
-      </select>
-      <div id="assignment-block">
-        <label>Client / task grants</label>
-        <p style="font-size:11px;color:#8b93a1;margin-bottom:6px">
-          Add one grant per client+task this user should access. One person needing
-          both Carpenter Inbound and Outbound gets two grants on the same login.
-        </p>
-        <div class="grant-add-row">
-          <div><select id="user-client"></select></div>
-          <div><select id="user-task"></select></div>
-          <button type="button" id="add-grant-btn">+ Add</button>
+
+      <div class="panel full" style="margin-bottom:20px">
+        <h2>Files generated — last 14 days</h2>
+        <p class="panel-sub">distinct references processed per day · see "Success rate" for run reliability</p>
+        <div id="chart-wrap">
+          <svg id="chart-svg" width="100%" height="220" viewBox="0 0 1080 220" preserveAspectRatio="none"></svg>
+          <div id="chart-tooltip"></div>
         </div>
-        <div class="grant-chips" id="grant-chips"></div>
       </div>
-      <button class="primary" id="add-user-btn">Add user</button>
-      <button class="primary" id="cancel-edit-btn" style="background:#2a2f3a">Cancel edit</button>
-      <div class="msg" id="user-msg"></div>
+
+      <div class="panel full">
+        <h2>Files by user · client · task</h2>
+        <p class="panel-sub">click a row for the individual jobs behind that count</p>
+        <div class="filter-row">
+          <select id="filter-user"><option value="">All users</option></select>
+          <select id="filter-client"><option value="">All clients</option></select>
+          <select id="filter-task"><option value="">All tasks</option></select>
+          <input type="search" id="summary-search" class="search-input" placeholder="Search…" />
+        </div>
+        <table id="summary-table">
+          <thead><tr><th>User</th><th>Client</th><th>Task</th><th>Files</th><th>Last run</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </div>
 
-    <div class="panel full">
-      <h2>Users</h2>
-      <table id="users-table">
-        <thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Grants</th><th>Status</th><th></th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
+    <!-- ═══════════════════ USERS TAB ═══════════════════ -->
+    <div class="tab-panel" id="tab-users">
+      <div class="grid-2">
+        <div class="panel">
+          <h2 style="margin-bottom:16px">Add client</h2>
+          <label for="client-name">Client name</label>
+          <input id="client-name" placeholder="e.g. Kaneka" />
+          <button class="primary" id="add-client-btn">Add client</button>
+          <div class="msg" id="client-msg"></div>
+        </div>
 
-    <div class="panel">
-      <h2>Files by user</h2>
-      <table id="jobs-by-user-table">
-        <thead><tr><th>User</th><th>Files generated</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
+        <div class="panel">
+          <h2 id="user-form-title">Add user</h2>
+          <label for="user-name">Full name</label>
+          <input id="user-name" />
+          <div class="row">
+            <div><label for="user-username">Username</label><input id="user-username" /></div>
+            <div><label for="user-password">Password</label><input id="user-password" type="password" placeholder="" /></div>
+          </div>
+          <label for="user-role">Role</label>
+          <select class="form-input" id="user-role">
+            <option value="user">User</option>
+            <option value="admin">Admin</option>
+          </select>
+          <div id="assignment-block">
+            <label>Client / task grants</label>
+            <p style="font-size:11px;color:var(--text-secondary);margin-bottom:6px">
+              Add one grant per client+task this user should access. One person needing
+              both Carpenter Inbound and Outbound gets two grants on the same login.
+            </p>
+            <div class="grant-add-row">
+              <div><select class="form-input" id="user-client"></select></div>
+              <div><select class="form-input" id="user-task"></select></div>
+              <button type="button" id="add-grant-btn">+ Add</button>
+            </div>
+            <div class="grant-chips" id="grant-chips"></div>
+          </div>
+          <button class="primary" id="add-user-btn">Add user</button>
+          <button class="primary" id="cancel-edit-btn" style="background:#2a2f3a">Cancel edit</button>
+          <div class="msg" id="user-msg"></div>
+        </div>
+      </div>
 
-    <div class="panel">
-      <h2>Files by client</h2>
-      <table id="jobs-by-client-table">
-        <thead><tr><th>Client</th><th>Files generated</th></tr></thead>
-        <tbody></tbody>
-      </table>
+      <div class="panel full">
+        <h2 style="margin-bottom:16px">Users</h2>
+        <table id="users-table">
+          <thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Grants</th><th>Status</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </div>
   </main>
+
+  <!-- ═══════════════════ DRILL-DOWN MODAL ═══════════════════ -->
+  <div id="modal-overlay">
+    <div id="modal">
+      <div id="modal-header">
+        <div>
+          <div id="modal-title">—</div>
+          <div id="modal-sub">—</div>
+        </div>
+        <button id="modal-close">&times;</button>
+      </div>
+      <input type="search" id="modal-search" class="search-input" placeholder="Search reference, source file, status…" style="margin-bottom:14px" />
+      <div id="modal-body">
+        <table id="modal-table">
+          <thead><tr><th>Timestamp</th><th>Reference</th><th>Source file</th><th>Rows</th><th>Status</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
 
   <script src="/auth/client.js"></script>
   <script src="/admin/admin.js"></script>

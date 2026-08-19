@@ -31,14 +31,37 @@ def get_client_and_task(session, client_slug: str, task_slug: str) -> tuple[Clie
     return client, task
 
 
-def log_job(session, user_id: int, client_slug: str, task_slug: str, output_filename: str, status: str) -> JobHistory:
+def build_reference(values, sep: str = ", ") -> tuple[str, int]:
+    """The standard way every task turns its row-level business-reference
+    values (e.g. one SABIC shipment ID per row, one Carpenter TCS ref per
+    row) into what JobHistory.reference / reference_count store: de-duped,
+    order-preserving, comma-joined for display, plus the distinct count that
+    the admin dashboard's "Files" totals are summed by — so a batch bundling
+    5 distinct shipments counts as 5 files, not 1.
+    """
+    distinct = list(dict.fromkeys(v.strip() for v in values if v and str(v).strip()))
+    return sep.join(distinct), len(distinct)
+
+
+def log_job(session, user_id: int, client_slug: str, task_slug: str, output_filename: str, status: str,
+            reference: str | None = None, source_filename: str | None = None,
+            row_count: int | None = None, reference_count: int | None = None) -> JobHistory:
     client, task = get_client_and_task(session, client_slug, task_slug)
+    # A successful run always produced at least one real file even when
+    # extraction couldn't find a distinct reference for it — never let the
+    # "Files" tally silently undercount to zero for a run that did work.
+    if status == "success" and not reference_count:
+        reference_count = 1
     job = JobHistory(
         user_id=user_id,
         client_id=client.id,
         task_id=task.id,
         output_filename=output_filename,
         status=status,
+        reference=reference,
+        source_filename=source_filename,
+        row_count=row_count,
+        reference_count=reference_count,
     )
     session.add(job)
     session.commit()

@@ -21,7 +21,7 @@ from clients.carpenter.inbound.carpenter_core import process_shipment
 from database.db import SessionLocal
 from helpers.base_task import BaseTask
 from helpers.decorators import task_access_required
-from helpers.jobs import job_output_path, log_job, new_job_dir
+from helpers.jobs import build_reference, job_output_path, log_job, new_job_dir
 
 CLIENT_SLUG = "carpenter"
 TASK_SLUG = "inbound"
@@ -104,7 +104,17 @@ def process():
             output_path=output_path,
         )
 
-        log_job(session, g.user["user_id"], CLIENT_SLUG, TASK_SLUG, f"{job_id}/output.xlsx", "success")
+        summary = result["summary"]
+        # "Ref No" is the customer's own order reference, carried through
+        # from the Order List (see carpenter_core.process_shipment) — the
+        # container number is a shipping detail, not the order reference.
+        reference, reference_count = build_reference(summary.get("ref_nos", []))
+        source_filename = ", ".join([order_file.filename] + [
+            f.filename for f in request.files.getlist("packing_lists") if f.filename.lower().endswith(".pdf")
+        ])
+        log_job(session, g.user["user_id"], CLIENT_SLUG, TASK_SLUG, f"{job_id}/output.xlsx", "success",
+                reference=reference, source_filename=source_filename,
+                row_count=summary.get("total_rows"), reference_count=reference_count)
         return jsonify({
             "success": True,
             "summary": result["summary"],

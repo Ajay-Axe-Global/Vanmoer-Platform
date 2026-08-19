@@ -17,7 +17,7 @@ from database.db import SessionLocal
 from helpers.base_task import BaseTask
 from helpers.decorators import task_access_required
 from helpers.excel_writer import write_excel
-from helpers.jobs import job_output_path, log_job, new_job_dir
+from helpers.jobs import build_reference, job_output_path, log_job, new_job_dir
 from helpers.pdf_utils import extract_text
 
 CLIENT_SLUG = "sabic"
@@ -168,7 +168,7 @@ class SabicOutboundTask(BaseTask):
             for m in self._ITEM_PATTERN.finditer(body)
         ]
 
-    def _decimal_separator(self, t: str) -> str:
+    def _decimal_separator(self, t: str) -> str | None:
         """
         Net/Gross weight values show up in two different number formats
         depending on the customer/locale that generated the PDF: US-style
@@ -180,24 +180,72 @@ class SabicOutboundTask(BaseTask):
         "5,500 KG" on the same page). So the anchor must come from a weight
         value itself: one that shows both separators together — e.g. a gross
         weight like "13.756,500 KG" — where the rightmost separator is always
-        the decimal point. Falls back to "." (comma = thousands separator)
-        when no such anchor exists among the weight values, since a bare
-        single-separator weight (e.g. "5,500 KG") is always a whole-kilogram
-        thousands grouping in practice — dispatch weights are never reported
-        to fractional-kilogram precision.
+        the decimal point.
+
+        Returns None when no such anchor exists anywhere in the document —
+        meaning there's no evidence either "." or "," is a genuine decimal
+        point here, only ever a single separator per value (e.g. "11.000 KG"
+        on one document, "5,500 KG" on another). _net_weight() handles that
+        case itself via digit-count, since guessing one fixed character here
+        would get the *other* punctuation style wrong on documents that use it.
         """
         m = re.search(r"\d+[.,]\d{3}[.,]\d{1,3}\s*KG", t, re.IGNORECASE)
         if not m:
-            return "."
+            return None
         tok = m.group(0)
         return "," if tok.rfind(",") > tok.rfind(".") else "."
 
-    def _net_weight(self, raw, decimal_sep="."):
+    def _net_weight(self, raw, decimal_sep: str | None = None):
+        """
+        decimal_sep, when known (an anchor was found elsewhere in this
+        document — see _decimal_separator), is the character THIS document
+        uses as its decimal point; every other separator in the value is
+        then unambiguously a thousands separator, however many repeat
+        (e.g. anchor "," on "1.234.567,89" -> strips both dots, then the
+        comma -> 1234567.89).
+
+        When decimal_sep is None — no anchor exists anywhere in the
+        document, only ever single, undecorated separators — the
+        convention is inferred from the value's own punctuation shape:
+          - no separator at all -> plain integer
+          - 2+ separators, all the SAME character -> every one is a
+            thousands separator, no decimal at all (e.g. "1.234.567" or
+            "1,234,567" -> 1234567)
+          - 2+ separators of DIFFERENT characters -> the rightmost is the
+            decimal point, same reasoning as the anchor case, just found
+            within this one value instead of elsewhere in the document
+            (e.g. "1.234,56")
+          - exactly 1 separator followed by exactly 3 digits -> a
+            thousands grouping, not a decimal (e.g. "11.000" / "5,500" ->
+            11000 / 5500) — freight weights are never reported to
+            3-decimal-place kilogram precision
+          - exactly 1 separator followed by any other digit count (1-2,
+            or 4+) -> a genuine decimal point (e.g. "11.5", "11,05")
+        """
         raw = raw.strip().replace(" ", "")
-        thousands_sep = "," if decimal_sep == "." else "."
-        raw = raw.replace(thousands_sep, "")
-        if decimal_sep != ".":
-            raw = raw.replace(decimal_sep, ".")
+        if not raw:
+            return "0 KG"
+
+        if decimal_sep is not None:
+            thousands_sep = "," if decimal_sep == "." else "."
+            raw = raw.replace(thousands_sep, "")
+            if decimal_sep != ".":
+                raw = raw.replace(decimal_sep, ".")
+        else:
+            seps = [c for c in raw if c in ".,"]
+            if len(set(seps)) > 1:
+                decimal_char = "," if raw.rfind(",") > raw.rfind(".") else "."
+                thousands_char = "." if decimal_char == "," else ","
+                raw = raw.replace(thousands_char, "")
+                if decimal_char != ".":
+                    raw = raw.replace(decimal_char, ".")
+            elif seps:
+                sep = seps[0]
+                tail_len = len(raw) - raw.rindex(sep) - 1
+                if len(seps) == 1 and tail_len != 3:
+                    raw = raw.replace(sep, ".")   # genuine decimal
+                else:
+                    raw = raw.replace(sep, "")     # thousands grouping(s)
         val = float(raw)
         return f"{int(val):,} KG" if val == int(val) else f"{val:,.1f} KG"
 
@@ -349,7 +397,11 @@ def process():
         result = _task.process({"dispatch_advice": saved_paths})
         write_excel(result["rows"], _task.column_config, str(job_output_path(job_id)))
 
-        log_job(session, g.user["user_id"], CLIENT_SLUG, TASK_SLUG, f"{job_id}/output.xlsx", "success")
+        reference, reference_count = build_reference(r.get("external_id") for r in result["rows"])
+        source_filename = ", ".join(f.filename for f in files if f.filename.lower().endswith(".pdf"))
+        log_job(session, g.user["user_id"], CLIENT_SLUG, TASK_SLUG, f"{job_id}/output.xlsx", "success",
+                reference=reference, source_filename=source_filename, row_count=len(result["rows"]),
+                reference_count=reference_count)
         return jsonify({
             "success": True,
             "summary": result["summary"],

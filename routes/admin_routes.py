@@ -105,6 +105,31 @@ def get_jobs_by_client():
     return jsonify(service.jobs_by_client())
 
 
+@bp.route("/jobs/summary", methods=["GET"])
+@role_required("admin")
+def get_jobs_summary():
+    return jsonify(service.jobs_summary())
+
+
+@bp.route("/jobs", methods=["GET"])
+@role_required("admin")
+def get_jobs():
+    user_id = request.args.get("user_id", type=int)
+    return jsonify(service.list_jobs(
+        user_id=user_id,
+        client_slug=request.args.get("client_slug") or None,
+        task_slug=request.args.get("task_slug") or None,
+        status=request.args.get("status") or None,
+        limit=request.args.get("limit", default=200, type=int),
+    ))
+
+
+@bp.route("/stats", methods=["GET"])
+@role_required("admin")
+def get_stats():
+    return jsonify(service.dashboard_stats())
+
+
 @bp.route("/backup", methods=["POST"])
 @role_required("admin")
 def post_backup():

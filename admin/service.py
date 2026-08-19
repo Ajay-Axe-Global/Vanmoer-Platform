@@ -4,7 +4,9 @@ from routes/admin_routes.py (which stays thin HTTP glue) so it can also be
 called from scripts/tests without going through Flask.
 """
 
-from sqlalchemy import func
+import datetime
+
+from sqlalchemy import case, func
 
 from database.backup import backup_now
 from database.db import SessionLocal
@@ -214,5 +216,138 @@ def jobs_by_client() -> list[dict]:
             .all()
         )
         return [{"client": c, "count": n} for c, n in rows]
+    finally:
+        session.close()
+
+
+def jobs_summary() -> list[dict]:
+    """One row per (user, client, task) combo that has ever produced a job —
+    the grouped table the admin dashboard drills down from."""
+    session = SessionLocal()
+    try:
+        success_count = func.sum(case((JobHistory.status == "success", 1), else_=0))
+        failed_count = func.sum(case((JobHistory.status == "failed", 1), else_=0))
+        file_count = func.sum(func.coalesce(
+            JobHistory.reference_count,
+            case((JobHistory.status == "success", 1), else_=0),
+        ))
+        rows = (
+            session.query(
+                User.id, User.name, User.username,
+                Client.name, Client.slug,
+                Task.name, Task.slug,
+                file_count, success_count, failed_count,
+                func.max(JobHistory.timestamp),
+            )
+            .join(User, JobHistory.user_id == User.id)
+            .join(Client, JobHistory.client_id == Client.id)
+            .join(Task, JobHistory.task_id == Task.id)
+            .group_by(User.id, Client.id, Task.id)
+            .order_by(func.max(JobHistory.timestamp).desc())
+            .all()
+        )
+        return [{
+            "user_id": uid, "user_name": uname, "username": uusername,
+            "client_name": cname, "client_slug": cslug,
+            "task_name": tname, "task_slug": tslug,
+            "count": count, "success_count": succ or 0, "failed_count": fail or 0,
+            "last_run": last.isoformat() if last else None,
+        } for uid, uname, uusername, cname, cslug, tname, tslug, count, succ, fail, last in rows]
+    finally:
+        session.close()
+
+
+def list_jobs(user_id: int | None = None, client_slug: str | None = None,
+              task_slug: str | None = None, status: str | None = None,
+              limit: int = 200) -> list[dict]:
+    """Individual job rows for the drill-down modal / detail views. Filters
+    are all optional and AND together."""
+    session = SessionLocal()
+    try:
+        q = (
+            session.query(JobHistory, User, Client, Task)
+            .join(User, JobHistory.user_id == User.id)
+            .join(Client, JobHistory.client_id == Client.id)
+            .join(Task, JobHistory.task_id == Task.id)
+        )
+        if user_id is not None:
+            q = q.filter(JobHistory.user_id == user_id)
+        if client_slug:
+            q = q.filter(Client.slug == client_slug)
+        if task_slug:
+            q = q.filter(Task.slug == task_slug)
+        if status:
+            q = q.filter(JobHistory.status == status)
+        rows = q.order_by(JobHistory.timestamp.desc()).limit(limit).all()
+        return [{
+            "id": j.id,
+            "timestamp": j.timestamp.isoformat(),
+            "user_name": u.name,
+            "username": u.username,
+            "client_name": c.name,
+            "client_slug": c.slug,
+            "task_name": t.name,
+            "task_slug": t.slug,
+            "reference": j.reference,
+            "reference_count": j.reference_count,
+            "source_filename": j.source_filename,
+            "row_count": j.row_count,
+            "status": j.status,
+            "download_url": (
+                f"/app/{c.slug}/{t.slug}/download/{j.output_filename.split('/')[0]}"
+                if j.output_filename else None
+            ),
+        } for j, u, c, t in rows]
+    finally:
+        session.close()
+
+
+def dashboard_stats(days: int = 14) -> dict:
+    """Stat tiles + a files-per-day series for the dashboard chart.
+
+    "Files" is distinct-reference count (a batch bundling 5 shipments counts
+    as 5), not a raw job/run count — see build_reference() in helpers/jobs.py.
+    Success/failure rate stays run-based (a run either produced output or it
+    didn't), a separate concept from how many files that run represented.
+    """
+    session = SessionLocal()
+    try:
+        file_count_expr = func.coalesce(
+            JobHistory.reference_count,
+            case((JobHistory.status == "success", 1), else_=0),
+        )
+
+        total_runs = session.query(func.count(JobHistory.id)).scalar() or 0
+        success = session.query(func.count(JobHistory.id)).filter(JobHistory.status == "success").scalar() or 0
+        failed = total_runs - success
+        total_files = session.query(func.sum(file_count_expr)).scalar() or 0
+
+        today = datetime.datetime.utcnow().date()
+        since = datetime.datetime.combine(today - datetime.timedelta(days=days - 1), datetime.time.min)
+        day_col = func.date(JobHistory.timestamp)
+        rows = (
+            session.query(day_col, func.sum(file_count_expr))
+            .filter(JobHistory.timestamp >= since)
+            .group_by(day_col)
+            .all()
+        )
+        counts_by_day = {d: c or 0 for d, c in rows}
+        series = []
+        for i in range(days):
+            d = today - datetime.timedelta(days=days - 1 - i)
+            series.append({"date": d.isoformat(), "count": counts_by_day.get(d.isoformat(), 0)})
+
+        files_today = counts_by_day.get(today.isoformat(), 0)
+        files_this_week = sum(p["count"] for p in series[-7:])
+
+        return {
+            "total_files": total_files,
+            "success_count": success,
+            "failed_count": failed,
+            "success_rate": round(success / total_runs * 100, 1) if total_runs else 0,
+            "files_today": files_today,
+            "files_this_week": files_this_week,
+            "series": series,
+        }
     finally:
         session.close()

@@ -86,6 +86,20 @@ class JobHistory(Base):
     timestamp = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
     output_filename = Column(String(255), nullable=True)
     status = Column(String(20), nullable=False)  # "success" | "failed"
+    # Real-world business key extracted from the source document(s) — e.g. a
+    # SABIC shipment number or a Carpenter TCS reference — so an admin can
+    # trace a generated Excel back to the order it came from. Comma-joined
+    # when a single run covers several (e.g. a multi-item dispatch advice).
+    # Rows logged before this column existed are simply NULL.
+    reference = Column(String(255), nullable=True)
+    source_filename = Column(String(500), nullable=True)
+    row_count = Column(Integer, nullable=True)
+    # Distinct reference count — e.g. 5 dispatch-advice shipments bundled into
+    # one Sabic Outbound batch, or 3 distinct order refs merged into one
+    # Carpenter Inbound Excel. This, not row_count and not "one row per job",
+    # is what the admin dashboard's "Files" totals are counted by. NULL on
+    # rows logged before this column existed, or on a failed run.
+    reference_count = Column(Integer, nullable=True)
 
     user = relationship("User", back_populates="jobs")
     client = relationship("Client", back_populates="jobs")

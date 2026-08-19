@@ -1165,10 +1165,20 @@ def process_shipment(
             )
         write_output_excel(df_final, output_path)
 
+    # Distinct "Ref No" values (the customer's own order reference, from the
+    # Order List — see the container_ref_map build above) across every output
+    # row. Exposed so the admin job log can trace this run back to the real
+    # order(s) it covered, same convention as every other client task.
+    ref_nos = (
+        list(dict.fromkeys(v for v in df_final["Ref No"] if v))
+        if not df_final.empty and "Ref No" in df_final.columns else []
+    )
+
     return {
         "total_rows": len(df_final),
         "containers_parsed": len(parse_results),
         "parse_results": parse_results,
         "validation": validation_messages,
         "arrival_containers": list(arrival.keys()),
+        "ref_nos": ref_nos,
     }

@@ -24,7 +24,7 @@ from database.db import SessionLocal
 from helpers.base_task import BaseTask
 from helpers.decorators import task_access_required
 from helpers.excel_writer import write_excel
-from helpers.jobs import job_output_path, log_job, new_job_dir
+from helpers.jobs import build_reference, job_output_path, log_job, new_job_dir
 
 CLIENT_SLUG = "carpenter"
 TASK_SLUG = "outbound"
@@ -99,7 +99,10 @@ def process():
 
         write_excel(rows, _task.column_config, str(job_output_path(job_id)))
 
-        log_job(session, g.user["user_id"], CLIENT_SLUG, TASK_SLUG, f"{job_id}/output.xlsx", "success")
+        reference, reference_count = build_reference(r.get("reference") for r in rows)
+        log_job(session, g.user["user_id"], CLIENT_SLUG, TASK_SLUG, f"{job_id}/output.xlsx", "success",
+                reference=reference, source_filename=f.filename, row_count=len(rows),
+                reference_count=reference_count)
         return jsonify({
             "success": True,
             "summary": result["summary"],

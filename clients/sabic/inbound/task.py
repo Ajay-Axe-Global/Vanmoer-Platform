@@ -41,19 +41,20 @@ TASK_SLUG = "inbound"
 # ═══════════════════════════════════════════════════════════════════════════
 
 COLUMN_CONFIG = [
-    {"header": "Ref No",          "field_key": "ref_no",         "width": 22},
-    {"header": "Delivery No",     "field_key": "delivery_no",    "width": 16},
-    {"header": "Container No",    "field_key": "container_no",   "width": 16},
-    {"header": "Product",         "field_key": "product",        "width": 24},
-    {"header": "Lot No",          "field_key": "lot_no",         "width": 16},
-    {"header": "Country Code",    "field_key": "country_code",   "width": 10},
-    {"header": "Pkg Type",        "field_key": "pkg_type",       "width": 10},
-    {"header": "Pkg Qty",         "field_key": "pkg_qty",        "width": 10, "num_format": "#,##0"},
-    {"header": "Net Weight",      "field_key": "net_weight",     "width": 14, "num_format": "#,##0.000"},
-    {"header": "Gross Weight",    "field_key": "gross_weight",   "width": 14, "num_format": "#,##0.000"},
-    {"header": "Seal No",         "field_key": "seal_no",        "width": 12},
-    {"header": "Container + Ref", "field_key": "container_ref",  "width": 34},
-    {"header": "Container Type",  "field_key": "container_type", "width": 16},
+    {"header": "Ref No",           "field_key": "ref_no",         "width": 22},
+    {"header": "Delivery No",      "field_key": "delivery_no",    "width": 16},
+    {"header": "Container No",     "field_key": "container_no",   "width": 16},
+    {"header": "Product",          "field_key": "product",        "width": 24},
+    {"header": "Lot No",           "field_key": "lot_no",         "width": 16},
+    {"header": "Country Code",     "field_key": "country_code",   "width": 10},
+    {"header": "Pkg Type",         "field_key": "pkg_type",       "width": 12},
+    {"header": "Pkg Qty",          "field_key": "pkg_qty",        "width": 10, "num_format": "#,##0"},
+    {"header": "Net Weight (KG)",  "field_key": "net_weight",     "width": 16, "num_format": "#,##0"},
+    {"header": "Gross Weight (KG)","field_key": "gross_weight",   "width": 16, "num_format": "#,##0"},
+    {"header": "Seal No",          "field_key": "seal_no",        "width": 14},
+    {"header": "Container + Ref",  "field_key": "container_ref",  "width": 34},
+    {"header": "Container Type",   "field_key": "container_type", "width": 16},
+    {"header": "Pallet Qty",       "field_key": "pallet_qty",     "width": 12, "num_format": "#,##0"},
 ]
 
 OUTPUT_FILENAME = "SABIC_Inbound_Outcome.xlsx"

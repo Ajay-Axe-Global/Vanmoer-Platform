@@ -170,16 +170,23 @@ class SabicOutboundTask(BaseTask):
 
     def _decimal_separator(self, t: str) -> str:
         """
-        Dispatch advice PDFs show up in two different number formats depending
-        on the customer/locale that generated them: US-style (1,120.00 =
-        thousands comma, decimal dot) or European-style (1.360,00 = thousands
-        dot, decimal comma). Detect which one this document uses from a value
-        that shows both separators together — e.g. a gross price or gross
-        weight like "13.756,500" — where the rightmost separator is always
-        the decimal point. Falls back to "." (US-style) if no such anchor
-        value is found anywhere in the document.
+        Net/Gross weight values show up in two different number formats
+        depending on the customer/locale that generated the PDF: US-style
+        (5,500 = thousands comma) or European-style (10.500 = thousands dot).
+        The Gross price field on the same document can NOT be trusted as a
+        stand-in for this — it's formatted per the sales org's currency
+        locale independently of how the weight columns are formatted, and
+        the two disagree on some documents (e.g. "2.012,73 EUR" alongside
+        "5,500 KG" on the same page). So the anchor must come from a weight
+        value itself: one that shows both separators together — e.g. a gross
+        weight like "13.756,500 KG" — where the rightmost separator is always
+        the decimal point. Falls back to "." (comma = thousands separator)
+        when no such anchor exists among the weight values, since a bare
+        single-separator weight (e.g. "5,500 KG") is always a whole-kilogram
+        thousands grouping in practice — dispatch weights are never reported
+        to fractional-kilogram precision.
         """
-        m = re.search(r"\d+[.,]\d{3}[.,]\d{1,3}\b", t)
+        m = re.search(r"\d+[.,]\d{3}[.,]\d{1,3}\s*KG", t, re.IGNORECASE)
         if not m:
             return "."
         tok = m.group(0)

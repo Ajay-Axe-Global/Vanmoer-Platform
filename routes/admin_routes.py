@@ -1,3 +1,5 @@
+import datetime
+
 from flask import Blueprint, g, jsonify, request
 
 from admin import service
@@ -108,7 +110,12 @@ def get_jobs_by_client():
 @bp.route("/jobs/summary", methods=["GET"])
 @role_required("admin")
 def get_jobs_summary():
-    return jsonify(service.jobs_summary())
+    since = request.args.get("since")
+    until = request.args.get("until")
+    return jsonify(service.jobs_summary(
+        since=datetime.datetime.fromisoformat(since) if since else None,
+        until=datetime.datetime.fromisoformat(until) if until else None,
+    ))
 
 
 @bp.route("/jobs", methods=["GET"])
@@ -127,7 +134,10 @@ def get_jobs():
 @bp.route("/stats", methods=["GET"])
 @role_required("admin")
 def get_stats():
-    return jsonify(service.dashboard_stats())
+    return jsonify(service.dashboard_stats(
+        client_slug=request.args.get("client_slug") or None,
+        task_slug=request.args.get("task_slug") or None,
+    ))
 
 
 @bp.route("/backup", methods=["POST"])

@@ -39,7 +39,13 @@
   // Dashboard tab: stat tiles
   // ═══════════════════════════════════════════════════════════════════
   async function loadStats() {
-    const res = await VanmoerAuth.authFetch("/api/admin/stats");
+    const clientSlug = document.getElementById("chart-filter-client").value;
+    const taskSlug = document.getElementById("chart-filter-task").value;
+    const params = new URLSearchParams();
+    if (clientSlug) params.set("client_slug", clientSlug);
+    if (taskSlug) params.set("task_slug", taskSlug);
+
+    const res = await VanmoerAuth.authFetch(`/api/admin/stats?${params}`);
     const s = await res.json();
     document.getElementById("stat-total").textContent = s.total_files.toLocaleString();
     document.getElementById("stat-rate").textContent = `${s.success_rate}%`;
@@ -47,6 +53,10 @@
     document.getElementById("stat-week").textContent = s.files_this_week.toLocaleString();
     renderChart(s.series);
   }
+
+  ["chart-filter-client", "chart-filter-task"].forEach(id => {
+    document.getElementById(id).addEventListener("change", loadStats);
+  });
 
   // ── Single-series bar chart: files (distinct references) per day ─────
   // Deliberately not stacked by success/failed — "files" (reference_count)
@@ -126,21 +136,99 @@
   // ═══════════════════════════════════════════════════════════════════
   let summaryCache = [];
 
+  // ── Period filter: "Today" (default) or a specific past month ────────
+  // Matches the UTC day boundary the backend already uses for "Files
+  // today" (dashboard_stats() uses datetime.utcnow().date()), so the two
+  // stay consistent instead of drifting apart by timezone.
+  function buildPeriodOptions() {
+    const opts = [{ value: "today", label: "Today" }];
+    const year = new Date().getUTCFullYear();
+    for (let m = 0; m < 12; m++) {
+      const d = new Date(Date.UTC(year, m, 1));
+      const value = `${year}-${String(m + 1).padStart(2, "0")}`;
+      const label = d.toLocaleDateString(undefined, { month: "short", year: "numeric", timeZone: "UTC" }).toUpperCase();
+      opts.push({ value, label });
+    }
+    return opts;
+  }
+
+  function periodToRange(period) {
+    const iso = (d) => d.toISOString().slice(0, 10);
+    if (period === "today") {
+      const now = new Date();
+      const since = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+      const until = since + 24 * 60 * 60 * 1000;
+      return { since: iso(new Date(since)), until: iso(new Date(until)) };
+    }
+    const [y, m] = period.split("-").map(Number);
+    return {
+      since: iso(new Date(Date.UTC(y, m - 1, 1))),
+      until: iso(new Date(Date.UTC(y, m, 1))),
+    };
+  }
+
+  let currentPeriod = "today";
+
+  function initPeriodFilter() {
+    const options = buildPeriodOptions();
+    const picker = document.getElementById("period-picker");
+    const btn = document.getElementById("period-btn");
+    const btnLabel = document.getElementById("period-btn-label");
+    const list = document.getElementById("period-list");
+
+    list.innerHTML = options.map(o => `
+      <div class="period-option${o.value === currentPeriod ? " selected" : ""}" data-value="${o.value}">${o.label}</div>
+    `).join("");
+
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      list.classList.toggle("open");
+    });
+    document.addEventListener("click", (e) => {
+      if (!picker.contains(e.target)) list.classList.remove("open");
+    });
+    list.querySelectorAll(".period-option").forEach(opt => {
+      opt.addEventListener("click", () => {
+        currentPeriod = opt.dataset.value;
+        btnLabel.textContent = opt.textContent;
+        list.querySelectorAll(".period-option").forEach(o => o.classList.remove("selected"));
+        opt.classList.add("selected");
+        list.classList.remove("open");
+        loadSummary();
+      });
+    });
+  }
+
+  // Filter OPTIONS are the full catalog (every user/client/task that exists),
+  // not just whoever/whatever shows up in the current period's results — a
+  // period with zero Carpenter jobs should still let you pick "Carpenter" to
+  // see that zero, and switching periods shouldn't silently drop your
+  // selection just because this period happens to have no matching rows.
+  // Uses usersCache/clientsCache/tasksCache, loaded by loadUsers() /
+  // loadClientsAndTasks() (see init()).
+  function populateSummaryFilters() {
+    const userSel = document.getElementById("filter-user");
+    const clientSel = document.getElementById("filter-client");
+    const taskSel = document.getElementById("filter-task");
+    const prev = { user: userSel.value, client: clientSel.value, task: taskSel.value };
+
+    userSel.innerHTML = `<option value="">All users</option>` +
+      usersCache.map(u => `<option value="${u.id}">${u.name}</option>`).join("");
+    clientSel.innerHTML = `<option value="">All clients</option>` +
+      clientsCache.map(c => `<option value="${c.slug}">${c.name}</option>`).join("");
+    taskSel.innerHTML = `<option value="">All tasks</option>` +
+      tasksCache.map(t => `<option value="${t.slug}">${t.name}</option>`).join("");
+
+    userSel.value = prev.user;
+    clientSel.value = prev.client;
+    taskSel.value = prev.task;
+  }
+
   async function loadSummary() {
-    const res = await VanmoerAuth.authFetch("/api/admin/jobs/summary");
+    const { since, until } = periodToRange(currentPeriod);
+    const params = new URLSearchParams({ since, until });
+    const res = await VanmoerAuth.authFetch(`/api/admin/jobs/summary?${params}`);
     summaryCache = await res.json();
-
-    const users = [...new Map(summaryCache.map(r => [r.user_id, r.user_name])).entries()];
-    const clients = [...new Set(summaryCache.map(r => r.client_slug + "::" + r.client_name))];
-    const tasks = [...new Set(summaryCache.map(r => r.task_slug + "::" + r.task_name))];
-
-    document.getElementById("filter-user").innerHTML = `<option value="">All users</option>` +
-      users.map(([id, name]) => `<option value="${id}">${name}</option>`).join("");
-    document.getElementById("filter-client").innerHTML = `<option value="">All clients</option>` +
-      clients.map(c => { const [slug, name] = c.split("::"); return `<option value="${slug}">${name}</option>`; }).join("");
-    document.getElementById("filter-task").innerHTML = `<option value="">All tasks</option>` +
-      tasks.map(t => { const [slug, name] = t.split("::"); return `<option value="${slug}">${name}</option>`; }).join("");
-
     renderSummaryTable();
   }
 
@@ -267,6 +355,11 @@
       clientsCache.map(c => `<option value="${c.slug}">${c.name}</option>`).join("");
     document.getElementById("user-task").innerHTML =
       tasksCache.map(t => `<option value="${t.slug}">${t.name}</option>`).join("");
+
+    document.getElementById("chart-filter-client").innerHTML = `<option value="">All clients</option>` +
+      clientsCache.map(c => `<option value="${c.slug}">${c.name}</option>`).join("");
+    document.getElementById("chart-filter-task").innerHTML = `<option value="">All tasks</option>` +
+      tasksCache.map(t => `<option value="${t.slug}">${t.name}</option>`).join("");
   }
 
   function renderGrantChips() {
@@ -360,6 +453,7 @@
         if (!res.ok) return alert(data.error);
         if (editingUserId === u.id) resetUserForm();
         await loadUsers();
+        populateSummaryFilters();
       });
     });
     document.querySelectorAll("[data-reactivate]").forEach(btn => {
@@ -368,6 +462,7 @@
         const data = await res.json();
         if (!res.ok) return alert(data.error);
         await loadUsers();
+        populateSummaryFilters();
       });
     });
   }
@@ -392,6 +487,7 @@
     showMsg(msg, `Added client "${data.name}".`, true);
     document.getElementById("client-name").value = "";
     await loadClientsAndTasks();
+    populateSummaryFilters();
   });
 
   document.getElementById("add-user-btn").addEventListener("click", async () => {
@@ -426,12 +522,15 @@
     showMsg(msg, isEdit ? `Updated user "${data.username}".` : `Added user "${data.username}".`, true);
     resetUserForm();
     await loadUsers();
+    populateSummaryFilters();
     await loadSummary();
   });
 
   (async function init() {
+    initPeriodFilter();
     await loadClientsAndTasks();
     await loadUsers();
+    populateSummaryFilters();
     await loadStats();
     await loadSummary();
   })();

@@ -28,6 +28,7 @@ def login():
             "token": issue_token(user),
             "role": user.role,
             "name": user.name,
+            "username": user.username,
             "grants": [
                 {"client_slug": grant.client.slug, "client_name": grant.client.name,
                  "task_slug": grant.task.slug, "task_name": grant.task.name}

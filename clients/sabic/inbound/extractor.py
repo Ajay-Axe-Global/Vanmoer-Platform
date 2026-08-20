@@ -75,6 +75,56 @@ def _fix_container_id(raw: str, existing_seal: str = "") -> tuple[str, str]:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# CONTAINER TYPE NORMALIZATION
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Checked in order — HC markers first, since a container can be labeled with
+# both a cargo-type word AND a high-cube marker (e.g. "40' HC DRY VAN"),
+# and high-cube must win in that case.
+_HC_KEYWORDS = ("HIGH CUBE", "HIGHCUBE", "HQ", "HC", "9 6", "9X6", "9 X 6", "96")
+_FT_KEYWORDS = ("DRY VAN", "DV", "ST", "GP", "GENERAL", "DRY", "FT")
+
+
+def normalize_container_type(raw: str) -> str:
+    """
+    Collapse the free-text MBL container type into exactly one of
+    "40HC" / "40FT" / "20FT" — the only three values the OP accepts.
+
+    Rules (confirmed with the client):
+      - 20' containers are ALWAYS "20FT" regardless of sub-type
+        (DRY/FT/DV/ST/DRY VAN/GEN all mean the same thing here).
+      - 40' containers are "40HC" if any high-cube marker is present
+        (HC/HQ/HIGH CUBE/9'6" height notation), else "40FT"
+        (FT/DV/ST/DRY VAN/GP/GENERAL/bare DRY).
+      - An unrecognized 40' string defaults to "40HC"; an unrecognized
+        20' string defaults to "20FT" (every 20' sub-type already maps
+        there, so this is really just "no length token matched inside
+        a 20' family string").
+    """
+    cleaned = re.sub(r'[^A-Z0-9 ]', ' ', (raw or "").upper())
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+
+    is_40 = "40" in cleaned
+    is_20 = "20" in cleaned
+
+    if is_20 and not is_40:
+        return "20FT"
+
+    if is_40:
+        for kw in _HC_KEYWORDS:
+            if kw in cleaned:
+                return "40HC"
+        for kw in _FT_KEYWORDS:
+            if kw in cleaned:
+                return "40FT"
+        # Unmatched 40' — default per business rule.
+        return "40HC"
+
+    # No length token detected at all — nothing to normalize against.
+    return cleaned or "??"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # DEBUG JSON DUMP
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -134,10 +184,55 @@ PKG_LIST_PROMPT = """You are a shipping-document data extractor. Extract all dat
 ══════════════════════════════════════════
 HEADER FIELDS
 ══════════════════════════════════════════
-- Order/STO: appears as "Sharq Order/STO:" or "Petrokemya Order/STO:" etc.
-- Delivery: appears as "Sharq Delivery:" or "Petrokemya Delivery:" etc But Need to take only Sabic Delivery According to Different Layout.
-- Sabic PO: "Sabic PO:" — base number only (e.g. "4506618575" not "4506618575 000010").
-- Sabic Delivery: "Sabic Delivery:" - this is the PRIMARY delivery number.
+This document uses ONE of two header layouts. Identify which one FIRST, then
+apply ONLY that layout's rules below — the two layouts use overlapping words
+("Delivery") for different things, so do not mix their rules.
+
+LAYOUT A — Sharq / Petrokemya style: labels are prefixed with a plant name
+("Sharq Order/STO:", "Petrokemya Delivery:", etc.) AND a separate "Sabic PO:"
+/ "Sabic Delivery:" label also appears.
+  - "Sabic PO:" → sabic_po — base number only (e.g. "4506618575" not
+    "4506618575 000010").
+  - "Sabic Delivery:" → sabic_delivery — this is the PRIMARY delivery number
+    for this layout. A separate plant-prefixed "Sharq Delivery:" /
+    "Petrokemya Delivery:" line, if present, is NOT the delivery number —
+    ignore it; only "Sabic Delivery:" counts.
+  - Order/STO label ("Sharq Order/STO:" etc.) → sto.
+  - Leave delivery_no empty for this layout (sabic_delivery is what's used).
+
+LAYOUT B — KNC / Korea Nexlene style: bare, unprefixed labels — "SO/STO:",
+"Delivery:", "Shipment:", "KNC SO:" — usually with a "KNC" or "Korea Nexlene"
+logo on the page. This layout has NO "Sabic PO:" or "Sabic Delivery:" label
+anywhere — leave sabic_po and sabic_delivery empty, do not guess a value.
+  - "SO/STO:" → sto
+  - "Delivery:" → delivery_no. On THIS layout, the bare "Delivery:" label
+    IS the delivery number (Layout A's "ignore bare Delivery" rule does not
+    apply here — that rule is only for when a separate "Sabic Delivery:"
+    label also exists, which Layout B never has).
+  - "Shipment:" is a DIFFERENT field, printed a few lines below "Delivery:" —
+    do NOT use it for delivery_no, they are never the same number.
+  - "KNC SO:" → not needed, ignore it.
+
+  Numeric shape check (these four numbers are easy to mix up when the rows
+  sit close together — use digit COUNT to confirm you picked the right one):
+    SO/STO   is REF NO 
+    Delivery is Actual Delivery No
+    Shipment          ← do NOT put this one in delivery_no
+    KNC SO   
+
+
+  WORKED EXAMPLE (read the four header rows top to bottom, one label per row):
+    SO/STO:      4506639516
+    Delivery:    809153788
+    Shipment:    9800715
+    KNC SO:      1000474436
+  Correct extraction: sto = "4506639516", delivery_no = "809153788".
+  "9800715" and "1000474436" are not used anywhere.
+
+- Total pallets: some layouts print a summary line like "112 PALLETIZED 3920 BAGS(of 98 MT)"
+  (often near "PKG DESCRIPTION"). If present, extract the leading number (112) as
+  "total_pallets". This is a DOCUMENT-WIDE total, not a per-row value — it only
+  appears once. If no such line exists, set "total_pallets" to 0.
 
 ══════════════════════════════════════════
 TABLE STRUCTURE
@@ -159,7 +254,9 @@ For each row:
 - "seal": the Seal No. printed on THIS row. Empty string "" if not printed here.
 - "has_vgm": true if this row has a value in the Verified Gross Mass column,
   false if that column is blank on this row.
-- "product": Material name (e.g. "LLDPE 318BJ 149")
+- "product": Material name (e.g. "LLDPE 318BJ 149"). Preserve special
+  characters EXACTLY as printed — a trademark symbol (™) must stay as the
+  actual ™ character, NEVER spelled out as "TM"/"(TM)". Same for ® and ©.
 - "pkg_code": PKG CODE column value (e.g. "149")
 - "lot": Batch column value (e.g. "0061861590")
 - "pallet_qty": The NUMERIC part of the Unit column (e.g. "17 PAL" → 17, "1 PAL" → 1).
@@ -187,8 +284,16 @@ Key differences from the standard layout:
 - There is a "Grade" column (e.g. "OS") — map this to "pkg_code", NOT to "lot".
 - The "BATCH" column (e.g. "C902Q7C501") — this is the LOT number. Map to "lot".
 - There is NO "Verified Gross Mass" column — set has_vgm = true for ALL rows.
-- "UNIT" column shows "MT" (unit of measure) — this is NOT the pkg_type.
-  Set pkg_type = "PAL" and unit = 0 when UNIT shows "MT".
+- The "UNIT" column here just shows "MT" — that's a unit-of-measure label
+  (how the weight is measured), NOT a per-row pallet count. Set
+  "pallet_qty" to 0 for every row on this layout, same as the standard
+  layout's rule above ("Unit column shows only MT → pallet_qty = 0").
+  Do NOT copy the BAGS value into pallet_qty — they are different numbers
+  and must never be equal to each other in your output.
+  (If a document-wide pallet total is printed elsewhere as a summary line,
+  it's captured separately as "total_pallets" — see HEADER FIELDS above.
+  Python computes each row's real pallet_qty from that total; you don't
+  need to do that math yourself, just leave pallet_qty as 0 here.)
 
 How to detect: if the column headers include "Grade" and "BATCH" as separate columns,
 OR if the seal numbers start with "FJ" or "M" followed by digits, use this mapping.
@@ -215,6 +320,7 @@ OUTPUT FORMAT
   "sto": "string",
   "sabic_po": "string",
   "sabic_delivery": "string",
+  "total_pallets": 0,
   "rows": [
     {
       "container_id": "string or empty",
@@ -237,7 +343,20 @@ INVOICE_PROMPT = """You are a shipping-document data extractor. Extract fields f
 - "invoice_no": Invoice Number.
 - "sales_ref": Sales Ref base number before slash (e.g. "4506618575" from "4506618575/0010").
 - "delivery_no": Delivery No base number before slash.
-- "product": Product description from line items.
+- "product": Product description from line items. This field is placed
+  verbatim into the final output, so get it character-for-character exact.
+
+  Trademark/registered/copyright symbols: on many invoices these render as
+  a small raised mark stuck directly against the word with no space (e.g.
+  a raised "TM" right after "FORTIFY"). That raised mark is the ™ symbol —
+  it is NOT the two letters "T" and "M". Self-check before you output this
+  field: if what you're about to write contains "TM" glued onto a word with
+  no space before it (e.g. "FORTIFYTM"), that is this exact mistake — fix
+  it by replacing "TM" with the single character ™ (e.g. "FORTIFY™"). Same
+  correction for a raised "R" → ® and a raised "C" → ©.
+  Example: invoice shows FORTIFY with a raised trademark mark, followed by
+  "C0570D 145" → output "product": "FORTIFY™ C0570D 145", never
+  "FORTIFYTM C0570D 145".
 - "shipment_no": Shipment Number.
 - "qty": Total quantity (number).
 - "unit": Unit of measure (e.g. "MT").
@@ -283,6 +402,16 @@ def extract_mbl(pdf_path: str) -> dict:
         c["seal"] = seal
     _dump_json(pdf_path, "mbl.json", data)
     return data
+
+
+def _s(value) -> str:
+    """
+    Safely stringify a Gemini-extracted field. A JSON null comes back as
+    Python None, and plain str(None) == "None" — a non-empty, truthy string
+    that silently poisons every `x or fallback` / `if x:` check downstream.
+    Use this anywhere a string field comes straight from Gemini's JSON.
+    """
+    return "" if value is None else str(value)
 
 
 def _num(value, default=0):
@@ -353,6 +482,7 @@ def extract_packing_list(pdf_path: str) -> dict:
         "sto":            data.get("sto", ""),
         "sabic_po":       data.get("sabic_po", ""),
         "sabic_delivery": data.get("sabic_delivery", ""),
+        "total_pallets":  _num(data.get("total_pallets"), 0),
         "lines":          flat_lines,
     }
  
@@ -480,6 +610,8 @@ def cross_check_containers(mbl: dict, pkl: dict) -> dict:
 def _build_ref(ref_nos: list) -> str:
     cleaned = []
     for r in ref_nos:
+        if not r:
+            continue
         base = str(r).split("/")[0].strip()
         if base and base not in cleaned:
             cleaned.append(base)
@@ -505,9 +637,9 @@ def validate(mbl: dict, pkl: dict, inv: dict) -> list[str]:
         else:
             results.append(f"[X]  REF MISMATCH — MBL({mbl_ref}) vs Packing List({pkl_ref})")
 
-    mbl_del = str(mbl.get("delivery_no", "")).split("/")[0]
-    inv_del = str(inv.get("delivery_no", "")).split("/")[0]
-    pkl_sabic_del = str(pkl.get("sabic_delivery", "")).split("/")[0]
+    mbl_del = _s(mbl.get("delivery_no", "")).split("/")[0]
+    inv_del = _s(inv.get("delivery_no", "")).split("/")[0]
+    pkl_sabic_del = _s(pkl.get("sabic_delivery", "")).split("/")[0]
 
     if mbl_del and inv_del:
         if mbl_del == inv_del:
@@ -522,17 +654,17 @@ def validate(mbl: dict, pkl: dict, inv: dict) -> list[str]:
             results.append(f"[!]  DELIVERY — MBL({mbl_del}) vs Packing List Sabic({pkl_sabic_del})")
     
         # Fallback: check delivery_no from PKG list when sabic_delivery is empty
-    pkl_del = str(pkl.get("delivery_no", "")).split("/")[0]
+    pkl_del = _s(pkl.get("delivery_no", "")).split("/")[0]
     if mbl_del and pkl_del and not pkl_sabic_del:
         if mbl_del == pkl_del:
             results.append(f"[OK] DELIVERY — MBL({mbl_del}) = Packing List({pkl_del})")
         else:
             results.append(f"[!]  DELIVERY — MBL({mbl_del}) vs Packing List({pkl_del})")
 
-    inv_product = str(inv.get("product", "")).upper()
+    inv_product = _s(inv.get("product", "")).upper()
     pkl_products = set()
     for line in pkl.get("lines", []):
-        pkl_products.add(str(line.get("product", "")).upper())
+        pkl_products.add(_s(line.get("product", "")).upper())
     for p in pkl_products:
         if inv_product and (inv_product in p or p in inv_product):
             results.append(f"[OK] PRODUCT — Invoice({inv_product}) ~ Packing List({p})")
@@ -559,7 +691,7 @@ def validate(mbl: dict, pkl: dict, inv: dict) -> list[str]:
 # ROW BUILDER
 # ═══════════════════════════════════════════════════════════════════════════
 
-def build_rows(mbl: dict, pkl: dict) -> list[dict]:
+def build_rows(mbl: dict, pkl: dict, inv: dict, eta_date: str = "") -> list[dict]:
     ref_no = _build_ref(mbl.get("ref_nos", []))
 
     delivery_no = (
@@ -576,12 +708,34 @@ def build_rows(mbl: dict, pkl: dict) -> list[dict]:
 
     country_code = get_country_code(mbl.get("port_of_loading", ""))
 
+    # Product is shipment-level, sourced from the invoice verbatim (no
+    # normalization — client wants it placed exactly as printed, incl. ™),
+    # and applied to every row, same as ref_no/eta_date.
+    product = _s(inv.get("product", "")).strip()
+
     mbl_map = {}
     for c in mbl.get("containers", []):
         mbl_map[c["id"]] = {"type": c.get("type", ""), "seal": c.get("seal", "")}
 
+    lines = pkl.get("lines", [])
+
+    # ── Pallet count: two possible source formats ────────────────────────
+    # (1) Given per row already (Unit column had "<N> PAL") — trust it as-is.
+    # (2) Only a document-wide total is printed (e.g. "112 PALLETIZED 3920
+    #     BAGS") — back-compute each row's share from its bag count using
+    #     the shipment's bags-per-pallet ratio.
+    # Only fall into (2) when NOT a single row has a per-row count — a
+    # partially-filled document keeps whatever's there rather than guessing.
+    all_rows_have_pallets = bool(lines) and all(_num(ln.get("pallet_qty"), 0) > 0 for ln in lines)
+    total_bags_sum = sum(_num(ln.get("bags"), 0) for ln in lines)
+    total_pallets = _num(pkl.get("total_pallets"), 0)
+
+    bags_per_pallet = None
+    if not all_rows_have_pallets and total_pallets and total_bags_sum:
+        bags_per_pallet = total_bags_sum / total_pallets
+
     rows = []
-    for ln in pkl.get("lines", []):
+    for ln in lines:
         cid = ln["container_id"]
         seal = ln.get("seal", "")
         ctype = ""
@@ -590,6 +744,7 @@ def build_rows(mbl: dict, pkl: dict) -> list[dict]:
             ctype = mbl_map[cid].get("type", "")
             if not seal:
                 seal = mbl_map[cid].get("seal", "")
+        ctype = normalize_container_type(ctype)
 
         # Convert to KG
         weight_unit = ln.get("weight_unit", "MT")
@@ -600,14 +755,20 @@ def build_rows(mbl: dict, pkl: dict) -> list[dict]:
         # Bags vs Big Bags
         pkg_type = _determine_pkg_type(net_wt_kg, bags)
 
-        # Pallet qty from extractor
-        pallet_qty = _num(ln.get("pallet_qty", 0), 0)
+        # Pallet qty — per row if given, else back-computed from the total.
+        raw_pallet_qty = _num(ln.get("pallet_qty"), 0)
+        if all_rows_have_pallets:
+            pallet_qty = raw_pallet_qty
+        elif bags_per_pallet:
+            pallet_qty = round(bags / bags_per_pallet)
+        else:
+            pallet_qty = raw_pallet_qty
 
         rows.append({
             "ref_no":          ref_no,
             "delivery_no":     delivery_no,
             "container_no":    cid,
-            "product":         ln.get("product", ""),
+            "product":         product,
             "lot_no":          ln.get("lot", ""),
             "country_code":    country_code,
             "pkg_type":        pkg_type,
@@ -618,6 +779,7 @@ def build_rows(mbl: dict, pkl: dict) -> list[dict]:
             "container_ref":   f"{cid} {ref_no}",
             "container_type":  ctype,
             "pallet_qty":      pallet_qty,
+            "eta_date":        eta_date,
         })
 
     return rows

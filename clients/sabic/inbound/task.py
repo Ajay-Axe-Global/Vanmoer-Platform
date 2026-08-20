@@ -7,6 +7,7 @@ Follows the same two-part structure as clients/carpenter/inbound/task.py:
 """
 
 import traceback
+from datetime import datetime
 
 from flask import (
     Blueprint,
@@ -41,6 +42,7 @@ TASK_SLUG = "inbound"
 # ═══════════════════════════════════════════════════════════════════════════
 
 COLUMN_CONFIG = [
+   
     {"header": "Ref No",           "field_key": "ref_no",         "width": 22},
     {"header": "Delivery No",      "field_key": "delivery_no",    "width": 16},
     {"header": "Container No",     "field_key": "container_no",   "width": 16},
@@ -55,9 +57,20 @@ COLUMN_CONFIG = [
     {"header": "Container + Ref",  "field_key": "container_ref",  "width": 34},
     {"header": "Container Type",   "field_key": "container_type", "width": 16},
     {"header": "Pallet Qty",       "field_key": "pallet_qty",     "width": 12, "num_format": "#,##0"},
+    {"header": "ETA/Date",         "field_key": "eta_date",       "width": 20},
 ]
 
 OUTPUT_FILENAME = "SABIC_Inbound_Outcome.xlsx"
+
+# HTML <input type="date"> always submits "YYYY-MM-DD" regardless of browser
+# locale; the OP column must read "YYYYMMDD 00:00:00".
+ETA_DATE_INPUT_FORMAT = "%Y-%m-%d"
+ETA_DATE_OUTPUT_FORMAT = "%Y%m%d 00:00:00"
+
+
+def format_eta_date(raw: str) -> str:
+    """Convert a UI-submitted 'YYYY-MM-DD' ETA date into the OP format."""
+    return datetime.strptime(raw.strip(), ETA_DATE_INPUT_FORMAT).strftime(ETA_DATE_OUTPUT_FORMAT)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -78,7 +91,7 @@ class SabicInboundTask(BaseTask):
     column_config = COLUMN_CONFIG
     writes_own_output = False
 
-    def process(self, files: dict, output_path: str | None = None) -> dict:
+    def process(self, files: dict, output_path: str | None = None, eta_date: str = "") -> dict:
         # ── Step 1: LLM extraction ──────────────────────────────────
         mbl_data = extract_mbl(files["mbl"])
         pkl_data = extract_packing_list(files["packing_list"])
@@ -89,7 +102,9 @@ class SabicInboundTask(BaseTask):
         validation = validate(mbl_data, pkl_data, inv_data)
 
         # ── Step 3: Build outcome rows ──────────────────────────────
-        rows = build_rows(mbl_data, pkl_data)
+        # eta_date is UI-selected (not extracted from the documents) and
+        # applies uniformly to every row in this shipment.
+        rows = build_rows(mbl_data, pkl_data, inv_data, eta_date)
 
         # ── Summary stats ───────────────────────────────────────────
         containers = set(r["container_no"] for r in rows)
@@ -97,6 +112,7 @@ class SabicInboundTask(BaseTask):
         total_net = sum(r["net_weight"] for r in rows)
 
         summary = {
+            "eta_date":         eta_date,
             "mbl_no":           mbl_data.get("mbl_no", ""),
             "ref_no":           rows[0]["ref_no"] if rows else "",
             "delivery_no":      rows[0]["delivery_no"] if rows else "",
@@ -137,6 +153,14 @@ def process():
         if not f or not f.filename:
             return jsonify({"error": f"Missing document: {doc['label']}"}), 400
 
+    eta_date_raw = (request.form.get("eta_date") or "").strip()
+    if not eta_date_raw:
+        return jsonify({"error": "ETA Date is required."}), 400
+    try:
+        eta_date = format_eta_date(eta_date_raw)
+    except ValueError:
+        return jsonify({"error": "Invalid ETA Date."}), 400
+
     job_id, job_dir = new_job_dir()
     session = SessionLocal()
     try:
@@ -150,7 +174,7 @@ def process():
 
         # ── Run the task ────────────────────────────────────────────
         output_path = str(job_output_path(job_id))
-        result = _task.process(saved, output_path)
+        result = _task.process(saved, output_path, eta_date=eta_date)
 
         rows = result["rows"]
         summary = result["summary"]

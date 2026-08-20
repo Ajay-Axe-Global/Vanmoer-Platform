@@ -18,6 +18,18 @@ def _slugify(name: str) -> str:
     return name.strip().lower().replace(" ", "_")
 
 
+def _utc_iso(dt: datetime.datetime) -> str:
+    """
+    JobHistory.timestamp is stored as a naive UTC datetime (datetime.utcnow,
+    see database/models.py). Plain dt.isoformat() has no "Z"/offset suffix,
+    and a timezone-less ISO string is parsed as LOCAL time by JS's Date
+    constructor — silently displaying the raw UTC clock value as if it were
+    already the viewer's local time. Appending "Z" here is what makes the
+    frontend convert it to the viewer's actual local time correctly.
+    """
+    return dt.isoformat() + "Z"
+
+
 def list_clients() -> list[dict]:
     session = SessionLocal()
     try:
@@ -220,9 +232,12 @@ def jobs_by_client() -> list[dict]:
         session.close()
 
 
-def jobs_summary() -> list[dict]:
-    """One row per (user, client, task) combo that has ever produced a job —
-    the grouped table the admin dashboard drills down from."""
+def jobs_summary(since: "datetime.datetime | None" = None,
+                  until: "datetime.datetime | None" = None) -> list[dict]:
+    """One row per (user, client, task) combo that has produced a job in the
+    given window — the grouped table the admin dashboard drills down from.
+    `since`/`until` are an optional half-open range: [since, until).
+    Omit both for all-time."""
     session = SessionLocal()
     try:
         success_count = func.sum(case((JobHistory.status == "success", 1), else_=0))
@@ -231,7 +246,7 @@ def jobs_summary() -> list[dict]:
             JobHistory.reference_count,
             case((JobHistory.status == "success", 1), else_=0),
         ))
-        rows = (
+        q = (
             session.query(
                 User.id, User.name, User.username,
                 Client.name, Client.slug,
@@ -242,7 +257,13 @@ def jobs_summary() -> list[dict]:
             .join(User, JobHistory.user_id == User.id)
             .join(Client, JobHistory.client_id == Client.id)
             .join(Task, JobHistory.task_id == Task.id)
-            .group_by(User.id, Client.id, Task.id)
+        )
+        if since is not None:
+            q = q.filter(JobHistory.timestamp >= since)
+        if until is not None:
+            q = q.filter(JobHistory.timestamp < until)
+        rows = (
+            q.group_by(User.id, Client.id, Task.id)
             .order_by(func.max(JobHistory.timestamp).desc())
             .all()
         )
@@ -251,7 +272,7 @@ def jobs_summary() -> list[dict]:
             "client_name": cname, "client_slug": cslug,
             "task_name": tname, "task_slug": tslug,
             "count": count, "success_count": succ or 0, "failed_count": fail or 0,
-            "last_run": last.isoformat() if last else None,
+            "last_run": _utc_iso(last) if last else None,
         } for uid, uname, uusername, cname, cslug, tname, tslug, count, succ, fail, last in rows]
     finally:
         session.close()
@@ -281,7 +302,7 @@ def list_jobs(user_id: int | None = None, client_slug: str | None = None,
         rows = q.order_by(JobHistory.timestamp.desc()).limit(limit).all()
         return [{
             "id": j.id,
-            "timestamp": j.timestamp.isoformat(),
+            "timestamp": _utc_iso(j.timestamp),
             "user_name": u.name,
             "username": u.username,
             "client_name": c.name,
@@ -302,8 +323,10 @@ def list_jobs(user_id: int | None = None, client_slug: str | None = None,
         session.close()
 
 
-def dashboard_stats(days: int = 14) -> dict:
-    """Stat tiles + a files-per-day series for the dashboard chart.
+def dashboard_stats(days: int = 14, client_slug: str | None = None,
+                     task_slug: str | None = None) -> dict:
+    """Stat tiles + a files-per-day series for the dashboard chart, optionally
+    scoped to one client and/or task.
 
     "Files" is distinct-reference count (a batch bundling 5 shipments counts
     as 5), not a raw job/run count — see build_reference() in helpers/jobs.py.
@@ -317,16 +340,24 @@ def dashboard_stats(days: int = 14) -> dict:
             case((JobHistory.status == "success", 1), else_=0),
         )
 
-        total_runs = session.query(func.count(JobHistory.id)).scalar() or 0
-        success = session.query(func.count(JobHistory.id)).filter(JobHistory.status == "success").scalar() or 0
+        def base_query(*entities):
+            q = session.query(*entities).select_from(JobHistory)
+            if client_slug:
+                q = q.join(Client, JobHistory.client_id == Client.id).filter(Client.slug == client_slug)
+            if task_slug:
+                q = q.join(Task, JobHistory.task_id == Task.id).filter(Task.slug == task_slug)
+            return q
+
+        total_runs = base_query(func.count(JobHistory.id)).scalar() or 0
+        success = base_query(func.count(JobHistory.id)).filter(JobHistory.status == "success").scalar() or 0
         failed = total_runs - success
-        total_files = session.query(func.sum(file_count_expr)).scalar() or 0
+        total_files = base_query(func.sum(file_count_expr)).scalar() or 0
 
         today = datetime.datetime.utcnow().date()
         since = datetime.datetime.combine(today - datetime.timedelta(days=days - 1), datetime.time.min)
         day_col = func.date(JobHistory.timestamp)
         rows = (
-            session.query(day_col, func.sum(file_count_expr))
+            base_query(day_col, func.sum(file_count_expr))
             .filter(JobHistory.timestamp >= since)
             .group_by(day_col)
             .all()

@@ -81,6 +81,29 @@
     background: var(--panel-2); border: 1px solid var(--border-2); border-radius: 8px;
     padding: 8px 12px; color: var(--text); font-size: 12.5px; font-family: inherit; cursor: pointer;
   }
+
+  /* ── Period picker: custom (native <select> popups can't be capped to a
+     scrollable height — the OS/browser owns that overlay, not the page) ── */
+  .period-picker { position: relative; }
+  .period-btn {
+    background: var(--panel-2); border: 1px solid var(--border-2); border-radius: 8px;
+    padding: 8px 12px; color: var(--text); font-size: 12.5px; font-family: inherit;
+    cursor: pointer; display: flex; align-items: center; gap: 8px;
+  }
+  .period-btn:hover { border-color: #475569; }
+  .period-btn svg { width: 12px; height: 12px; flex-shrink: 0; color: var(--text-muted); }
+  .period-list {
+    display: none; position: absolute; top: calc(100% + 4px); left: 0; z-index: 30;
+    min-width: 150px; max-height: 132px; overflow-y: auto;
+    background: var(--panel-2); border: 1px solid var(--border-2); border-radius: 8px;
+    padding: 4px; box-shadow: 0 8px 24px rgba(0,0,0,.4);
+  }
+  .period-list.open { display: block; }
+  .period-option {
+    padding: 7px 10px; border-radius: 6px; font-size: 12.5px; color: var(--text); cursor: pointer;
+  }
+  .period-option:hover { background: #262a33; }
+  .period-option.selected { background: var(--accent); color: #fff; }
   .search-input {
     background: var(--panel-2); border: 1px solid var(--border-2); border-radius: 8px;
     padding: 8px 12px 8px 32px; color: var(--text); font-size: 12.5px; font-family: inherit;
@@ -204,6 +227,10 @@
       <div class="panel full" style="margin-bottom:20px">
         <h2>Files generated — last 14 days</h2>
         <p class="panel-sub">distinct references processed per day · see "Success rate" for run reliability</p>
+        <div class="filter-row">
+          <select id="chart-filter-client"><option value="">All clients</option></select>
+          <select id="chart-filter-task"><option value="">All tasks</option></select>
+        </div>
         <div id="chart-wrap">
           <svg id="chart-svg" width="100%" height="220" viewBox="0 0 1080 220" preserveAspectRatio="none"></svg>
           <div id="chart-tooltip"></div>
@@ -214,6 +241,13 @@
         <h2>Files by user · client · task</h2>
         <p class="panel-sub">click a row for the individual jobs behind that count</p>
         <div class="filter-row">
+          <div class="period-picker" id="period-picker">
+            <button type="button" class="period-btn" id="period-btn">
+              <span id="period-btn-label">Today</span>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+            </button>
+            <div class="period-list" id="period-list"></div>
+          </div>
           <select id="filter-user"><option value="">All users</option></select>
           <select id="filter-client"><option value="">All clients</option></select>
           <select id="filter-task"><option value="">All tasks</option></select>

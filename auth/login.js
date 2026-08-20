@@ -9,7 +9,7 @@
   // page navigated away. Reset on every show, cached or not.
   window.addEventListener("pageshow", () => {
     submitBtn.disabled = false;
-    submitBtn.textContent = "Sign in";
+    submitBtn.classList.remove("loading");
     errorBox.style.display = "none";
   });
 
@@ -17,7 +17,7 @@
     e.preventDefault();
     errorBox.style.display = "none";
     submitBtn.disabled = true;
-    submitBtn.textContent = "Signing in…";
+    submitBtn.classList.add("loading");
 
     const username = document.getElementById("username").value.trim();
     const password = document.getElementById("password").value;
@@ -52,7 +52,7 @@
       errorBox.textContent = err.message;
       errorBox.style.display = "block";
       submitBtn.disabled = false;
-      submitBtn.textContent = "Sign in";
+      submitBtn.classList.remove("loading");
     }
   });
 })();

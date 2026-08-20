@@ -134,6 +134,45 @@
             display: block;
         }
 
+        /* ── ETA Date field ─────────────────────────────────── */
+        .field-group {
+            margin-bottom: 20px;
+        }
+
+        .field-group label {
+            display: block;
+            font-size: 13px;
+            font-weight: 600;
+            color: #cbd5e1;
+            margin-bottom: 8px;
+        }
+
+        .field-group label .required {
+            color: #ef4444;
+        }
+
+        .field-group input[type="date"] {
+            width: 100%;
+            padding: 12px 14px;
+            font-size: 14px;
+            font-family: inherit;
+            color: #e2e8f0;
+            background: #1e293b;
+            border: 2px solid #334155;
+            border-radius: 10px;
+            outline: none;
+            transition: border-color .2s;
+            color-scheme: dark;
+        }
+
+        .field-group input[type="date"]:focus {
+            border-color: #3b82f6;
+        }
+
+        .field-group input[type="date"]:invalid {
+            border-color: #334155;
+        }
+
         /* ── Generate Button ────────────────────────────────── */
         .generate-btn {
             display: block;
@@ -378,6 +417,11 @@
                 </div>
             </div>
 
+            <div class="field-group">
+                <label for="etaDate">ETA Date <span class="required">*</span></label>
+                <input type="date" id="etaDate" required onchange="checkReady()">
+            </div>
+
             <button class="generate-btn" id="generateBtn" disabled onclick="generate()">
                 Generate Excel
             </button>
@@ -443,7 +487,8 @@
             const mbl = document.getElementById('mblFile').files.length;
             const pkl = document.getElementById('pklFile').files.length;
             const inv = document.getElementById('invFile').files.length;
-            document.getElementById('generateBtn').disabled = !(mbl && pkl && inv);
+            const eta = document.getElementById('etaDate').value;
+            document.getElementById('generateBtn').disabled = !(mbl && pkl && inv && eta);
         }
 
         /* ── Loader steps ─────────────────────────────────── */
@@ -480,6 +525,10 @@
             fd.append('mbl', document.getElementById('mblFile').files[0]);
             fd.append('packing_list', document.getElementById('pklFile').files[0]);
             fd.append('invoice', document.getElementById('invFile').files[0]);
+            // Native <input type="date"> always yields "YYYY-MM-DD" regardless
+            // of browser locale — the backend formats it into the OP's
+            // "YYYYMMDD 00:00:00" column format.
+            fd.append('eta_date', document.getElementById('etaDate').value);
 
             document.getElementById('uploadSection').style.display = 'none';
             document.getElementById('loader').classList.add('visible');
@@ -568,6 +617,8 @@
             clearFile('mblFile', 'mblName');
             clearFile('pklFile', 'pklName');
             clearFile('invFile', 'invName');
+            document.getElementById('etaDate').value = '';
+            checkReady();
             document.getElementById('uploadSection').style.display = 'block';
         }
     </script>

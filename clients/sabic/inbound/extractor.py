@@ -286,8 +286,10 @@ see "ALTERNATIVE TABLE LAYOUT 2" below).
   - Leave sabic_po and sabic_delivery empty — this layout never has them.
   - "Shipment No.:" → not needed, ignore it. It is a different reference
     from Sales Order No. and is NOT a delivery number.
-  - delivery_no → take this from the table's "Delivery Number" column
-    instead (every row carries the same value — use the first row's).
+  - Leave delivery_no empty for this layout. Python fills it in
+    automatically from the table's per-row "delivery_number" field (see
+    "ALTERNATIVE TABLE LAYOUT 2" below) — you don't need to do this
+    yourself, just get delivery_number right on each row.
 How to detect: header block titled "EXPORT REFERENCES", with "Sales Order
 No.:"/"Shipment No.:" and NO "SO/STO:" and NO "Sabic PO:"/"Sabic
 Delivery:" anywhere on the page.
@@ -296,6 +298,11 @@ Delivery:" anywhere on the page.
   (often near "PKG DESCRIPTION"). If present, extract the leading number (112) as
   "total_pallets". This is a DOCUMENT-WIDE total, not a per-row value — it only
   appears once. If no such line exists, set "total_pallets" to 0.
+- Total bags: some layouts (e.g. Layout C / SABIC-direct / US export) print a
+  document-wide package count in the header, labeled "No of Packages:" (a
+  plain number, e.g. "No of Packages: 7920") — this is the TOTAL BAG COUNT
+  for the whole shipment, not a per-row value. If present, extract it as
+  "total_bags". If no such field exists, set "total_bags" to 0.
 
 ══════════════════════════════════════════
 TABLE STRUCTURE
@@ -332,6 +339,11 @@ For each row:
 - "net_weight": Net Weight number only (e.g. 25.5)
 - "weight_unit": The unit shown in the weight columns. "MT" if weights say "25.9930 MT",
   "KG" if weights say "25993 KG". Default to "MT" if unclear.
+- "delivery_number": ONLY set this if the table itself has a "Delivery
+  Number" column printed on THIS row (this is Layout C / "ALTERNATIVE
+  TABLE LAYOUT 2" below — no other layout's table has this column). Empty
+  string "" for every other layout — they don't have this column at all,
+  don't guess a value for it.
 
 NOTE : This is the single most common extraction mistake: attaching a no-VGM row
 to the container printed BELOW it instead of the container that opened ABOVE
@@ -383,9 +395,10 @@ Key differences from the standard layout:
   same number as that row's Net Weight KGS) — it is NOT a bag or pallet
   count. Set both "bags" and "pallet_qty" to 0 for every row on this
   layout — there is nothing in the document to derive either from.
-- "Delivery Number" column → also copy this row's value into the
-  document-level "delivery_no" field described in HEADER FIELDS (Layout
-  C) above — every row on this layout has the same value.
+- "Delivery Number" column → this row's "delivery_number" field (see
+  TABLE STRUCTURE above). Python fills in the document-level "delivery_no"
+  field from this automatically — you don't need to do that yourself,
+  just get delivery_number right on each row.
 
 Container ID split across a page break: occasionally the container number
 itself — not just the row — is cut in half by a page break, with the
@@ -431,6 +444,7 @@ OUTPUT FORMAT
   "sabic_po": "string",
   "sabic_delivery": "string",
   "total_pallets": 0,
+  "total_bags": 0,
   "rows": [
     {
       "container_id": "string or empty",
@@ -443,7 +457,8 @@ OUTPUT FORMAT
       "bags": 1020,
       "gross_weight": 25.993,
       "net_weight": 25.5,
-      "weight_unit": "MT"
+      "weight_unit": "MT",
+      "delivery_number": "string or empty"
     }
   ]
 }"""
@@ -588,17 +603,31 @@ def extract_packing_list(pdf_path: str) -> dict:
             "gross_weight": _num(row.get("gross_weight"), 0),
             "net_weight":   _num(row.get("net_weight"), 0),
             "weight_unit":  (row.get("weight_unit") or "MT").strip().upper(),
+            "delivery_number": _s(row.get("delivery_number")).strip(),
         })
- 
+
+    document_delivery_no = _s(data.get("delivery_no", "")).strip()
+    if not document_delivery_no:
+        # Layout C's table carries "delivery_number" per row instead of a
+        # document-level header field (see PKG_LIST_PROMPT) — asking Gemini
+        # to mirror that into delivery_no itself proved unreliable (the same
+        # class of cross-referencing miss as the split container-id case),
+        # so Python does the mirroring deterministically instead.
+        for ln in flat_lines:
+            if ln["delivery_number"]:
+                document_delivery_no = ln["delivery_number"]
+                break
+
     result = {
-        "delivery_no":    data.get("delivery_no", ""),
+        "delivery_no":    document_delivery_no,
         "sto":            data.get("sto", ""),
         "sabic_po":       data.get("sabic_po", ""),
         "sabic_delivery": data.get("sabic_delivery", ""),
         "total_pallets":  _num(data.get("total_pallets"), 0),
+        "total_bags":     _num(data.get("total_bags"), 0),
         "lines":          flat_lines,
     }
- 
+
     _dump_json(pdf_path, "pkg_list.json", result)
     n_containers = len({ln["container_id"] for ln in flat_lines})
     print(f"  [PKG LIST] Grouped {len(flat_lines)} rows into {n_containers} containers")
@@ -609,6 +638,119 @@ def extract_invoice(pdf_path: str) -> dict:
     data = call_gemini(INVOICE_PROMPT, pdf_path=pdf_path)
     _dump_json(pdf_path, "invoice.json", data)
     return data
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MBL CROSS-REFERENCE — REPAIR MISSING/TRUNCATED CONTAINER IDS
+# ═══════════════════════════════════════════════════════════════════════════
+
+def repair_container_ids_via_mbl(mbl: dict, pkl: dict) -> dict:
+    """
+    Safety net for a packing-list row whose container_id came back
+    missing (None) or truncated (doesn't match the 4-letter+7-digit
+    format) — usually a page break that confused the vision model badly
+    enough that _repair_split_container_ids()'s "next row is a bare digit
+    fragment" pattern doesn't apply (the fragment gets lost entirely
+    instead of showing up as its own row). The MBL already has the
+    complete, correct container list for this shipment, so cross-
+    referencing against it can resolve most of these:
+
+      1. PREFIX MATCH: a truncated id (e.g. "HLBU3289") is the literal
+         start of exactly one not-yet-claimed MBL container id — a
+         truncation can only ever be a prefix of its real id, so this is
+         safe whenever there's exactly one candidate.
+      2. ELIMINATION: after every row with a complete id (or one just
+         resolved by #1) is set aside, if there's EXACTLY ONE MBL
+         container id left unclaimed and EXACTLY ONE packing-list row
+         still missing an id entirely, they must be each other.
+      3. DUPLICATE CLEANUP: if, after #1 and #2, EVERY real MBL container
+         is already claimed by some other row, a row still left over
+         cannot be a genuine distinct container — there's no room for one
+         in the known inventory. If that row's (lot, net_weight,
+         gross_weight) exactly matches an already-claimed row, Gemini
+         extracted the same physical line twice — once correctly, once
+         garbled with the id lost (typically a leftover page-break
+         fragment, e.g. a stray "988" it couldn't attach anywhere,
+         smeared onto a copy of the next real row's data). Drop it so it
+         doesn't silently double-count that line's weight/pallets/bags.
+
+    Deliberately conservative throughout: never assigns or drops on a
+    guess. #1/#2 never assign when more than one candidate remains
+    possible (weight/lot alone are often NOT unique fingerprints — e.g.
+    two DIFFERENT real containers in the same shipment can legitimately
+    share both the same lot and the same net weight). #3 only drops when
+    the inventory is provably full AND there's an exact duplicate — a
+    row that's merely unresolved, with no matching twin, is left alone
+    rather than discarded on a hunch.
+    """
+    lines = pkl.get("lines", [])
+    mbl_ids = [c["id"] for c in mbl.get("containers", []) if c.get("id")]
+    if not lines or not mbl_ids:
+        return pkl
+
+    def is_complete(cid) -> bool:
+        return bool(cid) and bool(_CONTAINER_RE.match(str(cid)))
+
+    claimed = {ln["container_id"] for ln in lines if is_complete(ln.get("container_id"))}
+    broken = [
+        (i, str(ln.get("container_id") or "").strip().upper())
+        for i, ln in enumerate(lines)
+        if not is_complete(ln.get("container_id"))
+    ]
+
+    fixed = 0
+
+    # Pass 1 — prefix match for truncated (non-empty) ids.
+    for i, raw in list(broken):
+        if not raw:
+            continue
+        candidates = [cid for cid in mbl_ids if cid not in claimed and cid.startswith(raw)]
+        if len(candidates) == 1:
+            lines[i]["container_id"] = candidates[0]
+            claimed.add(candidates[0])
+            broken.remove((i, raw))
+            fixed += 1
+
+    # Pass 2 — elimination for whatever's left (empty, or a truncated id
+    # that didn't prefix-match anything).
+    remaining_mbl = [cid for cid in mbl_ids if cid not in claimed]
+    if len(remaining_mbl) == 1 and len(broken) == 1:
+        i, _ = broken[0]
+        lines[i]["container_id"] = remaining_mbl[0]
+        broken.pop()
+        remaining_mbl = []
+        fixed += 1
+
+    if fixed:
+        print(f"  [ID REPAIR] Resolved {fixed} missing/truncated container id(s) via MBL cross-reference")
+
+    # Pass 3 — every real container is already accounted for, so anything
+    # still broken can only be noise. Drop it if (and only if) it's an
+    # exact duplicate of an already-claimed row's data.
+    dropped = set()
+    if not remaining_mbl and broken:
+        def fingerprint(ln):
+            return (ln.get("lot"), _num(ln.get("net_weight"), 0), _num(ln.get("gross_weight"), 0))
+
+        claimed_fingerprints = {
+            fingerprint(ln) for ln in lines if is_complete(ln.get("container_id"))
+        }
+        for i, _ in broken:
+            if fingerprint(lines[i]) in claimed_fingerprints:
+                dropped.add(i)
+
+    if dropped:
+        print(f"  [ID REPAIR] Dropped {len(dropped)} row(s) with no resolvable container id that exactly "
+              f"duplicate another row's lot/weight — every real container is already accounted for, so this "
+              f"can only be a hallucinated re-extraction, not a genuine extra line")
+        lines = [ln for i, ln in enumerate(lines) if i not in dropped]
+
+    still_broken = len(broken) - len(dropped)
+    if still_broken:
+        print(f"  [ID REPAIR] {still_broken} row(s) still have no resolvable container id — left as-is, needs manual review")
+
+    pkl["lines"] = lines
+    return pkl
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -750,6 +892,15 @@ def validate(mbl: dict, pkl: dict, inv: dict) -> list[str]:
         else:
             results.append(f"[X]  REF MISMATCH — MBL({mbl_ref}) vs Packing List({pkl_ref})")
 
+    if not mbl_ref and inv_ref and pkl_ref:
+        # Some carriers (e.g. Hapag) never print a Sales Order/STO number
+        # on the MBL at all — compare Invoice vs Packing List directly so
+        # this cross-check doesn't just go silent when that happens.
+        if inv_ref == pkl_ref:
+            results.append(f"[OK] REF — Invoice({inv_ref}) = Packing List({pkl_ref}) (no ref on MBL — expected for this carrier)")
+        else:
+            results.append(f"[!]  REF — Invoice({inv_ref}) vs Packing List({pkl_ref}) (no ref on MBL)")
+
     mbl_del = _s(mbl.get("delivery_no", "")).split("/")[0]
     inv_del = _s(inv.get("delivery_no", "")).split("/")[0]
     pkl_sabic_del = _s(pkl.get("sabic_delivery", "")).split("/")[0]
@@ -797,6 +948,20 @@ def validate(mbl: dict, pkl: dict, inv: dict) -> list[str]:
     for c in sorted(only_pkl):
         results.append(f"[!]  CONTAINER — {c} only in Packing List (not in MBL)")
 
+    # Bags cross-check: on layouts with no per-row bags column (e.g. the
+    # SABIC-direct/US export layout, common with Hapag), bags come from the
+    # MBL's per-container counts instead (see build_rows()) — this confirms
+    # those add up to the packing list's own document-wide total, the same
+    # arithmetic check printed on the document itself (e.g. 8 containers ×
+    # 990 bags = 7920 = "No of Packages").
+    mbl_bags_sum = sum(_num(c.get("bags"), 0) for c in mbl.get("containers", []))
+    pkl_total_bags = _num(pkl.get("total_bags"), 0)
+    if mbl_bags_sum and pkl_total_bags:
+        if mbl_bags_sum == pkl_total_bags:
+            results.append(f"[OK] BAGS — MBL containers sum({mbl_bags_sum}) = Packing List total({pkl_total_bags})")
+        else:
+            results.append(f"[!]  BAGS — MBL containers sum({mbl_bags_sum}) vs Packing List total({pkl_total_bags})")
+
     return results
 
 
@@ -806,6 +971,14 @@ def validate(mbl: dict, pkl: dict, inv: dict) -> list[str]:
 
 def build_rows(mbl: dict, pkl: dict, inv: dict, eta_date: str = "") -> list[dict]:
     ref_no = _build_ref(mbl.get("ref_nos", []))
+    if not ref_no:
+        # Some carriers' MBLs (e.g. Hapag) never print a Sales Order/STO
+        # number at all — fall back to the packing list's own Sales
+        # Order/STO field, same precedence validate()'s pkl_ref already
+        # uses (sabic_po first, then sto). The invoice's sales_ref should
+        # independently match this too — that comparison already happens
+        # in validate() via inv_ref, unaffected by this fallback.
+        ref_no = _s(pkl.get("sabic_po", "")).strip() or _s(pkl.get("sto", "")).strip()
 
     delivery_no = (
         pkl.get("sabic_delivery")
@@ -828,24 +1001,73 @@ def build_rows(mbl: dict, pkl: dict, inv: dict, eta_date: str = "") -> list[dict
 
     mbl_map = {}
     for c in mbl.get("containers", []):
-        mbl_map[c["id"]] = {"type": c.get("type", ""), "seal": c.get("seal", "")}
+        mbl_map[c["id"]] = {
+            "type": c.get("type", ""),
+            "seal": c.get("seal", ""),
+            "bags": _num(c.get("bags"), 0),
+        }
 
     lines = pkl.get("lines", [])
 
-    # ── Pallet count: two possible source formats ────────────────────────
+    # One MBL container can appear as MULTIPLE packing-list rows (the same
+    # physical container split across two different lots/batches — a real,
+    # common shape, not an error). The MBL's bag count is for the WHOLE
+    # container, so when falling back to it, a shared container's bags must
+    # be split across its rows proportional to each row's weight share —
+    # not copied in full onto every row, which would double (or n-)count
+    # it. Pre-sum each container's total packing-list weight up front so
+    # _effective_bags() can compute that share.
+    container_weight_totals: dict = {}
+    for ln in lines:
+        wt_kg = _to_kg(ln.get("net_weight", 0), ln.get("weight_unit", "MT"))
+        cid = ln["container_id"]
+        container_weight_totals[cid] = container_weight_totals.get(cid, 0) + wt_kg
+
+    def _effective_bags(ln: dict) -> int | float:
+        # Some carriers (e.g. Hapag) print per-container bag counts on the
+        # MBL, but the packing list itself has no bags column at all (the
+        # SABIC-direct/US export layout — PKG_LIST_PROMPT's Layout C /
+        # "ALTERNATIVE TABLE LAYOUT 2" — sets bags=0 for every row there).
+        # Fall back to the matching MBL container's bag count whenever the
+        # packing list didn't give one. Computed once and reused for both
+        # the pallet-ratio math below and each row's final pkg_qty output,
+        # so both use the exact same number.
+        bags = _num(ln.get("bags"), 0)
+        if bags:
+            return bags
+        mbl_entry = mbl_map.get(ln["container_id"])
+        if not mbl_entry or not mbl_entry["bags"]:
+            return 0
+        total_wt = container_weight_totals.get(ln["container_id"], 0)
+        if not total_wt:
+            return 0
+        row_wt = _to_kg(ln.get("net_weight", 0), ln.get("weight_unit", "MT"))
+        return round(mbl_entry["bags"] * (row_wt / total_wt))
+
+    # ── Pallet count: three possible source formats ───────────────────────
     # (1) Given per row already (Unit column had "<N> PAL") — trust it as-is.
     # (2) Only a document-wide total is printed (e.g. "112 PALLETIZED 3920
-    #     BAGS") — back-compute each row's share from its bag count using
-    #     the shipment's bags-per-pallet ratio.
-    # Only fall into (2) when NOT a single row has a per-row count — a
-    # partially-filled document keeps whatever's there rather than guessing.
+    #     BAGS") and rows have a bag count — back-compute each row's share
+    #     from its bags using the shipment's bags-per-pallet ratio.
+    # (3) Same document-wide total, but rows have NO bag count at all —
+    #     fall back to distributing by each row's share of the total NET
+    #     WEIGHT instead. Bags is tried first since it's the more direct/
+    #     reliable signal when present.
+    # Only fall into (2)/(3) when NOT a single row already has a per-row
+    # count — a partially-filled document keeps whatever's there rather
+    # than guessing.
     all_rows_have_pallets = bool(lines) and all(_num(ln.get("pallet_qty"), 0) > 0 for ln in lines)
-    total_bags_sum = sum(_num(ln.get("bags"), 0) for ln in lines)
+    total_bags_sum = sum(_effective_bags(ln) for ln in lines)
+    total_weight_sum = sum(_to_kg(ln.get("net_weight", 0), ln.get("weight_unit", "MT")) for ln in lines)
     total_pallets = _num(pkl.get("total_pallets"), 0)
 
     bags_per_pallet = None
-    if not all_rows_have_pallets and total_pallets and total_bags_sum:
-        bags_per_pallet = total_bags_sum / total_pallets
+    weight_per_pallet = None
+    if not all_rows_have_pallets and total_pallets:
+        if total_bags_sum:
+            bags_per_pallet = total_bags_sum / total_pallets
+        elif total_weight_sum:
+            weight_per_pallet = total_weight_sum / total_pallets
 
     rows = []
     for ln in lines:
@@ -863,17 +1085,20 @@ def build_rows(mbl: dict, pkl: dict, inv: dict, eta_date: str = "") -> list[dict
         weight_unit = ln.get("weight_unit", "MT")
         net_wt_kg = _to_kg(ln.get("net_weight", 0), weight_unit)
         gross_wt_kg = _to_kg(ln.get("gross_weight", 0), weight_unit)
-        bags = _num(ln.get("bags", 0), 0)
+        bags = _effective_bags(ln)
 
         # Bags vs Big Bags
         pkg_type = _determine_pkg_type(net_wt_kg, bags)
 
-        # Pallet qty — per row if given, else back-computed from the total.
+        # Pallet qty — per row if given, else back-computed from the total
+        # (by bags if available, else by weight — see the comment above).
         raw_pallet_qty = _num(ln.get("pallet_qty"), 0)
         if all_rows_have_pallets:
             pallet_qty = raw_pallet_qty
         elif bags_per_pallet:
             pallet_qty = round(bags / bags_per_pallet)
+        elif weight_per_pallet:
+            pallet_qty = round(net_wt_kg / weight_per_pallet)
         else:
             pallet_qty = raw_pallet_qty
 

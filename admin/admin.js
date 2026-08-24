@@ -35,6 +35,14 @@
     });
   }
 
+  function debounce(fn, wait) {
+    let t;
+    return (...args) => {
+      clearTimeout(t);
+      t = setTimeout(() => fn(...args), wait);
+    };
+  }
+
   // ═══════════════════════════════════════════════════════════════════
   // Dashboard tab: stat tiles
   // ═══════════════════════════════════════════════════════════════════
@@ -71,7 +79,7 @@
   function drawChart(days) {
     const svg = document.getElementById("chart-svg");
     const tooltip = document.getElementById("chart-tooltip");
-    const W = 1080, H = 220, padL = 30, padB = 26, padT = 10;
+    const W = 1080, H = 220, padL = 30, padB = 26, padT = 22;
     const plotW = W - padL - 10, plotH = H - padT - padB;
     const maxVal = Math.max(1, ...days.map(d => d.count));
     const niceMax = Math.ceil(maxVal / 5) * 5 || 5;
@@ -89,12 +97,17 @@
       grid += `<text x="${padL - 8}" y="${y + 3}" text-anchor="end" font-size="10" fill="#6b7280" font-family="JetBrains Mono, monospace">${val}</text>`;
     }
 
-    let bars = "", axisLabels = "", hitRects = "";
+    let bars = "", valueLabels = "", axisLabels = "", hitRects = "";
     days.forEach((d, i) => {
       const cx = padL + bandW * i + bandW / 2;
       const x = cx - barW / 2;
       const h = Math.max((d.count / niceMax) * plotH, d.count > 0 ? 1 : 0);
       if (h > 0) bars += rectPath(x, baseY - h, barW, h, 4, CHART_COLOR);
+
+      if (d.count > 0) {
+        const labelY = Math.max(baseY - h - 6, padT - 8);
+        valueLabels += `<text x="${cx}" y="${labelY}" text-anchor="middle" font-size="10" fill="#9299a8" font-family="JetBrains Mono, monospace">${d.count}</text>`;
+      }
 
       hitRects += `<rect class="hit" data-idx="${i}" x="${padL + bandW * i}" y="${padT}" width="${bandW}" height="${plotH}" fill="transparent" style="cursor:pointer" />`;
 
@@ -104,7 +117,7 @@
       }
     });
 
-    svg.innerHTML = grid + bars + axisLabels + hitRects;
+    svg.innerHTML = grid + bars + valueLabels + axisLabels + hitRects;
 
     svg.querySelectorAll(".hit").forEach(hit => {
       const idx = parseInt(hit.dataset.idx, 10);
@@ -136,66 +149,39 @@
   // ═══════════════════════════════════════════════════════════════════
   let summaryCache = [];
 
-  // ── Period filter: "Today" (default) or a specific past month ────────
-  // Matches the UTC day boundary the backend already uses for "Files
-  // today" (dashboard_stats() uses datetime.utcnow().date()), so the two
-  // stay consistent instead of drifting apart by timezone.
-  function buildPeriodOptions() {
-    const opts = [{ value: "today", label: "Today" }];
-    const year = new Date().getUTCFullYear();
-    for (let m = 0; m < 12; m++) {
-      const d = new Date(Date.UTC(year, m, 1));
-      const value = `${year}-${String(m + 1).padStart(2, "0")}`;
-      const label = d.toLocaleDateString(undefined, { month: "short", year: "numeric", timeZone: "UTC" }).toUpperCase();
-      opts.push({ value, label });
-    }
-    return opts;
-  }
-
-  function periodToRange(period) {
-    const iso = (d) => d.toISOString().slice(0, 10);
-    if (period === "today") {
-      const now = new Date();
-      const since = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
-      const until = since + 24 * 60 * 60 * 1000;
-      return { since: iso(new Date(since)), until: iso(new Date(until)) };
-    }
-    const [y, m] = period.split("-").map(Number);
-    return {
-      since: iso(new Date(Date.UTC(y, m - 1, 1))),
-      until: iso(new Date(Date.UTC(y, m, 1))),
-    };
-  }
-
-  let currentPeriod = "today";
+  // ── Period filter: Today / This week / This month / a custom date range.
+  // The date math lives server-side (admin/service.py:period_range) — this
+  // just tracks which segment is active and, for "custom", the two dates —
+  // so "Today" etc. mean the same thing everywhere instead of being
+  // recomputed against the viewer's local clock in JS.
+  const periodState = { period: "today", since: null, until: null };
 
   function initPeriodFilter() {
-    const options = buildPeriodOptions();
-    const picker = document.getElementById("period-picker");
-    const btn = document.getElementById("period-btn");
-    const btnLabel = document.getElementById("period-btn-label");
-    const list = document.getElementById("period-list");
+    const segs = document.querySelectorAll(".period-seg");
+    const customRange = document.getElementById("custom-range");
+    const sinceInput = document.getElementById("custom-since");
+    const untilInput = document.getElementById("custom-until");
 
-    list.innerHTML = options.map(o => `
-      <div class="period-option${o.value === currentPeriod ? " selected" : ""}" data-value="${o.value}">${o.label}</div>
-    `).join("");
-
-    btn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      list.classList.toggle("open");
-    });
-    document.addEventListener("click", (e) => {
-      if (!picker.contains(e.target)) list.classList.remove("open");
-    });
-    list.querySelectorAll(".period-option").forEach(opt => {
-      opt.addEventListener("click", () => {
-        currentPeriod = opt.dataset.value;
-        btnLabel.textContent = opt.textContent;
-        list.querySelectorAll(".period-option").forEach(o => o.classList.remove("selected"));
-        opt.classList.add("selected");
-        list.classList.remove("open");
-        loadSummary();
+    segs.forEach(btn => {
+      btn.addEventListener("click", () => {
+        segs.forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+        periodState.period = btn.dataset.period;
+        if (periodState.period === "custom") {
+          customRange.style.display = "flex";
+          if (periodState.since && periodState.until) loadSummary();
+        } else {
+          customRange.style.display = "none";
+          loadSummary();
+        }
       });
+    });
+
+    document.getElementById("custom-apply-btn").addEventListener("click", () => {
+      if (!sinceInput.value || !untilInput.value) return;
+      periodState.since = sinceInput.value;
+      periodState.until = untilInput.value;
+      loadSummary();
     });
   }
 
@@ -225,32 +211,37 @@
   }
 
   async function loadSummary() {
-    const { since, until } = periodToRange(currentPeriod);
-    const params = new URLSearchParams({ since, until });
+    const params = new URLSearchParams({ period: periodState.period });
+    if (periodState.period === "custom") {
+      if (!periodState.since || !periodState.until) return;
+      params.set("since", periodState.since);
+      params.set("until", periodState.until);
+    }
+    const userFilter = document.getElementById("filter-user").value;
+    const clientFilter = document.getElementById("filter-client").value;
+    const taskFilter = document.getElementById("filter-task").value;
+    const search = document.getElementById("summary-search").value.trim();
+    if (userFilter) params.set("user_id", userFilter);
+    if (clientFilter) params.set("client_slug", clientFilter);
+    if (taskFilter) params.set("task_slug", taskFilter);
+    if (search) params.set("search", search);
+
     const res = await VanmoerAuth.authFetch(`/api/admin/jobs/summary?${params}`);
     summaryCache = await res.json();
     renderSummaryTable();
   }
 
+  const debouncedLoadSummary = debounce(loadSummary, 300);
+
   function renderSummaryTable() {
-    const userFilter = document.getElementById("filter-user").value;
-    const clientFilter = document.getElementById("filter-client").value;
-    const taskFilter = document.getElementById("filter-task").value;
-    const search = document.getElementById("summary-search").value.trim().toLowerCase();
-
-    const filtered = summaryCache.filter(r =>
-      (!userFilter || String(r.user_id) === userFilter) &&
-      (!clientFilter || r.client_slug === clientFilter) &&
-      (!taskFilter || r.task_slug === taskFilter) &&
-      (!search || [r.user_name, r.username, r.client_name, r.task_name].join(" ").toLowerCase().includes(search))
-    );
-
     const tbody = document.querySelector("#summary-table tbody");
-    if (filtered.length === 0) {
+    const tfoot = document.querySelector("#summary-table tfoot");
+    if (summaryCache.length === 0) {
       tbody.innerHTML = `<tr class="empty-row"><td colspan="5">No jobs match these filters.</td></tr>`;
+      tfoot.innerHTML = "";
       return;
     }
-    tbody.innerHTML = filtered.map(r => `
+    tbody.innerHTML = summaryCache.map(r => `
       <tr class="clickable" data-user-id="${r.user_id}" data-client-slug="${r.client_slug}" data-task-slug="${r.task_slug}"
           data-user-name="${r.user_name}" data-client-name="${r.client_name}" data-task-name="${r.task_name}">
         <td>${r.user_name} <span class="mono">(${r.username})</span></td>
@@ -268,12 +259,26 @@
     tbody.querySelectorAll("tr.clickable").forEach(tr => {
       tr.addEventListener("click", () => openDrillDown(tr.dataset));
     });
+
+    const totalFiles = summaryCache.reduce((sum, r) => sum + r.count, 0);
+    const totalFailed = summaryCache.reduce((sum, r) => sum + (r.failed_count || 0), 0);
+    tfoot.innerHTML = `
+      <tr class="total-row">
+        <td colspan="3">Total</td>
+        <td class="num">
+          <span class="count-pill">${totalFiles}
+            ${totalFailed > 0 ? `<span class="fail">· ${totalFailed} failed</span>` : ""}
+          </span>
+        </td>
+        <td></td>
+      </tr>
+    `;
   }
 
   ["filter-user", "filter-client", "filter-task"].forEach(id => {
-    document.getElementById(id).addEventListener("change", renderSummaryTable);
+    document.getElementById(id).addEventListener("change", loadSummary);
   });
-  document.getElementById("summary-search").addEventListener("input", renderSummaryTable);
+  document.getElementById("summary-search").addEventListener("input", debouncedLoadSummary);
 
   let modalJobsCache = [];
 
@@ -301,8 +306,7 @@
         <td><span class="badge status-${j.status}">${j.status}</span></td>
         <td>${j.status === "success" && j.download_url ? `<button class="dl-btn" data-url="${j.download_url}">⬇ Download</button>` : ""}</td>
       </tr>
-    `).join("") : `<tr class="empty-row"><td colspan="6">${
-      document.getElementById("modal-search").value.trim() ? "No jobs match this search." : "No jobs found."
+    `).join("") : `<tr class="empty-row"><td colspan="6">${document.getElementById("modal-search").value.trim() ? "No jobs match this search." : "No jobs found."
     }</td></tr>`;
 
     document.querySelectorAll(".dl-btn").forEach(btn => {
@@ -359,6 +363,11 @@
     document.getElementById("chart-filter-client").innerHTML = `<option value="">All clients</option>` +
       clientsCache.map(c => `<option value="${c.slug}">${c.name}</option>`).join("");
     document.getElementById("chart-filter-task").innerHTML = `<option value="">All tasks</option>` +
+      tasksCache.map(t => `<option value="${t.slug}">${t.name}</option>`).join("");
+
+    document.getElementById("users-filter-client").innerHTML = `<option value="">All clients</option>` +
+      clientsCache.map(c => `<option value="${c.slug}">${c.name}</option>`).join("");
+    document.getElementById("users-filter-task").innerHTML = `<option value="">All tasks</option>` +
       tasksCache.map(t => `<option value="${t.slug}">${t.name}</option>`).join("");
   }
 
@@ -420,10 +429,44 @@
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
+  // usersCache is the full, unfiltered catalog — used for edit/delete lookups
+  // and the "All users" summary-filter dropdown. usersTableRows is whatever
+  // the Users tab's own client/task filters currently return from the DB
+  // (see list_users() in admin/service.py) and is what actually renders.
+  let usersTableRows = [];
+
   async function loadUsers() {
     const res = await VanmoerAuth.authFetch("/api/admin/users");
     usersCache = await res.json();
-    document.querySelector("#users-table tbody").innerHTML = usersCache.map(u => `
+  }
+
+  // Counts come straight off the already-loaded full catalogs (usersCache /
+  // clientsCache), not a separate fetch — both are refreshed on every action
+  // that could change them, so this stays in sync for free.
+  function updateUserStatCards() {
+    document.getElementById("stat-total-users").textContent = usersCache.length.toLocaleString();
+    document.getElementById("stat-total-clients").textContent = clientsCache.length.toLocaleString();
+  }
+
+  async function loadUsersTable() {
+    const clientSlug = document.getElementById("users-filter-client").value;
+    const taskSlug = document.getElementById("users-filter-task").value;
+    const params = new URLSearchParams();
+    if (clientSlug) params.set("client_slug", clientSlug);
+    if (taskSlug) params.set("task_slug", taskSlug);
+
+    const res = await VanmoerAuth.authFetch(`/api/admin/users?${params}`);
+    usersTableRows = await res.json();
+    renderUsersTable();
+  }
+
+  function renderUsersTable() {
+    const tbody = document.querySelector("#users-table tbody");
+    if (usersTableRows.length === 0) {
+      tbody.innerHTML = `<tr class="empty-row"><td colspan="6">No users match these filters.</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = usersTableRows.map(u => `
       <tr class="${u.is_active ? "" : "inactive"}">
         <td>${u.name}</td>
         <td>${u.username}</td>
@@ -434,8 +477,8 @@
           <div class="row-actions">
             <button data-edit="${u.id}">Edit</button>
             ${u.is_active
-              ? `<button class="danger" data-delete="${u.id}">Delete</button>`
-              : `<button class="reactivate" data-reactivate="${u.id}">Reactivate</button>`}
+        ? `<button class="danger" data-delete="${u.id}">Delete</button>`
+        : `<button class="reactivate" data-reactivate="${u.id}">Reactivate</button>`}
           </div>
         </td>
       </tr>
@@ -453,7 +496,9 @@
         if (!res.ok) return alert(data.error);
         if (editingUserId === u.id) resetUserForm();
         await loadUsers();
+        await loadUsersTable();
         populateSummaryFilters();
+        updateUserStatCards();
       });
     });
     document.querySelectorAll("[data-reactivate]").forEach(btn => {
@@ -462,10 +507,16 @@
         const data = await res.json();
         if (!res.ok) return alert(data.error);
         await loadUsers();
+        await loadUsersTable();
         populateSummaryFilters();
+        updateUserStatCards();
       });
     });
   }
+
+  ["users-filter-client", "users-filter-task"].forEach(id => {
+    document.getElementById(id).addEventListener("change", loadUsersTable);
+  });
 
   document.getElementById("user-role").addEventListener("change", (e) => {
     document.getElementById("assignment-block").style.display = e.target.value === "admin" ? "none" : "block";
@@ -473,9 +524,9 @@
 
   document.getElementById("cancel-edit-btn").addEventListener("click", resetUserForm);
 
-  document.getElementById("add-client-btn").addEventListener("click", async () => {
-    const name = document.getElementById("client-name").value.trim();
-    const msg = document.getElementById("client-msg");
+  document.getElementById("inline-add-client-btn").addEventListener("click", async () => {
+    const name = document.getElementById("inline-client-name").value.trim();
+    const msg = document.getElementById("inline-client-msg");
     if (!name) return;
     const res = await VanmoerAuth.authFetch("/api/admin/clients", {
       method: "POST",
@@ -485,9 +536,10 @@
     const data = await res.json();
     if (!res.ok) return showMsg(msg, data.error, false);
     showMsg(msg, `Added client "${data.name}".`, true);
-    document.getElementById("client-name").value = "";
+    document.getElementById("inline-client-name").value = "";
     await loadClientsAndTasks();
     populateSummaryFilters();
+    updateUserStatCards();
   });
 
   document.getElementById("add-user-btn").addEventListener("click", async () => {
@@ -522,7 +574,9 @@
     showMsg(msg, isEdit ? `Updated user "${data.username}".` : `Added user "${data.username}".`, true);
     resetUserForm();
     await loadUsers();
+    await loadUsersTable();
     populateSummaryFilters();
+    updateUserStatCards();
     await loadSummary();
   });
 
@@ -530,7 +584,9 @@
     initPeriodFilter();
     await loadClientsAndTasks();
     await loadUsers();
+    await loadUsersTable();
     populateSummaryFilters();
+    updateUserStatCards();
     await loadStats();
     await loadSummary();
   })();

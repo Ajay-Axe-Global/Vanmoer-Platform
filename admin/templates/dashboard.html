@@ -46,7 +46,7 @@
   }
   header button.plain:hover { border-color: #475569; color: var(--text); }
 
-  main { max-width: 1180px; margin: 0 auto; padding: 28px 32px 64px; }
+  main { max-width: 1680px; margin: 0 auto; padding: 24px clamp(16px, 3vw, 40px) 64px; }
   .tab-panel { display: none; }
   .tab-panel.active { display: block; }
 
@@ -57,7 +57,7 @@
   .panel .panel-sub { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text-muted); margin-bottom: 16px; }
 
   /* ── Stat tiles ───────────────────────────────────────── */
-  .stat-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 20px; }
+  .stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 16px; margin-bottom: 20px; }
   .stat-tile { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 18px 20px; }
   .stat-tile .label { font-size: 11.5px; color: var(--text-secondary); font-weight: 600; margin-bottom: 8px; }
   .stat-tile .value { font-size: 28px; font-weight: 700; letter-spacing: -.01em; }
@@ -76,38 +76,44 @@
   #chart-tooltip .t-dot { width: 7px; height: 7px; border-radius: 2px; }
 
   /* ── Filters ──────────────────────────────────────────── */
-  .filter-row { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+  .filter-row { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; align-items: flex-start; }
   .filter-row select {
     background: var(--panel-2); border: 1px solid var(--border-2); border-radius: 8px;
     padding: 8px 12px; color: var(--text); font-size: 12.5px; font-family: inherit; cursor: pointer;
   }
 
-  /* ── Period picker: custom (native <select> popups can't be capped to a
-     scrollable height — the OS/browser owns that overlay, not the page) ── */
-  .period-picker { position: relative; }
-  .period-btn {
+  /* ── Period segmented control (Today / This week / This month / Custom) ── */
+  .period-group {
+    display: flex; background: var(--panel-2); border: 1px solid var(--border-2);
+    border-radius: 8px; padding: 3px; gap: 2px; flex-wrap: wrap;
+  }
+  .period-seg {
+    background: transparent; border: none; color: var(--text-secondary); padding: 7px 13px;
+    border-radius: 6px; cursor: pointer; font-size: 12.5px; font-weight: 600; font-family: inherit;
+    white-space: nowrap; transition: background .15s, color .15s;
+  }
+  .period-seg.active { background: var(--accent); color: #fff; }
+  .period-seg:not(.active):hover { color: var(--text); }
+  /* nowrap so since/to/until/Apply stay one row — if the row doesn't fit, the
+     whole block wraps as a unit onto its own line (via the parent .filter-row's
+     wrap), instead of breaking apart internally into two ragged rows */
+  .custom-range { display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; }
+  .custom-range input[type="date"] {
     background: var(--panel-2); border: 1px solid var(--border-2); border-radius: 8px;
-    padding: 8px 12px; color: var(--text); font-size: 12.5px; font-family: inherit;
-    cursor: pointer; display: flex; align-items: center; gap: 8px;
+    padding: 7px 10px; color: var(--text); font-size: 12.5px; font-family: inherit;
+    color-scheme: dark;
   }
-  .period-btn:hover { border-color: #475569; }
-  .period-btn svg { width: 12px; height: 12px; flex-shrink: 0; color: var(--text-muted); }
-  .period-list {
-    display: none; position: absolute; top: calc(100% + 4px); left: 0; z-index: 30;
-    min-width: 150px; max-height: 132px; overflow-y: auto;
-    background: var(--panel-2); border: 1px solid var(--border-2); border-radius: 8px;
-    padding: 4px; box-shadow: 0 8px 24px rgba(0,0,0,.4);
+  .custom-range .range-sep { color: var(--text-muted); font-size: 12px; }
+  .period-apply {
+    background: var(--accent); border: none; color: #fff; padding: 7px 16px;
+    border-radius: 8px; cursor: pointer; font-size: 12.5px; font-weight: 600; font-family: inherit;
   }
-  .period-list.open { display: block; }
-  .period-option {
-    padding: 7px 10px; border-radius: 6px; font-size: 12.5px; color: var(--text); cursor: pointer;
-  }
-  .period-option:hover { background: #262a33; }
-  .period-option.selected { background: var(--accent); color: #fff; }
+  .period-apply:hover { background: #3d67e8; }
+
   .search-input {
     background: var(--panel-2); border: 1px solid var(--border-2); border-radius: 8px;
     padding: 8px 12px 8px 32px; color: var(--text); font-size: 12.5px; font-family: inherit;
-    box-sizing: border-box; width: 5cm; flex: 0 0 auto; align-self: flex-start;
+    box-sizing: border-box; width: 220px; max-width: 100%; flex: 0 0 auto; align-self: flex-start;
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='8'/%3E%3Cpath d='m21 21-4.35-4.35'/%3E%3C/svg%3E");
     background-repeat: no-repeat; background-position: 10px center;
   }
@@ -115,6 +121,10 @@
   .search-input:focus { outline: none; border-color: var(--accent); }
   .search-input::-webkit-search-cancel-button { cursor: pointer; }
   .filter-row .search-input { margin-left: auto; }
+
+  /* ── Tables scroll horizontally on narrow viewports instead of squishing ── */
+  .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .table-scroll table { min-width: 620px; }
 
   /* ── Tables ───────────────────────────────────────────── */
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -131,6 +141,7 @@
   .count-pill .fail { color: #ff8080; }
   .mono { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--text-secondary); }
   .empty-row td { text-align: center; color: var(--text-muted); padding: 28px; }
+  tfoot .total-row td { font-weight: 700; border-bottom: none; border-top: 2px solid var(--border-2); }
 
   /* ── Users tab (unchanged behavior, restyled) ────────── */
   label { display: block; font-size: 12px; color: var(--text-secondary); margin: 10px 0 4px; font-family: 'JetBrains Mono', monospace; }
@@ -140,6 +151,20 @@
   }
   .row { display: flex; gap: 10px; }
   .row > * { flex: 1; }
+  .inline-client-row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; margin-top: 14px; }
+  .inline-client-row .field { flex: 1; min-width: 180px; }
+  .inline-client-row .field label { margin-top: 0; }
+  .inline-client-row .hint { color: var(--text-muted); font-weight: 400; }
+  .inline-client-row button.primary { margin-top: 0; width: auto; flex: 0 0 auto; padding: 9px 22px; }
+
+  /* ── Users tab: right-hand stat-card column, matches the Add-user panel's
+     full height (grid-2's default row stretch) split into two equal cards ── */
+  .stat-col { display: flex; flex-direction: column; gap: 20px; }
+  .stat-col .stat-tile {
+    flex: 1; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; text-align: center;
+  }
+  .stat-col .stat-tile .value { font-size: 44px; }
   button.primary {
     margin-top: 16px; width: 100%; background: var(--accent); border: none; border-radius: 8px;
     padding: 10px; color: #fff; font-weight: 700; cursor: pointer; font-size: 13px; font-family: inherit;
@@ -195,9 +220,20 @@
   }
   .dl-btn:hover { background: #223050; }
 
-  @media (max-width: 860px) {
-    .grid-2, .stat-row { grid-template-columns: 1fr; }
-    main { padding: 20px 16px 48px; }
+  @media (max-width: 900px) {
+    .grid-2 { grid-template-columns: 1fr; }
+    main { padding: 18px 16px 48px; }
+    header { padding: 14px 16px; flex-wrap: wrap; gap: 10px; }
+    .filter-row .search-input { margin-left: 0; width: 100%; }
+    #modal { padding: 20px; max-width: calc(100% - 24px); }
+  }
+  @media (max-width: 560px) {
+    .stat-row { grid-template-columns: repeat(2, 1fr); }
+    .header-right { width: 100%; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+    .row { flex-direction: column; }
+    .custom-range { flex-wrap: wrap; }
+    #modal-overlay { padding: 0; }
+    #modal { max-width: 100%; max-height: 100vh; height: 100%; border-radius: 0; }
   }
 </style>
 </head>
@@ -241,36 +277,36 @@
         <h2>Files by user · client · task</h2>
         <p class="panel-sub">click a row for the individual jobs behind that count</p>
         <div class="filter-row">
-          <div class="period-picker" id="period-picker">
-            <button type="button" class="period-btn" id="period-btn">
-              <span id="period-btn-label">Today</span>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
-            </button>
-            <div class="period-list" id="period-list"></div>
+          <div class="period-group" id="period-group">
+            <button type="button" class="period-seg active" data-period="today">Today</button>
+            <button type="button" class="period-seg" data-period="week">This week</button>
+            <button type="button" class="period-seg" data-period="month">This month</button>
+            <button type="button" class="period-seg" data-period="custom">Custom</button>
+          </div>
+          <div class="custom-range" id="custom-range" style="display:none">
+            <input type="date" id="custom-since" />
+            <span class="range-sep">to</span>
+            <input type="date" id="custom-until" />
+            <button type="button" class="period-apply" id="custom-apply-btn">Apply</button>
           </div>
           <select id="filter-user"><option value="">All users</option></select>
           <select id="filter-client"><option value="">All clients</option></select>
           <select id="filter-task"><option value="">All tasks</option></select>
           <input type="search" id="summary-search" class="search-input" placeholder="Search…" />
         </div>
-        <table id="summary-table">
-          <thead><tr><th>User</th><th>Client</th><th>Task</th><th>Files</th><th>Last run</th></tr></thead>
-          <tbody></tbody>
-        </table>
+        <div class="table-scroll">
+          <table id="summary-table">
+            <thead><tr><th>User</th><th>Client</th><th>Task</th><th>Files</th><th>Last run</th></tr></thead>
+            <tbody></tbody>
+            <tfoot></tfoot>
+          </table>
+        </div>
       </div>
     </div>
 
     <!-- ═══════════════════ USERS TAB ═══════════════════ -->
     <div class="tab-panel" id="tab-users">
       <div class="grid-2">
-        <div class="panel">
-          <h2 style="margin-bottom:16px">Add client</h2>
-          <label for="client-name">Client name</label>
-          <input id="client-name" placeholder="e.g. Kaneka" />
-          <button class="primary" id="add-client-btn">Add client</button>
-          <div class="msg" id="client-msg"></div>
-        </div>
-
         <div class="panel">
           <h2 id="user-form-title">Add user</h2>
           <label for="user-name">Full name</label>
@@ -284,6 +320,16 @@
             <option value="user">User</option>
             <option value="admin">Admin</option>
           </select>
+
+          <div class="inline-client-row">
+            <div class="field">
+              <label for="inline-client-name">New client <span class="hint">(if not listed below)</span></label>
+              <input id="inline-client-name" placeholder="e.g. Kaneka" />
+            </div>
+            <button type="button" class="primary" id="inline-add-client-btn">+ Add</button>
+          </div>
+          <div class="msg" id="inline-client-msg"></div>
+
           <div id="assignment-block">
             <label>Client / task grants</label>
             <p style="font-size:11px;color:var(--text-secondary);margin-bottom:6px">
@@ -301,14 +347,25 @@
           <button class="primary" id="cancel-edit-btn" style="background:#2a2f3a">Cancel edit</button>
           <div class="msg" id="user-msg"></div>
         </div>
+
+        <div class="stat-col">
+          <div class="stat-tile"><div class="label">Total users</div><div class="value" id="stat-total-users">—</div></div>
+          <div class="stat-tile"><div class="label">Total clients</div><div class="value" id="stat-total-clients">—</div></div>
+        </div>
       </div>
 
       <div class="panel full">
         <h2 style="margin-bottom:16px">Users</h2>
-        <table id="users-table">
-          <thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Grants</th><th>Status</th><th></th></tr></thead>
-          <tbody></tbody>
-        </table>
+        <div class="filter-row">
+          <select id="users-filter-client"><option value="">All clients</option></select>
+          <select id="users-filter-task"><option value="">All tasks</option></select>
+        </div>
+        <div class="table-scroll">
+          <table id="users-table">
+            <thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Grants</th><th>Status</th><th></th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
       </div>
     </div>
   </main>
@@ -325,10 +382,12 @@
       </div>
       <input type="search" id="modal-search" class="search-input" placeholder="Search reference, source file, status…" style="margin-bottom:14px" />
       <div id="modal-body">
-        <table id="modal-table">
-          <thead><tr><th>Timestamp</th><th>Reference</th><th>Source file</th><th>Rows</th><th>Status</th><th></th></tr></thead>
-          <tbody></tbody>
-        </table>
+        <div class="table-scroll">
+          <table id="modal-table">
+            <thead><tr><th>Timestamp</th><th>Reference</th><th>Source file</th><th>Rows</th><th>Status</th><th></th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
       </div>
     </div>
   </div>

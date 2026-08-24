@@ -6,7 +6,7 @@ called from scripts/tests without going through Flask.
 
 import datetime
 
-from sqlalchemy import case, func
+from sqlalchemy import case, func, or_
 
 from database.backup import backup_now
 from database.db import SessionLocal
@@ -28,6 +28,42 @@ def _utc_iso(dt: datetime.datetime) -> str:
     frontend convert it to the viewer's actual local time correctly.
     """
     return dt.isoformat() + "Z"
+
+
+def period_range(period: str, since: str | None = None,
+                  until: str | None = None) -> tuple[datetime.datetime, datetime.datetime]:
+    """Resolves a period keyword into a half-open [since, until) UTC datetime
+    range, server-side, so "Today"/"This week"/"This month" mean the same
+    thing everywhere instead of being recomputed against the viewer's local
+    clock in JS. `since`/`until` are plain "YYYY-MM-DD" date strings, only
+    used (and required) when period == "custom"."""
+    today = datetime.datetime.utcnow().date()
+    tomorrow = today + datetime.timedelta(days=1)
+
+    if period == "custom":
+        if not since or not until:
+            raise ValueError("since and until are required for a custom period")
+        since_date = datetime.date.fromisoformat(since)
+        until_date = datetime.date.fromisoformat(until) + datetime.timedelta(days=1)
+        if since_date >= until_date:
+            raise ValueError("since must be before until")
+    elif period == "week":
+        # Calendar week, Sunday through Saturday (not a trailing 7-day
+        # window) — date.weekday() is Mon=0..Sun=6, so this steps back to
+        # the most recent Sunday (today itself, if today is a Sunday).
+        since_date = today - datetime.timedelta(days=(today.weekday() + 1) % 7)
+        until_date = since_date + datetime.timedelta(days=7)
+    elif period == "month":
+        since_date, until_date = today.replace(day=1), tomorrow
+    elif period == "today":
+        since_date, until_date = today, tomorrow
+    else:
+        raise ValueError(f"Unknown period: {period}")
+
+    return (
+        datetime.datetime.combine(since_date, datetime.time.min),
+        datetime.datetime.combine(until_date, datetime.time.min),
+    )
 
 
 def list_clients() -> list[dict]:
@@ -64,10 +100,21 @@ def create_client(name: str) -> dict:
     return result
 
 
-def list_users() -> list[dict]:
+def list_users(client_slug: str | None = None, task_slug: str | None = None) -> list[dict]:
+    """`client_slug`/`task_slug` filter to users holding a grant for that
+    client and/or task (a real DB join, not a client-side scan) — used by the
+    Users tab's client/task filters."""
     session = SessionLocal()
     try:
-        users = session.query(User).order_by(User.username).all()
+        q = session.query(User).order_by(User.username)
+        if client_slug or task_slug:
+            q = q.join(UserTaskAccess, UserTaskAccess.user_id == User.id)
+            if client_slug:
+                q = q.join(Client, UserTaskAccess.client_id == Client.id).filter(Client.slug == client_slug)
+            if task_slug:
+                q = q.join(Task, UserTaskAccess.task_id == Task.id).filter(Task.slug == task_slug)
+            q = q.distinct()
+        users = q.all()
         return [{
             "id": u.id,
             "name": u.name,
@@ -233,11 +280,14 @@ def jobs_by_client() -> list[dict]:
 
 
 def jobs_summary(since: "datetime.datetime | None" = None,
-                  until: "datetime.datetime | None" = None) -> list[dict]:
+                  until: "datetime.datetime | None" = None,
+                  user_id: int | None = None, client_slug: str | None = None,
+                  task_slug: str | None = None, search: str | None = None) -> list[dict]:
     """One row per (user, client, task) combo that has produced a job in the
     given window — the grouped table the admin dashboard drills down from.
     `since`/`until` are an optional half-open range: [since, until).
-    Omit both for all-time."""
+    Omit both for all-time. `user_id`/`client_slug`/`task_slug`/`search` are
+    all DB-level filters (the admin UI no longer scans the result in JS)."""
     session = SessionLocal()
     try:
         success_count = func.sum(case((JobHistory.status == "success", 1), else_=0))
@@ -262,6 +312,18 @@ def jobs_summary(since: "datetime.datetime | None" = None,
             q = q.filter(JobHistory.timestamp >= since)
         if until is not None:
             q = q.filter(JobHistory.timestamp < until)
+        if user_id is not None:
+            q = q.filter(User.id == user_id)
+        if client_slug:
+            q = q.filter(Client.slug == client_slug)
+        if task_slug:
+            q = q.filter(Task.slug == task_slug)
+        if search:
+            like = f"%{search.strip()}%"
+            q = q.filter(or_(
+                User.name.ilike(like), User.username.ilike(like),
+                Client.name.ilike(like), Task.name.ilike(like),
+            ))
         rows = (
             q.group_by(User.id, Client.id, Task.id)
             .order_by(func.max(JobHistory.timestamp).desc())

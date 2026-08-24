@@ -1,5 +1,3 @@
-import datetime
-
 from flask import Blueprint, g, jsonify, request
 
 from admin import service
@@ -37,7 +35,10 @@ def get_tasks():
 @bp.route("/users", methods=["GET"])
 @role_required("admin")
 def get_users():
-    return jsonify(service.list_users())
+    return jsonify(service.list_users(
+        client_slug=request.args.get("client_slug") or None,
+        task_slug=request.args.get("task_slug") or None,
+    ))
 
 
 @bp.route("/users", methods=["POST"])
@@ -110,11 +111,19 @@ def get_jobs_by_client():
 @bp.route("/jobs/summary", methods=["GET"])
 @role_required("admin")
 def get_jobs_summary():
-    since = request.args.get("since")
-    until = request.args.get("until")
+    period = request.args.get("period", "today")
+    try:
+        since, until = service.period_range(
+            period, request.args.get("since"), request.args.get("until")
+        )
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     return jsonify(service.jobs_summary(
-        since=datetime.datetime.fromisoformat(since) if since else None,
-        until=datetime.datetime.fromisoformat(until) if until else None,
+        since=since, until=until,
+        user_id=request.args.get("user_id", type=int),
+        client_slug=request.args.get("client_slug") or None,
+        task_slug=request.args.get("task_slug") or None,
+        search=request.args.get("search") or None,
     ))
 
 

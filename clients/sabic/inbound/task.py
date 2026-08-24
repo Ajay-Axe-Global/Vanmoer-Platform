@@ -31,6 +31,7 @@ from .extractor import (
     extract_invoice,
     extract_mbl,
     extract_packing_list,
+    repair_container_ids_via_mbl,
     validate,
 )
 
@@ -95,6 +96,7 @@ class SabicInboundTask(BaseTask):
         # ── Step 1: LLM extraction ──────────────────────────────────
         mbl_data = extract_mbl(files["mbl"])
         pkl_data = extract_packing_list(files["packing_list"])
+        pkl_data = repair_container_ids_via_mbl(mbl_data, pkl_data)
         pkl_data = cross_check_containers(mbl_data, pkl_data)
         inv_data = extract_invoice(files["invoice"])
 

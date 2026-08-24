@@ -74,6 +74,51 @@ def _fix_container_id(raw: str, existing_seal: str = "") -> tuple[str, str]:
     return container_id, existing_seal
 
 
+# A truncated container id: 4 letters + FEWER than 7 digits. A correctly
+# read container id is always exactly 4 letters + 7 digits (ISO 6346), so
+# this shape only ever shows up when a page break cut the number in half.
+_SHORT_ID_RE = re.compile(r'^[A-Z]{4}\d{1,6}$')
+# A bare digit fragment with no letters at all. No real container id is
+# ever digits-only, so this shape is never a legitimate independent row —
+# it's always the missing tail of the previous row's truncated id.
+_DIGIT_FRAGMENT_RE = re.compile(r'^\d{1,6}$')
+
+
+def _repair_split_container_ids(rows: list) -> list:
+    """
+    Safety net for a page break that splits a container ID itself, not just
+    the row it's on — the first few characters end one page's table, the
+    remaining digits open the next page's table as if they were their own
+    row (seen on the SABIC-direct/US export layout in PKG_LIST_PROMPT).
+    Telling Gemini to join these in the prompt alone isn't reliable — the
+    prompt also tells it to transcribe every row exactly as printed, and
+    that instruction tends to win. This deterministically joins a truncated
+    id with the very next row's digit-only fragment whenever the join
+    produces a valid 11-character id, and drops the now-redundant fragment
+    row (it never carries any weight/bag data of its own — the real row's
+    data already landed on the truncated-id row).
+    """
+    repaired = []
+    skip_next = False
+    for i, row in enumerate(rows):
+        if skip_next:
+            skip_next = False
+            continue
+
+        cid = (row.get("container_id") or "").strip().upper().replace(" ", "")
+        if _SHORT_ID_RE.match(cid) and i + 1 < len(rows):
+            next_cid = (rows[i + 1].get("container_id") or "").strip().upper().replace(" ", "")
+            if _DIGIT_FRAGMENT_RE.match(next_cid):
+                joined = cid + next_cid
+                if len(joined) == 11 and _CONTAINER_RE.match(joined):
+                    row = dict(row)
+                    row["container_id"] = joined
+                    skip_next = True
+
+        repaired.append(row)
+    return repaired
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # CONTAINER TYPE NORMALIZATION
 # ═══════════════════════════════════════════════════════════════════════════
@@ -184,9 +229,9 @@ PKG_LIST_PROMPT = """You are a shipping-document data extractor. Extract all dat
 ══════════════════════════════════════════
 HEADER FIELDS
 ══════════════════════════════════════════
-This document uses ONE of two header layouts. Identify which one FIRST, then
-apply ONLY that layout's rules below — the two layouts use overlapping words
-("Delivery") for different things, so do not mix their rules.
+This document uses ONE of three header layouts. Identify which one FIRST, then
+apply ONLY that layout's rules below — the layouts use overlapping words
+("Delivery") for different things, so do not mix rules across layouts.
 
 LAYOUT A — Sharq / Petrokemya style: labels are prefixed with a plant name
 ("Sharq Order/STO:", "Petrokemya Delivery:", etc.) AND a separate "Sabic PO:"
@@ -228,6 +273,24 @@ anywhere — leave sabic_po and sabic_delivery empty, do not guess a value.
     KNC SO:      1000474436
   Correct extraction: sto = "4506639516", delivery_no = "809153788".
   "9800715" and "1000474436" are not used anywhere.
+
+LAYOUT C — SABIC-direct / US export style: the header block is titled
+"EXPORT REFERENCES" and lists "Invoice No.:", "Sales Order No.:",
+"Shipment No.:", "Customer PO No.:". There is NO "SO/STO:" label and NO
+"Sabic PO:"/"Sabic Delivery:" label anywhere on this layout — and unlike
+Layout A/B, there is no document-level delivery field in the header block
+at all (the delivery number instead prints on every row of the table —
+see "ALTERNATIVE TABLE LAYOUT 2" below).
+  - "Sales Order No.:" → sto (e.g. "4506627106" — same "450..." numbering
+    pattern as every other layout's sales-order field).
+  - Leave sabic_po and sabic_delivery empty — this layout never has them.
+  - "Shipment No.:" → not needed, ignore it. It is a different reference
+    from Sales Order No. and is NOT a delivery number.
+  - delivery_no → take this from the table's "Delivery Number" column
+    instead (every row carries the same value — use the first row's).
+How to detect: header block titled "EXPORT REFERENCES", with "Sales Order
+No.:"/"Shipment No.:" and NO "SO/STO:" and NO "Sabic PO:"/"Sabic
+Delivery:" anywhere on the page.
 
 - Total pallets: some layouts print a summary line like "112 PALLETIZED 3920 BAGS(of 98 MT)"
   (often near "PKG DESCRIPTION"). If present, extract the leading number (112) as
@@ -297,6 +360,53 @@ Key differences from the standard layout:
 
 How to detect: if the column headers include "Grade" and "BATCH" as separate columns,
 OR if the seal numbers start with "FJ" or "M" followed by digits, use this mapping.
+
+══════════════════════════════════════════
+ALTERNATIVE TABLE LAYOUT 2 — SABIC-direct / US export style
+══════════════════════════════════════════
+Columns: Item | Container Number | Product Description | Package Type | Delivery Number | Batch Number | HAZMAT UN & LABEL, PAGE NO. | Export HS No. | COO | Quantity/UOM | Gross Weight KGS | Net Weight KGS | Dimensions...
+
+Key differences from the standard layout:
+- Container Number is a SINGLE value in its own column — there is NO seal
+  number anywhere on this layout (no stacking, no separate seal column).
+  Set "seal" to empty string "" for every row.
+- EVERY row already carries its own complete container number printed
+  directly on it — this layout never has continuation/orphan rows the way
+  the standard layout does. There is also NO "Verified Gross Mass" column
+  at all — set has_vgm = true for ALL rows (same reasoning as the KNC
+  layout above: no VGM column to gate on, so every row stands on its own
+  and must not be dropped for lack of one).
+- "Batch Number" column → lot. There is no "PKG CODE"/"Grade" column on
+  this layout — set pkg_code to empty string "".
+- There is NO "Bags" count column and no pallet/unit count column at all.
+  "Quantity/UOM" here just repeats the weight (e.g. "24750.000 KG" is the
+  same number as that row's Net Weight KGS) — it is NOT a bag or pallet
+  count. Set both "bags" and "pallet_qty" to 0 for every row on this
+  layout — there is nothing in the document to derive either from.
+- "Delivery Number" column → also copy this row's value into the
+  document-level "delivery_no" field described in HEADER FIELDS (Layout
+  C) above — every row on this layout has the same value.
+
+Container ID split across a page break: occasionally the container number
+itself — not just the row — is cut in half by a page break, with the
+first few characters at the bottom of one page and the remaining digits
+sitting at the very top of the next page's table, ABOVE the next real
+Item row. A container ID is always 4 letters + 7 digits = 11 characters —
+if the container number at the bottom of a page is SHORTER than that,
+look at the top of the next page: if there are digits sitting there that
+do NOT look like a new Item number (Item numbers on this layout are small
+integers like 11, 12, 13), those digits are the missing tail of the
+previous page's container number — join them into one 11-character ID.
+Example: a page ends with container number "HLBU3289" (only 8 characters,
+incomplete) on an Item-12 row; the next page opens with "988" sitting
+above the next real row — "988" is not an Item number, it's the missing
+digits. The correct container_id for that row is "HLBU3289988" (4 letters
++ 7 digits), not the truncated "HLBU3289".
+
+How to detect this layout: the table header row lists "Item" and
+"Container Number" as separate columns (not stacked with a seal), there
+is NO "Verified Gross Mass" column, and there is NO "Bags" count column —
+only a "Quantity/UOM" column that duplicates the weight.
 
 ══════════════════════════════════════════
 WORKED EXAMPLE 1 — mid-page (the case most often gotten wrong)
@@ -441,10 +551,13 @@ def extract_packing_list(pdf_path: str) -> dict:
     """
     data = call_gemini(PKG_LIST_PROMPT, pdf_path=pdf_path, max_output_tokens=16384)
     _dump_json(pdf_path, "pkg_list_raw.json", data)
- 
+
+    data["rows"] = _repair_split_container_ids(data.get("rows", []))
+    _dump_json(pdf_path, "pkg_list_repaired.json", data)
+
     flat_lines = []
     current_cid, current_seal = None, None
- 
+
     for row in data.get("rows", []):
         has_vgm = row.get("has_vgm")
         if isinstance(has_vgm, str):

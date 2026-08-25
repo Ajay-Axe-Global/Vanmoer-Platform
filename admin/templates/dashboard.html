@@ -110,6 +110,16 @@
   }
   .period-apply:hover { background: #3d67e8; }
 
+  /* ── Pie charts (client/task split, productivity) ────────────────────── */
+  .pie-row { display: flex; align-items: center; gap: 24px; flex-wrap: wrap; }
+  .pie-row svg { flex-shrink: 0; }
+  .pie-legend { display: flex; flex-direction: column; gap: 8px; min-width: 180px; flex: 1; }
+  .pie-legend-row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+  .pie-legend-swatch { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
+  .pie-legend-name { flex: 1; }
+  .pie-legend-value { font-family: 'JetBrains Mono', monospace; color: var(--text-secondary); font-size: 11.5px; }
+  .pie-empty { color: var(--text-muted); font-size: 12.5px; padding: 20px 0; }
+
   .search-input {
     background: var(--panel-2); border: 1px solid var(--border-2); border-radius: 8px;
     padding: 8px 12px 8px 32px; color: var(--text); font-size: 12.5px; font-family: inherit;
@@ -273,6 +283,56 @@
         </div>
       </div>
 
+      <div class="grid-2">
+        <div class="panel">
+          <h2>Files by client</h2>
+          <p class="panel-sub">total files per client for the selected period</p>
+          <div class="filter-row">
+            <select id="client-bar-period">
+              <option value="today">Today</option>
+              <option value="week">This week</option>
+              <option value="month">This month</option>
+              <option value="custom">Custom</option>
+            </select>
+          </div>
+          <div class="custom-range" id="client-bar-custom-range" style="display:none">
+            <input type="date" id="client-bar-since" />
+            <span class="range-sep">to</span>
+            <input type="date" id="client-bar-until" />
+            <button type="button" class="period-apply" id="client-bar-apply-btn">Apply</button>
+          </div>
+          <div id="client-bar-wrap">
+            <svg id="client-bar-svg" width="100%" height="220" viewBox="0 0 520 220" preserveAspectRatio="none"></svg>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>Files by client — task split</h2>
+          <p class="panel-sub">each slice is a client's total files for the selected task(s)</p>
+          <div class="filter-row">
+            <select id="client-pie-period">
+              <option value="today">Today</option>
+              <option value="week">This week</option>
+              <option value="month">This month</option>
+              <option value="custom">Custom</option>
+            </select>
+            <select id="client-pie-task">
+              <option value="">All tasks</option>
+            </select>
+          </div>
+          <div class="custom-range" id="client-pie-custom-range" style="display:none">
+            <input type="date" id="client-pie-since" />
+            <span class="range-sep">to</span>
+            <input type="date" id="client-pie-until" />
+            <button type="button" class="period-apply" id="client-pie-apply-btn">Apply</button>
+          </div>
+          <div class="pie-row">
+            <svg id="client-pie-svg" width="180" height="180" viewBox="0 0 180 180"></svg>
+            <div class="pie-legend" id="client-pie-legend"></div>
+          </div>
+        </div>
+      </div>
+
       <div class="panel full">
         <h2>Files by user · client · task</h2>
         <p class="panel-sub">click a row for the individual jobs behind that count</p>
@@ -292,6 +352,7 @@
           <select id="filter-user"><option value="">All users</option></select>
           <select id="filter-client"><option value="">All clients</option></select>
           <select id="filter-task"><option value="">All tasks</option></select>
+          <div class="period-group"><button type="button" class="period-seg" id="productivity-toggle">Productivity</button></div>
           <input type="search" id="summary-search" class="search-input" placeholder="Search…" />
         </div>
         <div class="table-scroll">
@@ -300,6 +361,14 @@
             <tbody></tbody>
             <tfoot></tfoot>
           </table>
+        </div>
+        <div id="productivity-section" style="display:none">
+          <h2 style="margin-top:20px">Productivity — files per team member</h2>
+          <p class="panel-sub">reflects the filters above</p>
+          <div class="pie-row">
+            <svg id="productivity-pie-svg" width="180" height="180" viewBox="0 0 180 180"></svg>
+            <div class="pie-legend" id="productivity-pie-legend"></div>
+          </div>
         </div>
       </div>
     </div>

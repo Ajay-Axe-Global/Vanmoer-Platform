@@ -4,6 +4,17 @@
 
   const CHART_COLOR = "#4f7cff"; // matches --accent; kept literal (not var()) since it's injected via innerHTML
 
+  // Fixed palette for the per-client/per-user charts below — cycled by index
+  // (not hashed) so colors stay visually distinct even with few entries.
+  const PALETTE = ["#4f7cff", "#f59e0b", "#34d399", "#f87171", "#a78bfa", "#22d3ee", "#fb923c", "#c084fc", "#facc15", "#38bdf8"];
+
+  // Same client always gets the same color in both the bar and pie chart —
+  // keyed off clientsCache's position (stable: list_clients() orders by name).
+  function clientColor(slug) {
+    const idx = clientsCache.findIndex(c => c.slug === slug);
+    return PALETTE[(idx < 0 ? 0 : idx) % PALETTE.length];
+  }
+
   // ═══════════════════════════════════════════════════════════════════
   // Tabs
   // ═══════════════════════════════════════════════════════════════════
@@ -145,6 +156,155 @@
   }
 
   // ═══════════════════════════════════════════════════════════════════
+  // Shared: dropdown period picker (Today/This week/This month/Custom via a
+  // <select>, not the segmented-button control above) + generic pie chart.
+  // Used by the two "files by client" charts and the productivity chart.
+  // ═══════════════════════════════════════════════════════════════════
+  function wireDropdownPeriodFilter(selectId, customRangeId, sinceId, untilId, applyId, state, onChange) {
+    const select = document.getElementById(selectId);
+    const customRange = document.getElementById(customRangeId);
+    const sinceInput = document.getElementById(sinceId);
+    const untilInput = document.getElementById(untilId);
+
+    select.addEventListener("change", () => {
+      state.period = select.value;
+      if (state.period === "custom") {
+        customRange.style.display = "flex";
+        if (state.since && state.until) onChange();
+      } else {
+        customRange.style.display = "none";
+        onChange();
+      }
+    });
+
+    document.getElementById(applyId).addEventListener("click", () => {
+      if (!sinceInput.value || !untilInput.value) return;
+      state.since = sinceInput.value;
+      state.until = untilInput.value;
+      onChange();
+    });
+  }
+
+  function periodParams(state) {
+    const params = new URLSearchParams({ period: state.period });
+    if (state.period === "custom") {
+      if (!state.since || !state.until) return null;
+      params.set("since", state.since);
+      params.set("until", state.until);
+    }
+    return params;
+  }
+
+  function describeArcPath(cx, cy, r, startAngle, endAngle) {
+    const start = { x: cx + r * Math.cos(startAngle), y: cy + r * Math.sin(startAngle) };
+    const end = { x: cx + r * Math.cos(endAngle), y: cy + r * Math.sin(endAngle) };
+    const largeArc = endAngle - startAngle > Math.PI ? 1 : 0;
+    return `M${cx},${cy} L${start.x},${start.y} A${r},${r} 0 ${largeArc} 1 ${end.x},${end.y} Z`;
+  }
+
+  // data: [{ label, value, color }]. Renders plain slices into `svg`, and a
+  // swatch/name/value/% legend into `legendEl` — every entry gets a count in
+  // the legend regardless of slice size (an in-slice label was tried, but a
+  // thin sliver has no room to legibly hold text, which silently dropped its
+  // count instead of just showing it smaller). Reused for the client/task
+  // split chart and the productivity-by-user chart.
+  function drawPieChart(svg, legendEl, data) {
+    const nonZero = data.filter(d => d.value > 0);
+    const total = nonZero.reduce((sum, d) => sum + d.value, 0);
+    if (total <= 0) {
+      svg.innerHTML = "";
+      legendEl.innerHTML = `<div class="pie-empty">No files in this period.</div>`;
+      return;
+    }
+
+    const cx = 90, cy = 90, r = 80;
+    if (nonZero.length === 1) {
+      // A single 100% slice degenerates to a zero-length arc (start === end
+      // after a full 2π sweep) — draw a plain circle instead.
+      svg.innerHTML = `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${nonZero[0].color}" />`;
+    } else {
+      let angle = -Math.PI / 2; // start at 12 o'clock
+      svg.innerHTML = nonZero.map(d => {
+        const sweep = (d.value / total) * Math.PI * 2;
+        const path = `<path d="${describeArcPath(cx, cy, r, angle, angle + sweep)}" fill="${d.color}" />`;
+        angle += sweep;
+        return path;
+      }).join("");
+    }
+
+    legendEl.innerHTML = nonZero.map(d => `
+      <div class="pie-legend-row">
+        <span class="pie-legend-swatch" style="background:${d.color}"></span>
+        <span class="pie-legend-name">${d.label}</span>
+        <span class="pie-legend-value">${d.value.toLocaleString()} · ${Math.round(d.value / total * 100)}%</span>
+      </div>
+    `).join("");
+  }
+
+  // data: [{ client_name, client_slug, count, color }]
+  function drawClientBarChart(svg, data) {
+    const W = 520, H = 220, padL = 34, padB = 30, padT = 22;
+    const plotW = W - padL - 10, plotH = H - padT - padB;
+    const maxVal = Math.max(1, ...data.map(d => d.count));
+    const niceMax = Math.ceil(maxVal / 5) * 5 || 5;
+    const n = Math.max(data.length, 1);
+    const bandW = plotW / n;
+    const barW = Math.min(48, bandW * 0.5);
+    const baseY = padT + plotH;
+
+    let grid = "";
+    for (let i = 0; i <= 4; i++) {
+      const y = padT + plotH - (plotH * i) / 4;
+      const val = Math.round((niceMax * i) / 4);
+      grid += `<line x1="${padL}" y1="${y}" x2="${W - 10}" y2="${y}" stroke="#2c2c2a" stroke-width="1" />`;
+      grid += `<text x="${padL - 8}" y="${y + 3}" text-anchor="end" font-size="10" fill="#6b7280" font-family="JetBrains Mono, monospace">${val}</text>`;
+    }
+
+    let bars = "", valueLabels = "", axisLabels = "";
+    data.forEach((d, i) => {
+      const cx = padL + bandW * i + bandW / 2;
+      const x = cx - barW / 2;
+      const h = Math.max((d.count / niceMax) * plotH, d.count > 0 ? 1 : 0);
+      if (h > 0) bars += rectPath(x, baseY - h, barW, h, 4, d.color);
+      if (d.count > 0) {
+        const labelY = Math.max(baseY - h - 6, padT - 8);
+        valueLabels += `<text x="${cx}" y="${labelY}" text-anchor="middle" font-size="10" fill="#9299a8" font-family="JetBrains Mono, monospace">${d.count}</text>`;
+      }
+      axisLabels += `<text x="${cx}" y="${H - 10}" text-anchor="middle" font-size="10" fill="#9299a8" font-family="JetBrains Mono, monospace">${truncate(d.client_name, 10)}</text>`;
+    });
+
+    svg.innerHTML = grid + bars + valueLabels + axisLabels;
+  }
+
+  const clientBarState = { period: "today", since: null, until: null };
+  const clientPieState = { period: "today", since: null, until: null };
+
+  async function loadClientBarChart() {
+    const params = periodParams(clientBarState);
+    if (!params) return;
+    const res = await VanmoerAuth.authFetch(`/api/admin/stats/by-client?${params}`);
+    const rows = await res.json();
+    drawClientBarChart(document.getElementById("client-bar-svg"),
+      rows.map(r => ({ ...r, color: clientColor(r.client_slug) })));
+  }
+
+  async function loadClientPieChart() {
+    const params = periodParams(clientPieState);
+    if (!params) return;
+    const taskSlug = document.getElementById("client-pie-task").value;
+    if (taskSlug) params.set("task_slug", taskSlug);
+    const res = await VanmoerAuth.authFetch(`/api/admin/stats/by-client?${params}`);
+    const rows = await res.json();
+    drawPieChart(
+      document.getElementById("client-pie-svg"),
+      document.getElementById("client-pie-legend"),
+      rows.map(r => ({ label: r.client_name, value: r.count, color: clientColor(r.client_slug) }))
+    );
+  }
+
+  document.getElementById("client-pie-task").addEventListener("change", loadClientPieChart);
+
+  // ═══════════════════════════════════════════════════════════════════
   // Dashboard tab: grouped summary table + filters + drill-down modal
   // ═══════════════════════════════════════════════════════════════════
   let summaryCache = [];
@@ -157,7 +317,12 @@
   const periodState = { period: "today", since: null, until: null };
 
   function initPeriodFilter() {
-    const segs = document.querySelectorAll(".period-seg");
+    // Scoped to #period-group, not just ".period-seg" — the Productivity
+    // toggle button reuses that class for its pill styling but lives outside
+    // this group and has no data-period; a page-wide selector here would
+    // wire it into this handler too and stomp periodState.period to
+    // undefined on every Productivity click.
+    const segs = document.querySelectorAll("#period-group .period-seg");
     const customRange = document.getElementById("custom-range");
     const sinceInput = document.getElementById("custom-since");
     const untilInput = document.getElementById("custom-until");
@@ -169,10 +334,10 @@
         periodState.period = btn.dataset.period;
         if (periodState.period === "custom") {
           customRange.style.display = "flex";
-          if (periodState.since && periodState.until) loadSummary();
+          if (periodState.since && periodState.until) refreshSummaryViews();
         } else {
           customRange.style.display = "none";
-          loadSummary();
+          refreshSummaryViews();
         }
       });
     });
@@ -181,7 +346,7 @@
       if (!sinceInput.value || !untilInput.value) return;
       periodState.since = sinceInput.value;
       periodState.until = untilInput.value;
-      loadSummary();
+      refreshSummaryViews();
     });
   }
 
@@ -210,13 +375,12 @@
     taskSel.value = prev.task;
   }
 
-  async function loadSummary() {
-    const params = new URLSearchParams({ period: periodState.period });
-    if (periodState.period === "custom") {
-      if (!periodState.since || !periodState.until) return;
-      params.set("since", periodState.since);
-      params.set("until", periodState.until);
-    }
+  // Shared by loadSummary() and loadProductivity() — both read the exact
+  // same period/user/client/task/search filter row, they just aggregate the
+  // result differently server-side.
+  function buildSummaryFilterParams() {
+    const params = periodParams(periodState);
+    if (!params) return null;
     const userFilter = document.getElementById("filter-user").value;
     const clientFilter = document.getElementById("filter-client").value;
     const taskFilter = document.getElementById("filter-task").value;
@@ -225,13 +389,46 @@
     if (clientFilter) params.set("client_slug", clientFilter);
     if (taskFilter) params.set("task_slug", taskFilter);
     if (search) params.set("search", search);
+    return params;
+  }
 
+  async function loadSummary() {
+    const params = buildSummaryFilterParams();
+    if (!params) return;
     const res = await VanmoerAuth.authFetch(`/api/admin/jobs/summary?${params}`);
     summaryCache = await res.json();
     renderSummaryTable();
   }
 
-  const debouncedLoadSummary = debounce(loadSummary, 300);
+  // Whether the productivity pie is currently toggled open — when it is,
+  // any change to the shared filter row above should refresh it too.
+  let productivityVisible = false;
+
+  async function loadProductivity() {
+    const params = buildSummaryFilterParams();
+    if (!params) return;
+    const res = await VanmoerAuth.authFetch(`/api/admin/jobs/productivity?${params}`);
+    const rows = await res.json();
+    drawPieChart(
+      document.getElementById("productivity-pie-svg"),
+      document.getElementById("productivity-pie-legend"),
+      rows.map((r, i) => ({ label: `${r.user_name} (${r.username})`, value: r.count, color: PALETTE[i % PALETTE.length] }))
+    );
+  }
+
+  async function refreshSummaryViews() {
+    await loadSummary();
+    if (productivityVisible) await loadProductivity();
+  }
+
+  const debouncedRefreshSummaryViews = debounce(refreshSummaryViews, 300);
+
+  document.getElementById("productivity-toggle").addEventListener("click", () => {
+    productivityVisible = !productivityVisible;
+    document.getElementById("productivity-toggle").classList.toggle("active", productivityVisible);
+    document.getElementById("productivity-section").style.display = productivityVisible ? "block" : "none";
+    if (productivityVisible) loadProductivity();
+  });
 
   function renderSummaryTable() {
     const tbody = document.querySelector("#summary-table tbody");
@@ -276,9 +473,9 @@
   }
 
   ["filter-user", "filter-client", "filter-task"].forEach(id => {
-    document.getElementById(id).addEventListener("change", loadSummary);
+    document.getElementById(id).addEventListener("change", refreshSummaryViews);
   });
-  document.getElementById("summary-search").addEventListener("input", debouncedLoadSummary);
+  document.getElementById("summary-search").addEventListener("input", debouncedRefreshSummaryViews);
 
   let modalJobsCache = [];
 
@@ -368,6 +565,9 @@
     document.getElementById("users-filter-client").innerHTML = `<option value="">All clients</option>` +
       clientsCache.map(c => `<option value="${c.slug}">${c.name}</option>`).join("");
     document.getElementById("users-filter-task").innerHTML = `<option value="">All tasks</option>` +
+      tasksCache.map(t => `<option value="${t.slug}">${t.name}</option>`).join("");
+
+    document.getElementById("client-pie-task").innerHTML = `<option value="">All tasks</option>` +
       tasksCache.map(t => `<option value="${t.slug}">${t.name}</option>`).join("");
   }
 
@@ -577,11 +777,13 @@
     await loadUsersTable();
     populateSummaryFilters();
     updateUserStatCards();
-    await loadSummary();
+    await refreshSummaryViews();
   });
 
   (async function init() {
     initPeriodFilter();
+    wireDropdownPeriodFilter("client-bar-period", "client-bar-custom-range", "client-bar-since", "client-bar-until", "client-bar-apply-btn", clientBarState, loadClientBarChart);
+    wireDropdownPeriodFilter("client-pie-period", "client-pie-custom-range", "client-pie-since", "client-pie-until", "client-pie-apply-btn", clientPieState, loadClientPieChart);
     await loadClientsAndTasks();
     await loadUsers();
     await loadUsersTable();
@@ -589,5 +791,7 @@
     updateUserStatCards();
     await loadStats();
     await loadSummary();
+    await loadClientBarChart();
+    await loadClientPieChart();
   })();
 })();

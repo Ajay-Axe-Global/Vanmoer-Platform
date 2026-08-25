@@ -431,7 +431,15 @@ def dashboard_stats(days: int = 14, client_slug: str | None = None,
             series.append({"date": d.isoformat(), "count": counts_by_day.get(d.isoformat(), 0)})
 
         files_today = counts_by_day.get(today.isoformat(), 0)
-        files_this_week = sum(p["count"] for p in series[-7:])
+        # Calendar week (Sunday-Saturday), same boundary as the "This week"
+        # period filter (period_range) — not a trailing-7-day window, so the
+        # two stay in agreement instead of drifting apart mid-week.
+        week_since, week_until = period_range("week")
+        files_this_week = (
+            base_query(func.sum(file_count_expr))
+            .filter(JobHistory.timestamp >= week_since, JobHistory.timestamp < week_until)
+            .scalar() or 0
+        )
 
         return {
             "total_files": total_files,
@@ -442,5 +450,79 @@ def dashboard_stats(days: int = 14, client_slug: str | None = None,
             "files_this_week": files_this_week,
             "series": series,
         }
+    finally:
+        session.close()
+
+
+def files_by_client(since: datetime.datetime, until: datetime.datetime,
+                     task_slug: str | None = None) -> list[dict]:
+    """One row per client, zero-filled, total files in [since, until) —
+    optionally scoped to one task. Every client from the catalog is included
+    even at 0, so a client/color's bar position in the chart doesn't shift
+    between periods that happen to have no data for it (same reasoning as the
+    "full catalog" filter-option lists elsewhere in this module)."""
+    session = SessionLocal()
+    try:
+        file_count_expr = func.coalesce(
+            JobHistory.reference_count,
+            case((JobHistory.status == "success", 1), else_=0),
+        )
+        q = (
+            session.query(Client.id, func.sum(file_count_expr))
+            .join(JobHistory, JobHistory.client_id == Client.id)
+            .filter(JobHistory.timestamp >= since, JobHistory.timestamp < until)
+        )
+        if task_slug:
+            q = q.join(Task, JobHistory.task_id == Task.id).filter(Task.slug == task_slug)
+        counts_by_client = dict(q.group_by(Client.id).all())
+
+        clients = session.query(Client).order_by(Client.name).all()
+        return [{
+            "client_name": c.name, "client_slug": c.slug,
+            "count": counts_by_client.get(c.id, 0) or 0,
+        } for c in clients]
+    finally:
+        session.close()
+
+
+def productivity_by_user(since: datetime.datetime, until: datetime.datetime,
+                          client_slug: str | None = None, task_slug: str | None = None,
+                          user_id: int | None = None, search: str | None = None) -> list[dict]:
+    """Files per user in [since, until) — same filter semantics as
+    jobs_summary() (client/task/user/search all narrow the WHERE clause),
+    but grouped by user only. Powers the "Productivity" pie chart. Users with
+    no matching jobs are simply absent (a 0-file pie slice is just clutter)."""
+    session = SessionLocal()
+    try:
+        file_count_expr = func.coalesce(
+            JobHistory.reference_count,
+            case((JobHistory.status == "success", 1), else_=0),
+        )
+        q = (
+            session.query(User.id, User.name, User.username, func.sum(file_count_expr))
+            .join(JobHistory, JobHistory.user_id == User.id)
+            .join(Client, JobHistory.client_id == Client.id)
+            .join(Task, JobHistory.task_id == Task.id)
+            .filter(JobHistory.timestamp >= since, JobHistory.timestamp < until)
+        )
+        if client_slug:
+            q = q.filter(Client.slug == client_slug)
+        if task_slug:
+            q = q.filter(Task.slug == task_slug)
+        if user_id is not None:
+            q = q.filter(User.id == user_id)
+        if search:
+            like = f"%{search.strip()}%"
+            q = q.filter(or_(
+                User.name.ilike(like), User.username.ilike(like),
+                Client.name.ilike(like), Task.name.ilike(like),
+            ))
+        rows = (
+            q.group_by(User.id)
+            .order_by(func.sum(file_count_expr).desc())
+            .all()
+        )
+        return [{"user_id": uid, "user_name": uname, "username": uusername, "count": count or 0}
+                for uid, uname, uusername, count in rows]
     finally:
         session.close()

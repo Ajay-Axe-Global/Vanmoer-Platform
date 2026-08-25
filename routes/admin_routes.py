@@ -127,6 +127,25 @@ def get_jobs_summary():
     ))
 
 
+@bp.route("/jobs/productivity", methods=["GET"])
+@role_required("admin")
+def get_jobs_productivity():
+    period = request.args.get("period", "today")
+    try:
+        since, until = service.period_range(
+            period, request.args.get("since"), request.args.get("until")
+        )
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify(service.productivity_by_user(
+        since=since, until=until,
+        client_slug=request.args.get("client_slug") or None,
+        task_slug=request.args.get("task_slug") or None,
+        user_id=request.args.get("user_id", type=int),
+        search=request.args.get("search") or None,
+    ))
+
+
 @bp.route("/jobs", methods=["GET"])
 @role_required("admin")
 def get_jobs():
@@ -147,6 +166,19 @@ def get_stats():
         client_slug=request.args.get("client_slug") or None,
         task_slug=request.args.get("task_slug") or None,
     ))
+
+
+@bp.route("/stats/by-client", methods=["GET"])
+@role_required("admin")
+def get_stats_by_client():
+    period = request.args.get("period", "today")
+    try:
+        since, until = service.period_range(
+            period, request.args.get("since"), request.args.get("until")
+        )
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify(service.files_by_client(since, until, task_slug=request.args.get("task_slug") or None))
 
 
 @bp.route("/backup", methods=["POST"])

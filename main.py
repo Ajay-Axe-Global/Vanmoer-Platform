@@ -87,12 +87,20 @@ app = create_app()
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "5000"))
     if os.getenv("FLASK_DEBUG", "1") == "1":
-        # Dev mode: Werkzeug's reloader + debugger, single-threaded — fine for local iteration.
+        # Dev mode: Werkzeug's reloader + debugger.
         # host=0.0.0.0 so other machines on the LAN can reach it, not just localhost.
+        # threaded=True: the admin dashboard fires ~8 API calls on a single
+        # page load (stats, summary, users, clients, tasks, the two by-client
+        # charts, productivity) — without this, Werkzeug serves them one at a
+        # time even when the browser sends them concurrently, so the page
+        # visibly waits on the sum of every query's DB time instead of the
+        # slowest one. All of these are read-only, and the DB is in WAL mode
+        # (see database/db.py), so concurrent reads from multiple threads are
+        # safe here.
         if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
             # Reloader's forked worker process — the one that actually serves requests.
             print(f"Running on http://{_lan_ip()}:{port} (LAN)")
-        app.run(debug=True, host="0.0.0.0", port=port)
+        app.run(debug=True, host="0.0.0.0", port=port, threaded=True)
     else:
         # Everything else: waitress, a real multi-threaded WSGI server. The
         # Flask dev server used here before this was never meant to hold up

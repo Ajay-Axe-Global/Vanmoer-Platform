@@ -648,13 +648,22 @@
     document.getElementById("stat-total-clients").textContent = clientsCache.length.toLocaleString();
   }
 
+  // Must run after loadUsers() has resolved (not in parallel with it) —
+  // the no-filter branch reuses usersCache instead of firing an identical
+  // second request to the same endpoint, which only works if usersCache is
+  // already populated by the time this checks it.
   async function loadUsersTable() {
     const clientSlug = document.getElementById("users-filter-client").value;
     const taskSlug = document.getElementById("users-filter-task").value;
+    if (!clientSlug && !taskSlug) {
+      usersTableRows = usersCache;
+      renderUsersTable();
+      return;
+    }
+
     const params = new URLSearchParams();
     if (clientSlug) params.set("client_slug", clientSlug);
     if (taskSlug) params.set("task_slug", taskSlug);
-
     const res = await VanmoerAuth.authFetch(`/api/admin/users?${params}`);
     usersTableRows = await res.json();
     renderUsersTable();
@@ -780,18 +789,64 @@
     await refreshSummaryViews();
   });
 
+  // Everything that makes up the dashboard's current view — used both for
+  // the initial load and for the background auto-refresh below. Each call
+  // is its own API round-trip and none of them depend on each other's
+  // result, so they're fired together (Promise.all) instead of one `await`
+  // at a time — the page waits on the slowest single query instead of the
+  // sum of all ~8. (Pairs with threaded=True on the dev server in main.py —
+  // without that, Werkzeug's dev server would still serve these one at a
+  // time no matter how they're fired here.)
+  async function loadAllDashboardData() {
+    // loadUsersTable() reuses usersCache when unfiltered (see its comment)
+    // instead of firing an identical second request to /api/admin/users,
+    // so it has to come after loadUsers() resolves rather than racing it.
+    await Promise.all([loadClientsAndTasks(), loadUsers()]);
+    await loadUsersTable();
+    populateSummaryFilters();
+    updateUserStatCards();
+
+    const tasks = [loadStats(), loadSummary(), loadClientBarChart(), loadClientPieChart()];
+    if (productivityVisible) tasks.push(loadProductivity());
+    await Promise.all(tasks);
+  }
+
+  // Background auto-refresh — nothing here pushes updates into an already-
+  // open tab on its own (no websocket/SSE), so without this, another
+  // admin's changes (or your own from a second tab) only show up after a
+  // manual browser refresh. Silent: no loader, no visible state change
+  // beyond the numbers updating, and errors are swallowed since a transient
+  // failure on a background tick shouldn't surface — the next tick retries.
+  const AUTO_REFRESH_INTERVAL_MS = 30000;
+  let isAutoRefreshing = false;
+
+  async function autoRefreshDashboard() {
+    if (isAutoRefreshing || document.visibilityState !== "visible") return;
+    isAutoRefreshing = true;
+    try {
+      await loadAllDashboardData();
+    } catch {
+      // swallowed — see comment above
+    } finally {
+      isAutoRefreshing = false;
+    }
+  }
+
+  setInterval(autoRefreshDashboard, AUTO_REFRESH_INTERVAL_MS);
+
   (async function init() {
     initPeriodFilter();
     wireDropdownPeriodFilter("client-bar-period", "client-bar-custom-range", "client-bar-since", "client-bar-until", "client-bar-apply-btn", clientBarState, loadClientBarChart);
     wireDropdownPeriodFilter("client-pie-period", "client-pie-custom-range", "client-pie-since", "client-pie-until", "client-pie-apply-btn", clientPieState, loadClientPieChart);
-    await loadClientsAndTasks();
-    await loadUsers();
-    await loadUsersTable();
-    populateSummaryFilters();
-    updateUserStatCards();
-    await loadStats();
-    await loadSummary();
-    await loadClientBarChart();
-    await loadClientPieChart();
+
+    // The full-page loader (visible from first paint, see #page-loader in
+    // the CSS) covers this stretch instead of a blank dashboard, and the
+    // `finally` guarantees it's dismissed even if a fetch fails, so errors
+    // never leave the user staring at a stuck spinner.
+    try {
+      await loadAllDashboardData();
+    } finally {
+      document.getElementById("page-loader").classList.add("hidden");
+    }
   })();
 })();

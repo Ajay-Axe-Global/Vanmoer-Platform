@@ -765,6 +765,10 @@ def cross_check_containers(mbl: dict, pkl: dict) -> dict:
     """
     from collections import OrderedDict
 
+    # Seal fallback for when a container's last packing-list row gets
+    # stolen away before it's used as the seal source (see below).
+    mbl_seal_map = {c["id"]: c.get("seal", "") for c in mbl.get("containers", []) if c.get("id")}
+
     # Build expected bags per container from MBL
     mbl_expected = {}
     for c in mbl.get("containers", []):
@@ -840,7 +844,13 @@ def cross_check_containers(mbl: dict, pkl: dict) -> dict:
                     print(f"  [CROSS-CHECK FIX] Lot {stolen['lot']} ({stolen['bags']} bags): "
                           f"{over_cid} → {under_cid}")
                     stolen["container_id"] = under_cid
-                    stolen["seal"] = lines[container_lines_map[under_cid][0]]["seal"]
+                    if container_lines_map[under_cid]:
+                        stolen["seal"] = lines[container_lines_map[under_cid][0]]["seal"]
+                    else:
+                        # under_cid was fully drained by an earlier steal
+                        # this same round (a 3+ container cascade) — no
+                        # packing-list row left to read its seal from.
+                        stolen["seal"] = mbl_seal_map.get(under_cid, stolen["seal"])
                     container_lines_map[under_cid].append(fi)
                     container_lines_map[over_cid].remove(fi)
                     fixes_this_round += 1

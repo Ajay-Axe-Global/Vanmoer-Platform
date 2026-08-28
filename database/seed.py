@@ -17,7 +17,7 @@ def seed():
     init_db()
     session = SessionLocal()
     try:
-        for name in ("Carpenter", "Sabic"):
+        for name in ("Carpenter", "Sabic", "Vinmar"):
             slug = name.lower()
             if not session.query(Client).filter_by(slug=slug).first():
                 session.add(Client(name=name, slug=slug))

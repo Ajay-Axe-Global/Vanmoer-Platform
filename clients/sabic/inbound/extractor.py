@@ -436,6 +436,50 @@ Row-by-row:
   Row 3: MSMU8152963, HAS VGM (29.755 MT) → open new container MSMU8152963. current = MSMU8152963.
 
 ══════════════════════════════════════════
+WORKED EXAMPLE 2 — several 2-lot containers in a row (the case that gets
+mis-transcribed most often — do NOT let this pattern make you merge rows
+or shift a continuation row's numbers onto a different container)
+══════════════════════════════════════════
+    TRHU6323910   ...   0062126564   12 PAL   720   18.312 MT   29.704 MT   18.0 MT
+      1128359
+                  ...   0062131595    5 PAL   300    7.630 MT                7.5 MT
+
+    MRSU9878755   ...   0062131595   17 PAL  1020   25.942 MT   29.704 MT   25.5 MT
+      1096929
+
+    CAAU9119094   ...   0062126564    8 PAL   480   12.208 MT   29.704 MT   12.0 MT
+      1096749
+                  ...   0062131595    9 PAL   540   13.734 MT               13.5 MT
+
+    MRSU7592757   ...   0062131595   17 PAL  1020   25.942 MT   29.704 MT   25.5 MT
+      1096719
+
+This is SIX physical rows → output EXACTLY six array entries, never four:
+  Row 1: TRHU6323910, HAS VGM → open TRHU6323910. current = TRHU6323910.
+  Row 2: no container ID, NO VGM, lot 0062131595, 300 bags → continuation
+         of TRHU6323910. Output its OWN entry: container_id="",
+         has_vgm=false, bags=300. Do NOT drop this row, and do NOT let its
+         numbers (300 bags, lot 0062131595) end up on the MRSU9878755 row
+         below — MRSU9878755 is a brand-new, unrelated container that
+         happens to come next; it has its own 1020-bag row further down
+         in the document and nothing to do with TRHU6323910's leftover lot.
+  Row 3: MRSU9878755, HAS VGM → open MRSU9878755 (separate container,
+         separate 1020-bag entry — untouched by row 2 above it).
+  Row 4: CAAU9119094, HAS VGM → open CAAU9119094.
+  Row 5: no container ID, NO VGM, lot 0062131595, 540 bags → continuation
+         of CAAU9119094, its own entry — again, must NOT be merged into or
+         overwrite the next container's (MRSU7592757's) row.
+  Row 6: MRSU7592757, HAS VGM → open MRSU7592757, its own separate
+         1020-bag entry.
+
+General rule: every VGM-less, container-ID-less row is its OWN array
+entry belonging to the container that opened directly above it — never
+skip emitting it, and never let its data replace or merge into ANY other
+row, including the very next VGM row. The number of array entries you
+return must equal the number of physical table rows in the document,
+counted rows included.
+
+══════════════════════════════════════════
 OUTPUT FORMAT
 ══════════════════════════════════════════
 {
@@ -835,8 +879,13 @@ def cross_check_containers(mbl: dict, pkl: dict) -> dict:
             u_act = sum(lines[i]["bags"] for i in container_lines_map[under_cid])
             o_act = sum(lines[i]["bags"] for i in container_lines_map[over_cid])
 
-            # Under-container is short AND over-container has excess
-            if u_act < u_exp and o_act > u_act and container_lines_map[over_cid]:
+            # Under-container is short AND over-container has excess.
+            # Require over_cid to have MORE THAN ONE row before stealing —
+            # a steal must never fully drain a real container down to zero
+            # rows (that container would then vanish entirely from the
+            # output instead of just losing one misattached lot).
+            if (u_act < u_exp and o_act > u_act
+                    and len(container_lines_map[over_cid]) > 1):
                 fi = container_lines_map[over_cid][0]
                 stolen = lines[fi]
                 # Only require the under-container to become correct

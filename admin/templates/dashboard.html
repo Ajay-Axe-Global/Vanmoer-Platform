@@ -499,6 +499,31 @@
       color: var(--text-secondary);
     }
 
+    /* ── Reference cell: many refs wrap into a fixed-width block instead of
+       forcing the modal (and its horizontal scrollbar) to stretch ── */
+    #modal-table th:nth-child(2),
+    #modal-table td:nth-child(2) {
+      width: 220px;
+      max-width: 220px;
+    }
+
+    .ref-cell {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 3px 6px;
+    }
+
+    .ref-chip {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .ref-chip:not(:last-child)::after {
+      content: ",";
+      color: var(--text-muted);
+    }
+
     .empty-row td {
       text-align: center;
       color: var(--text-muted);

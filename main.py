@@ -3,7 +3,6 @@ Vanmoer Platform — Flask app factory.
 This file stays generic: adding a new client/task never requires touching it,
 only clients/__init__.py's TASK_REGISTRY (see routes/__init__.py).
 """
-
 import os
 import socket
 from pathlib import Path

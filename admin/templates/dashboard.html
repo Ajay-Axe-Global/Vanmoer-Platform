@@ -500,17 +500,22 @@
     }
 
     /* ── Reference cell: many refs wrap into a fixed-width block instead of
-       forcing the modal (and its horizontal scrollbar) to stretch ── */
-    #modal-table th:nth-child(2),
-    #modal-table td:nth-child(2) {
-      width: 220px;
-      max-width: 220px;
+       forcing the modal (and its horizontal scrollbar) to stretch. Requires
+       table-layout: fixed (paired with the <colgroup> in the markup) so the
+       browser honors the column width instead of growing it to fit content ── */
+    #modal-table {
+      table-layout: fixed;
+    }
+
+    #modal-table td {
+      overflow: hidden;
     }
 
     .ref-cell {
       display: flex;
       flex-wrap: wrap;
       gap: 3px 6px;
+      overflow: hidden;
     }
 
     .ref-chip {
@@ -1195,6 +1200,14 @@
       <div id="modal-body">
         <div class="table-scroll">
           <table id="modal-table">
+            <colgroup>
+              <col style="width:120px">
+              <col style="width:220px">
+              <col>
+              <col style="width:60px">
+              <col style="width:90px">
+              <col style="width:110px">
+            </colgroup>
             <thead>
               <tr>
                 <th>Timestamp</th>

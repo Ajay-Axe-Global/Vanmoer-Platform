@@ -497,7 +497,7 @@
     document.querySelector("#modal-table tbody").innerHTML = jobs.length ? jobs.map(j => `
       <tr>
         <td class="mono">${fmtTimestamp(j.timestamp)}</td>
-        <td>${j.reference || "—"}${j.reference_count > 1 ? ` <span class="badge">×${j.reference_count}</span>` : ""}</td>
+        <td>${renderRefCell(j)}</td>
         <td class="mono" title="${j.source_filename || ""}">${truncate(j.source_filename)}</td>
         <td class="num">${j.row_count ?? "—"}</td>
         <td><span class="badge status-${j.status}">${j.status}</span></td>
@@ -522,6 +522,13 @@
     );
     renderModalTable(filtered);
   });
+
+  function renderRefCell(j) {
+    if (!j.reference) return "—";
+    const chips = j.reference.split(", ").map(r => `<span class="ref-chip">${r}</span>`).join("");
+    const countBadge = j.reference_count > 1 ? ` <span class="badge">×${j.reference_count}</span>` : "";
+    return `<div class="ref-cell">${chips}</div>${countBadge}`;
+  }
 
   function truncate(s, n = 40) {
     if (!s) return "—";

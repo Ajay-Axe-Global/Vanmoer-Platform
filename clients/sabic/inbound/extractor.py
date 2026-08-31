@@ -170,7 +170,7 @@ def normalize_container_type(raw: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# DEBUG JSON DUMP
+# DEBUG JSON DUMP                                                            
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _dump_json(pdf_path: str, suffix: str, data):
@@ -229,7 +229,7 @@ PKG_LIST_PROMPT = """You are a shipping-document data extractor. Extract all dat
 ══════════════════════════════════════════
 HEADER FIELDS
 ══════════════════════════════════════════
-This document uses ONE of three header layouts. Identify which one FIRST, then
+This document uses ONE of four header layouts. Identify which one FIRST, then
 apply ONLY that layout's rules below — the layouts use overlapping words
 ("Delivery") for different things, so do not mix rules across layouts.
 
@@ -293,6 +293,39 @@ see "ALTERNATIVE TABLE LAYOUT 2" below).
 How to detect: header block titled "EXPORT REFERENCES", with "Sales Order
 No.:"/"Shipment No.:" and NO "SO/STO:" and NO "Sabic PO:"/"Sabic
 Delivery:" anywhere on the page.
+
+LAYOUT D — dual reference-block style: TWO separate label blocks sit
+side by side in the header, each with its OWN "Delivery:" line — a left
+block headed "Order/STO:" (with its own "Delivery:" and "Shipment:"
+directly under it) and a right block headed "PO:" (with a DIFFERENT
+"Delivery:" and "Shipment:" directly under it). Neither block uses the
+word "Sabic" or a plant name anywhere — that's what tells this apart
+from Layout A, which always has a literal "Sabic PO:"/"Sabic Delivery:"
+label. This means the page has TWO "Delivery:" labels total, one per
+block — do not just grab the first one you see.
+  - "Order/STO:" (left block) → sto.
+  - "PO:" (right block) → sabic_po — base number only, drop the trailing
+    sub-item suffix (e.g. "4506636062 000010" → "4506636062").
+  - "Delivery:" under the RIGHT ("PO:") block → sabic_delivery — this is
+    the delivery number that matches the MBL and Invoice. Leave
+    delivery_no empty for this layout (same convention as Layout A).
+  - "Delivery:" under the LEFT ("Order/STO:") block is a DIFFERENT,
+    unrelated delivery reference (tied to the sales order, not the
+    shipment) — do NOT use it for sabic_delivery, and do not confuse it
+    with the right block's Delivery even though both say "Delivery:".
+  - Both "Shipment:" values → not needed, ignore them.
+  WORKED EXAMPLE:
+    Order/STO:  4506636063        PO:        4506636062 000010
+    Delivery:   809175393         Delivery:  809174008
+    Shipment:   9810275           Shipment:  0009809604
+  Correct extraction: sto = "4506636063", sabic_po = "4506636062",
+  sabic_delivery = "809174008". "809175393" (the left block's Delivery)
+  is NOT used anywhere — using it instead of "809174008" is the single
+  most common mistake on this layout.
+How to detect: a left block "Order/STO:"/"Delivery:"/"Shipment:" AND a
+right block "PO:"/"Delivery:"/"Shipment:" both present, side by side,
+with NO "Sabic PO:"/"Sabic Delivery:" literal label and NO plant-name
+prefix anywhere on the page.
 
 - Total pallets: some layouts print a summary line like "112 PALLETIZED 3920 BAGS(of 98 MT)"
   (often near "PKG DESCRIPTION"). If present, extract the leading number (112) as
@@ -1039,8 +1072,16 @@ def build_rows(mbl: dict, pkl: dict, inv: dict, eta_date: str = "") -> list[dict
         # in validate() via inv_ref, unaffected by this fallback.
         ref_no = _s(pkl.get("sabic_po", "")).strip() or _s(pkl.get("sto", "")).strip()
 
+    # MBL's delivery_no is a single, unambiguous field (one label, one
+    # value) — far more reliable than the packing list's header, which has
+    # to be correctly classified into one of several overlapping layouts
+    # first. validate() already treats the MBL's delivery as authoritative
+    # when cross-checking against the packing list, so prefer it here too;
+    # only fall back to the packing list's own fields when the MBL doesn't
+    # have one at all (e.g. some carriers never print a delivery number).
     delivery_no = (
-        pkl.get("sabic_delivery")
+        _s(mbl.get("delivery_no")).split("/")[0].strip()
+        or pkl.get("sabic_delivery")
         or pkl.get("delivery_no")
         or pkl.get("sto")
         or ""

@@ -151,7 +151,8 @@
             color: #ef4444;
         }
 
-        .field-group input[type="date"] {
+        .field-group input[type="date"],
+        .field-group input[type="text"] {
             width: 100%;
             padding: 12px 14px;
             font-size: 14px;
@@ -165,12 +166,20 @@
             color-scheme: dark;
         }
 
-        .field-group input[type="date"]:focus {
+        .field-group input[type="date"]:focus,
+        .field-group input[type="text"]:focus {
             border-color: #3b82f6;
         }
 
         .field-group input[type="date"]:invalid {
             border-color: #334155;
+        }
+
+        .field-group .hint {
+            display: block;
+            font-size: 11px;
+            color: #64748b;
+            margin-top: 6px;
         }
 
         /* ── Generate Button ────────────────────────────────── */
@@ -418,6 +427,12 @@
             </div>
 
             <div class="field-group">
+                <label for="externalId">External ID</label>
+                <input type="text" id="externalId" placeholder="Optional — overrides Reference / Container Ref">
+                <span class="hint">If filled in, replaces the extracted reference in the Reference and Container/Ref columns.</span>
+            </div>
+
+            <div class="field-group">
                 <label for="etaDate">ETA Date <span class="required">*</span></label>
                 <input type="date" id="etaDate" required onchange="checkReady()">
             </div>
@@ -530,6 +545,7 @@
             // of browser locale — the backend formats it into the OP's
             // "YYYYMMDD 00:00:00" column format.
             fd.append('eta_date', document.getElementById('etaDate').value);
+            fd.append('external_id', document.getElementById('externalId').value);
 
             document.getElementById('uploadSection').style.display = 'none';
             document.getElementById('loader').classList.add('visible');
@@ -620,6 +636,7 @@
             clearFile('pklFile', 'pklName');
             clearFile('invFile', 'invName');
             document.getElementById('etaDate').value = '';
+            document.getElementById('externalId').value = '';
             checkReady();
             document.getElementById('uploadSection').style.display = 'block';
         }

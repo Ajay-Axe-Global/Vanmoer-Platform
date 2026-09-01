@@ -21,8 +21,12 @@ Bags-vs-Big-Bags classification are shared with Sabic Inbound via
 helpers/doc_common.py rather than re-implemented here.
 """
 
+import io
 import re
 from collections import Counter
+
+import pdfplumber
+from pypdf import PdfReader, PdfWriter
 
 from helpers.doc_common import (
     determine_pkg_type,
@@ -41,20 +45,31 @@ from helpers.gemini_client import call_gemini
 # CARRIER IDENTIFICATION (call #1)
 # ═══════════════════════════════════════════════════════════════════════════
 
-CARRIER_ID_PROMPT = """You are looking at a Master Bill of Lading / Sea Waybill PDF. Identify which \
-ocean carrier issued it — look at the logo, the carrier name in the title \
-block, and any "CARRIER:" field. Return ONLY a JSON object, no markdown.
+CARRIER_ID_PROMPT = """You are looking at a Master Bill of Lading / Sea Waybill PDF. Identify who \
+ISSUED it — the company whose logo/name is in the title block and who \
+signs it "AS A CARRIER" (or as forwarding agent) at the bottom, and any \
+"CARRIER:" field. Return ONLY a JSON object, no markdown.
+
+⚠️ Some documents are issued by a FREIGHT FORWARDER (e.g. "LX Pantos") \
+acting as carrier under a FIATA Multimodal Transport Bill of Lading, while \
+the actual ocean VESSEL is operated by a different, separately-named \
+shipping line (e.g. "EXPORTING VESSEL/VOYAGE: MSC MARIELLA"). In that \
+case identify the ISSUER (the forwarder whose name is in the title block \
+and who signs the document), NOT the vessel operator named elsewhere on \
+the page — they are frequently different companies.
 
 Normalize the name to exactly one of these if it matches (case-sensitive, \
 use this exact spelling): "CMA CGM", "MSC", "HAPAG-LLOYD", "OOCL", "MAERSK", \
-"COSCO", "ONE", "EVERGREEN", "YANG MING", "ZIM", "HMM", "PIL", "GRIMALDI".
+"COSCO", "ONE", "EVERGREEN", "YANG MING", "ZIM", "HMM", "PIL", "GRIMALDI", \
+"LX PANTOS".
 
 Aliases to watch for: a logo/branding of "ONE" with the text "Ocean Network \
 Express" printed nearby -> return "ONE". "HMM CO., LTD." -> "HMM". "Orient \
 Overseas Container Line" -> "OOCL". "Grimaldi Deep Sea S.p.A." / "GRIMALDI \
-GROUP" -> "GRIMALDI".
+GROUP" -> "GRIMALDI". "LX Pantos Logistics" (any branch, e.g. "LX Pantos \
+Logistics (Qingdao) Co.,Ltd.") -> "LX PANTOS".
 
-If the carrier is real but not in that list, return its name as printed on \
+If the issuer is real but not in that list, return its name as printed on \
 the document. If you cannot tell at all, return "UNKNOWN".
 
 {"carrier": "string"}"""
@@ -539,6 +554,78 @@ usually confirmed near the end of page 1 as "Total No. of Containers: N".
 @@RETURN_SCHEMA@@"""
 
 
+# LX Pantos "BILL OF LADING" — a FIATA Multimodal Transport Bill of Lading
+# (FBL) issued by a freight forwarder, not an ocean carrier's own document
+# (the actual ocean carrier, e.g. MSC, only appears as the vessel operator
+# in the "EXPORTING VESSEL/VOYAGE" field). Its single most distinctive
+# trait: FOUR containers' id/seal/weight/measurement/bags are packed into
+# ONE compact column as a repeating two-line pattern, not a normal
+# one-row-per-container table — easy to misread as a single container.
+LX_PANTOS_MBL_PROMPT = """You are a shipping-document data extractor. Extract the following fields \
+from this LX Pantos Bill of Lading PDF (a freight-forwarder-issued FIATA \
+Multimodal Transport Bill of Lading) and return ONLY a JSON object, no \
+markdown.
+
+HEADER FIELDS:
+- "mbl_no": the "BL NO." value (e.g. "PLITJ4H10764").
+- "port_of_loading": "PORT OF LOADING".
+- "port_of_discharge": "PORT OF DISCHARGE".
+- "vessel": "EXPORTING VESSEL/VOYAGE" value (e.g. "MSC MARIELLA QS627A") —
+  this is the actual ocean vessel/carrier operating the voyage, even though
+  LX Pantos (a freight forwarder) issued this Bill of Lading.
+- "consignee": "CONSIGNEE" company name (not the address lines).
+
+GOODS DESCRIPTION BLOCK (free text under "DESCRIPTION OF PACKAGES AND
+GOODS" — applies to the whole shipment):
+- "product": the commodity name, e.g. from "105.600 MTS OF POLYVINYL
+  CHLORIDE" extract "POLYVINYL CHLORIDE" (drop the leading quantity).
+- "grade": the value after "GRADE" (e.g. "GRADE DG-1000S" -> "DG-1000S")
+  — this document DOES print grade under its own label, unlike some
+  carriers, so extract it normally here.
+- "hs_code": the value after "HS CODE:" (e.g. "390410").
+@@REF_NOS_GUIDANCE@@ On this document look specifically for "VINMAR SO#"
+  (e.g. "VINMAR SO# 7570078800-7" -> "7570078800-7").
+- "pallets_per_container": 0 (not stated on this document).
+- "container_type": the container size/type from a summary line like
+  "4X40 HC" or "FOUR (40HCX4) CONTAINERS ONLY" (e.g. "40HC") — applies to
+  every container, since the per-container entries (below) don't repeat a
+  type of their own.
+- "total_bags": the shipment-wide bag count from the same summary line
+  (e.g. "88 BAG" -> 88) — a cross-check value only, every container's own
+  bag count is given directly (see below).
+- "total_gross_weight_kg": leave 0 — every container already carries its
+  own gross weight directly (see below).
+
+⚠️ CONTAINER LIST — this is the part most likely to be misread. The
+"CONTAINER NO / SEAL NO / MARKS AND NUMBERS" column packs EVERY container
+into ONE compact list, as a repeating TWO-LINE pattern stacked vertically —
+NOT a normal one-row-per-container table:
+  <CONTAINER ID>/<SEAL>
+  (<GROSS WEIGHT>KG/<MEASUREMENT>M3/<BAGS>)/
+  Example — this exact shipment has FOUR containers, all in this one list:
+    "MSNU6011050/FX46720394"
+    "(26,818.000KG/44.000M3/22)/"
+    "CAIU4754042/FX46720397"
+    "(26,818.000KG/44.000M3/22)/"
+    "CAAU7536118/FX46720398"
+    "(26,818.000KG/44.000M3/22)/"
+    "MSMU5691010/FX46720393"
+    "(26,818.000KG/44.000M3/22)/"
+  -> FOUR separate container entries: ids "MSNU6011050", "CAIU4754042",
+  "CAAU7536118", "MSMU5691010" — each with its OWN seal and its OWN
+  gross_weight_kg (26818.000), measurement_cbm (44.000), and bags (22) as
+  printed right next to it. Read every repetition of the two-line pattern
+  in this column, all the way through — do NOT stop after the first one
+  and do NOT merge them into a single entry. The document's total gross
+  weight (e.g. "107,272.000 KGS") is exactly 4× one container's weight
+  here — if your container count or per-container numbers don't multiply
+  up to the stated document total, you've missed some repetitions, go back
+  and re-read the whole column.
+Leave "type" and "tare_kg" 0/empty for every container — not printed
+per-container on this document (container_type above covers the type).
+@@RETURN_SCHEMA@@"""
+
+
 # Fallback for any carrier not yet onboarded (MSC / Hapag-Lloyd / etc. will
 # each get their own tuned prompt as those samples come in) — same
 # field shape as every carrier-specific prompt so build_rows() never needs
@@ -589,13 +676,36 @@ pages/sheets — read all of them) and return ONLY a JSON object, no markdown.
     MT if the document states it in MT — multiply by 1000).
   - "tare_kg": tare weight in KG, if printed.
   - "measurement_cbm": measurement in CBM, if printed.
+
+⚠️ Some freight-forwarder-issued documents (FIATA Multimodal Transport Bill
+of Lading / "FBL" forms — look for "Standard Conditions ... governing the
+FIATA Multimodal Transport Bill of Lading" in the small print, or a
+"CONTAINER NO / SEAL NO / MARKS AND NUMBERS" single combined column) pack
+MULTIPLE containers' id/seal/weight/measurement/bags into ONE compact
+column as a repeating TWO-LINE pattern, instead of a normal one-row-per-
+container table:
+  <CONTAINER ID>/<SEAL>
+  (<GROSS WEIGHT>KG/<MEASUREMENT>M3/<BAGS>)/
+  Example:
+    "MSNU6011050/FX46720394"
+    "(26,818.000KG/44.000M3/22)/"
+  -> id "MSNU6011050", seal "FX46720394", gross_weight_kg 26818.000,
+  measurement_cbm 44.000, bags 22.
+This TWO-LINE pattern repeats once per container, stacked vertically in
+that same column/cell — read EVERY repetition of it, do not stop after the
+first pair (a shipment of N containers has this pattern N times in a row,
+easy to misread as a single container or a single block of text). A
+separate summary line elsewhere on the page like "4X40 HC" / "88 BAG" is
+the shipment-wide total (container count × type, and total bags) — a
+cross-check value only (route it into "container_type"/"total_bags"), it
+is NOT itself one more container to add to the list.
 @@RETURN_SCHEMA@@"""
 
 
 for _name in (
     "CMA_CGM_MBL_PROMPT", "YANG_MING_MBL_PROMPT", "HMM_MBL_PROMPT",
     "ONE_MBL_PROMPT", "OOCL_MBL_PROMPT", "MAERSK_MBL_PROMPT", "GRIMALDI_MBL_PROMPT",
-    "GENERIC_MBL_PROMPT",
+    "LX_PANTOS_MBL_PROMPT", "GENERIC_MBL_PROMPT",
 ):
     globals()[_name] = (
         globals()[_name]
@@ -612,6 +722,7 @@ CARRIER_MBL_PROMPTS = {
     "OOCL":       OOCL_MBL_PROMPT,
     "MAERSK":     MAERSK_MBL_PROMPT,
     "GRIMALDI":   GRIMALDI_MBL_PROMPT,
+    "LX PANTOS":  LX_PANTOS_MBL_PROMPT,
 }
 
 
@@ -622,7 +733,7 @@ CARRIER_MBL_PROMPTS = {
 PKG_LIST_PROMPT = """You are a shipping-document data extractor. Extract all data from this \
 Packing List PDF and return ONLY a JSON object, no markdown, no explanation.
 
-This document uses ONE of three layouts. Identify which one FIRST from the
+This document uses ONE of four layouts. Identify which one FIRST from the
 detection cues below, then apply that layout's rules.
 
 ══════════════════════════════════════════
@@ -766,6 +877,123 @@ unlike Layout A.
   in the packing list (they come from the MBL instead).
 
 ══════════════════════════════════════════
+LAYOUT D — trucking/drayage style (e.g. Lion Copolymer Geismar), possibly
+covering SEVERAL containers in ONE PDF
+══════════════════════════════════════════
+How to detect: title is "Packing List/Weight List"; header is a
+label:value strip — "Customer Order No", "Delivery No.", "Date Shipped",
+"Order No. / Bill of Lading No." — followed by "Trailer: <ID>" / "Seal:
+<seal>" / "Carrier : <trucking company>"; table columns are Item |
+Packages | Product Identification | Lot Number | Net weight (both KG and
+LB given, use the KG figure only).
+
+⚠️ CRITICAL — this layout's "Trailer:" field is the CONTAINER (this
+shipper trucks/drays the container to port and just labels the field
+"Trailer" out of habit — the ID printed there, e.g. "MSNU9733190", follows
+the same 4-letters+7-digits ISO container format as everywhere else). This
+one PDF commonly bundles MULTIPLE containers' packing lists back to back —
+each new "Trailer: <ID>" / "Seal: <seal>" header starts a NEW container's
+section, with its own items, its own "Item Total", and its own "TOTAL
+MATERIAL NET WEIGHT" / "TOTAL GROSS WEIGHT" a few pages later. Read the
+ENTIRE document, every page, and tag every single item row with the ID
+from the NEAREST "Trailer:" label ABOVE it — do not assume every row
+belongs to the first Trailer you see.
+
+⚠️ Within ONE container's section, the item list can be split into TWO OR
+MORE back-to-back blocks with DIFFERENT products (e.g. items 1-18 are one
+product with its own "18 PAL / Item Total", immediately followed by items
+19-28 of a DIFFERENT product with its own "10 PAL / Item Total", both
+under the same Trailer). Extract every item row from every such block —
+each block is not a separate container, they all belong to the container
+named in the Trailer field above them.
+
+- "consignee": the "Ship-to:" company name — not "Sold To:" (same
+  Ship-to/Sold-to preference as layout B, even when, as here, they happen
+  to be identical).
+- "product" / "grade": leave the SHIPMENT-LEVEL "product" and "grade"
+  fields at "" — this layout's product varies PER ITEM ROW (see below), a
+  single shipment-wide value cannot represent it correctly.
+- "ref_nos": leave [] — this layout has no PO/REF#/SID label anywhere; the
+  matching MBL's own reference field supplies it instead.
+- "packing_description": leave "" (not printed as a single labeled value
+  on this layout).
+- "pallets_per_container": 0 — pallet counts on this layout vary per
+  container (see "container_pallets" per row below), not one flat number
+  for the whole shipment.
+- "hs_code": leave "" if not printed.
+- "total_bags": leave 0 (this layout doesn't call them bags — it's pallets
+  per row, captured per row below).
+- "total_net_weight_mt": the SUM of every "TOTAL MATERIAL NET WEIGHT"
+  figure across every container's section in this document, converted
+  from KG to MT (divide by 1000). E.g. 5 containers each stating
+  "TOTAL MATERIAL NET WEIGHT 21,000.000 KG" sum to 105.0 (adjust for
+  whatever each container's own total actually says, they are not always
+  identical).
+- "total_gross_weight_mt": same idea, summing every "TOTAL GROSS WEIGHT"
+  figure across every container's section, converted to MT.
+- "net_weight_per_bag_kg" / "gross_weight_per_bag_kg": leave 0.
+- Per-item table (Item | Packages | Product Identification | Lot Number |
+  Net weight): one entry per row, with:
+  - "container_id": the ID from the "Trailer:" label this row falls under
+    (NOT a per-row column — inherit it from the nearest Trailer: label
+    above this row).
+  - "lot_no": the "Lot Number" column value (e.g. "G26G273081").
+  - "net_weight_mt": the "Net weight" column's KG figure, CONVERTED TO MT
+    (divide by 1000) — ignore the LB figure entirely (e.g. "1,050.000 KG"
+    -> 1.05, ignore the accompanying "2,314.856 LB").
+  - "bags": the leading integer from the "Packages" column (e.g. from
+    "1 PAL" or "1 Each" extract 1 — this is a per-row pallet/unit count,
+    normally 1, but read whatever integer is actually printed).
+  - "product": the ACTUAL product/brand+grade name for this row — not
+    necessarily the entire "Product Identification" cell verbatim. That
+    cell commonly mixes the real product name together with packaging
+    type, container/pack size, and weight, e.g. a line shaped like
+    "<BRAND> <GRADE>/<PACK TYPE>/<WEIGHT+UNIT>" (example: "ROYALENE
+    575/GPS/1050 KG/GE" — here "ROYALENE 575" is the product, "GPS" is a
+    packaging-type code, "1050 KG/GE" is weight/unit metadata) — and
+    sometimes ALSO a short internal SKU/material code on its own line
+    above the real name (e.g. "R575/GPS", "R5041/NBX"), which is not the
+    product name either. Use your judgment to identify and extract just
+    the real, human-readable product/brand+grade name, and leave out
+    packaging codes, pack sizes, weight figures, and SKU codes — this
+    naming convention is NOT universal, other shippers/product families
+    will format this cell differently (sometimes it's already just a
+    clean product name with nothing to strip at all), so apply this as a
+    general principle (name vs. packaging/weight/SKU metadata), not a
+    fixed pattern to match literally. This can differ between rows of the
+    SAME container when more than one product block appears under one
+    Trailer, so always take it from this row's own
+    block, never assume it matches earlier rows.
+  - "container_pallets": the container-wide total pallet count this row's
+    container will use for every one of its rows — the SUM of every
+    "Item Total" pallet figure (e.g. "20 PAL", or "18 PAL" + "10 PAL" ->
+    28) printed anywhere within THIS row's Trailer section (all of that
+    container's item blocks combined, even across a page break). Repeat
+    this same summed number on every row belonging to that container.
+  - Leave "seal_no" empty for every row — the seal belongs to the whole
+    container (from "Seal:"), not a per-item value; it isn't needed here
+    since the matching MBL supplies seal per container.
+  - Leave "container_type" empty — not printed on this layout.
+
+⚠️ CRITICAL — DO NOT UNDER-COUNT ROWS. Every row in this table looks
+almost IDENTICAL to the rows around it (same Product Identification text,
+often the exact same Net weight figure repeated 10-20 times in a row) —
+the ONLY thing that reliably differs row to row is the Item number (in
+the left column, 1, 2, 3, ... N) and the Lot Number. This visual
+repetitiveness makes it very easy to accidentally skip rows or stop
+early, mistaking later rows for ones you already extracted — you MUST
+resist that: use the printed Item numbers as your own checklist, and
+produce one entry per item number from 1 through N with NO gaps, reading
+every row on every page even when it looks like "more of the same".
+SELF-CHECK before finalizing each container: count how many entries you
+extracted for it and compare that count to the "Item Total: N PAL" figure
+printed at the end of its item block(s) (sum multiple blocks if there is
+more than one, as above). If your count is lower than that printed total,
+you skipped rows — go back and re-scan every page of that container's
+item list (including pages you think you already covered) until your
+count matches exactly.
+
+══════════════════════════════════════════
 OUTPUT FORMAT (same shape regardless of which layout you detected — leave
 any field the layout doesn't have at its default shown below)
 ══════════════════════════════════════════
@@ -784,7 +1012,8 @@ any field the layout doesn't have at its default shown below)
   "gross_weight_per_bag_kg": 0,
   "containers": [
     {"container_id": "string", "lot_no": "string", "net_weight_mt": 0,
-     "bags": 0, "seal_no": "string", "container_type": "string"}
+     "bags": 0, "seal_no": "string", "container_type": "string",
+     "product": "string", "container_pallets": 0}
   ]
 }"""
 
@@ -942,20 +1171,208 @@ def extract_mbl(pdf_path: str) -> dict:
     return data
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# LAYOUT D PDF SPLITTING — one Gemini call per container, not per document
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Layout D (trucking/drayage-style, e.g. Lion Copolymer) can bundle several
+# containers' full multi-page item lists into ONE PDF (20+ pages, 5+
+# containers). Asking one Gemini call to track which "Trailer:" label a
+# given row belongs to across that many pages of near-identical-looking
+# rows proved unreliable in practice — it both under-counted rows within a
+# container AND, worse, sometimes attributed one container's item rows to
+# a DIFFERENT container's section entirely. Every page of a container's
+# section repeats its own "Trailer: <ID>" label (found in the raw PDF text
+# layer, not by an LLM), so the document can be split into one sub-PDF per
+# container BEFORE any Gemini call — each extraction then only ever sees
+# one container's own pages, making cross-container confusion structurally
+# impossible rather than something a prompt has to prevent.
+
+_TRAILER_RE = re.compile(r'Trailer\s*:\s*([A-Za-z]{4}\s?\d{7})')
+
+
+def _find_trailer_page_groups(pdf_path: str) -> list[tuple[str, int, int]]:
+    """
+    Scans every page's text layer for a "Trailer: <ID>" label. Returns a
+    list of (container_id, first_page, last_page) 0-indexed page ranges,
+    one per contiguous run of pages sharing the same Trailer ID, in
+    document order. Returns [] if the label never appears anywhere (i.e.
+    this document isn't Layout D) — the caller falls back to the single
+    whole-document call used for every other layout.
+    """
+    groups = []
+    current_id = None
+    current_start = None
+    with pdfplumber.open(pdf_path) as pdf:
+        n_pages = len(pdf.pages)
+        for i, page in enumerate(pdf.pages):
+            text = page.extract_text() or ""
+            m = _TRAILER_RE.search(text)
+            page_id = m.group(1).replace(" ", "").upper() if m else None
+            if page_id and page_id != current_id:
+                if current_id is not None:
+                    groups.append((current_id, current_start, i - 1))
+                current_id = page_id
+                current_start = i
+        if current_id is not None:
+            groups.append((current_id, current_start, n_pages - 1))
+    return groups
+
+
+def _slice_pdf_pages(pdf_path: str, start: int, end: int) -> bytes:
+    reader = PdfReader(pdf_path)
+    writer = PdfWriter()
+    for i in range(start, end + 1):
+        writer.add_page(reader.pages[i])
+    buf = io.BytesIO()
+    writer.write(buf)
+    return buf.getvalue()
+
+
+LAYOUT_D_SINGLE_CONTAINER_PROMPT = """You are a shipping-document data extractor. This PDF is ONE CONTAINER's \
+complete "Packing List/Weight List" section (Lion-Copolymer-style trucking/drayage packing list) — it has \
+already been isolated from a larger bundled document, so every page here belongs to the SAME container. Extract \
+data and return ONLY a JSON object, no markdown.
+
+- "consignee": the "Ship-to:" company name (not "Sold To:").
+- "total_net_weight_mt": the "TOTAL MATERIAL NET WEIGHT" figure, converted from KG to MT (divide by 1000). Leave
+  0 if that summary line isn't on these pages.
+- "total_gross_weight_mt": the "TOTAL GROSS WEIGHT" figure, likewise converted to MT. Leave 0 if not present.
+- "stated_pallet_total": the SUM of every "Item Total: N PAL" / "N Each" figure printed on these pages (there can
+  be more than one — the item list may be split into two or more back-to-back blocks with DIFFERENT products,
+  each with its own Item Total; sum all of them). This is a real printed number, used afterward to double-check
+  your own "items" count below — do not compute it by counting your own rows, read it directly off the page(s).
+- "items": every row from the Item | Packages | Product Identification | Lot Number | Net weight table, across
+  ALL pages given (again, possibly more than one product block — extract every row from every block, they all
+  belong to this one container). For each row:
+  - "lot_no": the "Lot Number" column value (e.g. "G26G273081").
+  - "net_weight_mt": the "Net weight" column's KG figure, converted to MT (divide by 1000) — ignore the LB figure
+    entirely (e.g. "1,050.000 KG" -> 1.05).
+  - "bags": the leading integer from the "Packages" column (e.g. "1 PAL"/"1 Each" -> 1).
+  - "product": the ACTUAL product/brand+grade name for this row — not necessarily the whole "Product
+    Identification" cell verbatim. That cell commonly mixes the real product name with packaging type, pack
+    size, and weight, e.g. "<BRAND> <GRADE>/<PACK TYPE>/<WEIGHT+UNIT>" (example: "ROYALENE 575/GPS/1050 KG/GE" —
+    "ROYALENE 575" is the product, "GPS" is a packaging-type code, "1050 KG/GE" is weight/unit metadata), and
+    sometimes also a short internal SKU code on its own line above the real name (e.g. "R575/GPS"), which isn't
+    the product name either. Use your judgment to extract just the real, human-readable product/brand+grade
+    name, leaving out packaging codes, pack sizes, weight figures, and SKU codes. This naming convention is NOT
+    universal — other shippers format this differently, sometimes with nothing to strip at all — so apply this
+    as a general principle (product name vs. packaging/weight/SKU metadata), not a fixed pattern to match
+    literally.
+
+⚠️ CRITICAL — DO NOT UNDER-COUNT ROWS. Many rows look almost identical (same Product Identification text, often
+the exact same Net weight figure repeated many times) — the ONLY thing that reliably differs row to row is the
+Item number (left column, 1, 2, 3, ... N) and the Lot Number. Use the printed Item numbers as your own checklist
+and return one entry per item number with NO gaps, reading every row on every page even when it looks like more
+of the same. SELF-CHECK before finalizing: count your "items" entries and compare to "stated_pallet_total" above
+— if your count is lower, you missed rows, go back and re-scan every page (including ones you think you already
+covered) until the counts match.
+
+Return:
+{
+  "consignee": "string",
+  "total_net_weight_mt": 0,
+  "total_gross_weight_mt": 0,
+  "stated_pallet_total": 0,
+  "items": [
+    {"lot_no": "string", "net_weight_mt": 0, "bags": 0, "product": "string"}
+  ]
+}"""
+
+
+def _extract_packing_list_layout_d(pdf_path: str, groups: list) -> dict:
+    print(f"  [PKG LIST] Layout D detected — {len(groups)} container block(s), extracting each separately")
+    all_containers = []
+    consignee = ""
+    total_net_mt = 0.0
+    total_gross_mt = 0.0
+
+    for cid, start, end in groups:
+        pdf_bytes = _slice_pdf_pages(pdf_path, start, end)
+        try:
+            sub = call_gemini(LAYOUT_D_SINGLE_CONTAINER_PROMPT, pdf_bytes=pdf_bytes, max_output_tokens=16384)
+        except Exception as e:
+            print(f"  [!] Layout D — extraction failed for container {cid} (pages {start + 1}-{end + 1}): {e}")
+            continue
+
+        if not consignee:
+            consignee = s(sub.get("consignee")).strip()
+        total_net_mt += num(sub.get("total_net_weight_mt"), 0)
+        total_gross_mt += num(sub.get("total_gross_weight_mt"), 0)
+
+        stated_pallet_total = num(sub.get("stated_pallet_total"), 0)
+        items = sub.get("items", [])
+        n_items = len(items)
+        # Pallet Count = the number of item rows actually extracted for
+        # this container — that's the ground truth (each row is literally
+        # one pallet, by construction). "stated_pallet_total" is the
+        # model's OWN arithmetic reading the printed "Item Total" line(s)
+        # separately, purely as a self-check on n_items — it has proven
+        # less reliable than the row extraction itself (e.g. misreading
+        # "18 PAL" as "28 PAL"), so it must never override n_items in the
+        # actual output; it's only used below to decide whether to print
+        # a "verify this container" advisory.
+        container_pallets = n_items
+
+        for item in items:
+            all_containers.append({
+                "container_id":      cid,
+                "lot_no":            s(item.get("lot_no")).strip(),
+                "net_weight_mt":     num(item.get("net_weight_mt"), 0),
+                "bags":              num(item.get("bags"), 0),
+                "seal_no":           "",
+                "container_type":    "",
+                "product":           s(item.get("product")).strip(),
+                "container_pallets": container_pallets,
+            })
+        # Advisory only — stated_pallet_total is the model's own reading of
+        # the printed "Item Total" line(s), which has proven less reliable
+        # than the row extraction itself, so a mismatch is a prompt to spot
+        # check, not proof n_items is wrong.
+        flag = "" if n_items >= stated_pallet_total else f" — [i] document's own Item Total reads {stated_pallet_total}, worth a spot check"
+        print(f"  [PKG LIST] Container {cid} (pages {start + 1}-{end + 1}): {n_items} item row(s){flag}")
+
+    return {
+        "consignee": consignee,
+        "product": "",
+        "grade": "",
+        "ref_nos": [],
+        "packing_description": "",
+        "pallets_per_container": 0,
+        "hs_code": "",
+        "total_bags": 0,
+        "total_net_weight_mt": round(total_net_mt, 4),
+        "total_gross_weight_mt": round(total_gross_mt, 4),
+        "net_weight_per_bag_kg": 0,
+        "gross_weight_per_bag_kg": 0,
+        "containers": all_containers,
+    }
+
+
 def extract_packing_list(pdf_path: str) -> dict:
-    data = call_gemini(PKG_LIST_PROMPT, pdf_path=pdf_path, max_output_tokens=16384)
+    trailer_groups = _find_trailer_page_groups(pdf_path)
+    if trailer_groups:
+        data = _extract_packing_list_layout_d(pdf_path, trailer_groups)
+        dump_json(pdf_path, "pkg_list.json", data)
+        return data
+
+    # Layouts A/B/C — one shipment-wide document, one call is reliable
+    # (no multi-container page-tracking involved).
+    data = call_gemini(PKG_LIST_PROMPT, pdf_path=pdf_path, max_output_tokens=32768)
     dump_json(pdf_path, "pkg_list_raw.json", data)
 
     containers = []
     for row in data.get("containers", []):
         cid, seal = fix_container_id(row.get("container_id", ""), row.get("seal_no", ""))
         containers.append({
-            "container_id":   cid,
-            "lot_no":         s(row.get("lot_no")).strip(),
-            "net_weight_mt":  num(row.get("net_weight_mt"), 0),
-            "bags":           num(row.get("bags"), 0),
-            "seal_no":        s(seal).strip(),
-            "container_type": s(row.get("container_type")).strip(),
+            "container_id":      cid,
+            "lot_no":             s(row.get("lot_no")).strip(),
+            "net_weight_mt":      num(row.get("net_weight_mt"), 0),
+            "bags":               num(row.get("bags"), 0),
+            "seal_no":            s(seal).strip(),
+            "container_type":     s(row.get("container_type")).strip(),
+            "product":            s(row.get("product")).strip(),
+            "container_pallets":  num(row.get("container_pallets"), 0),
         })
     data["containers"] = containers
 
@@ -1028,6 +1445,32 @@ def validate(mbl: dict, pkl: dict, inv: dict) -> list[str]:
                                 f"the shipment's total ({total_mbl_gross} KGS) — likely absorbed a "
                                 f"shipment-wide total instead of its own row's value; verify this container "
                                 f"manually")
+
+    # Safety net for another extraction failure mode, seen on Layout D
+    # (trucking/drayage-style) packing lists: many consecutive item rows
+    # look nearly identical (same product, often the same weight), which
+    # can cause the model to under-count them — e.g. reading only 10 of 20
+    # printed rows for a container. container_pallets (present only on
+    # Layout D) is a real printed total, not a guess, so it's a reliable
+    # ground truth to check the actual extracted row count against.
+    pkl_containers_list = pkl.get("containers", [])
+    container_pallet_totals: dict = {}
+    container_row_counts: dict = {}
+    for c in pkl_containers_list:
+        cid = c.get("container_id", "")
+        if not cid:
+            continue
+        container_row_counts[cid] = container_row_counts.get(cid, 0) + 1
+        cp = num(c.get("container_pallets"), 0)
+        if cp:
+            container_pallet_totals[cid] = cp
+    for cid, stated_total in container_pallet_totals.items():
+        actual_rows = container_row_counts.get(cid, 0)
+        if actual_rows < stated_total:
+            results.append(f"[X]  ROW COUNT — Packing List container {cid}: extracted only {actual_rows} "
+                            f"item row(s) but its own printed Item Total says {stated_total} — extraction "
+                            f"likely skipped rows (common on long lists of near-identical-looking rows), "
+                            f"re-check this container's pages manually")
 
     mbl_cids = {c["id"] for c in mbl.get("containers", []) if c.get("id")}
     pkl_cids = {c["container_id"] for c in pkl.get("containers", []) if c.get("container_id")}
@@ -1174,12 +1617,14 @@ def build_rows(mbl: dict, pkl: dict, inv: dict, eta_date: str = "", external_id:
     # row at all) gets exactly one row of its own, appended after.
     pkl_lines = [
         {
-            "container_id":   c.get("container_id", ""),
-            "lot_no":         c.get("lot_no", ""),
-            "net_weight_mt":  num(c.get("net_weight_mt"), 0),
-            "bags":           num(c.get("bags"), 0),
-            "seal_no":        c.get("seal_no", ""),
-            "container_type": c.get("container_type", ""),
+            "container_id":     c.get("container_id", ""),
+            "lot_no":           c.get("lot_no", ""),
+            "net_weight_mt":    num(c.get("net_weight_mt"), 0),
+            "bags":             num(c.get("bags"), 0),
+            "seal_no":          c.get("seal_no", ""),
+            "container_type":   c.get("container_type", ""),
+            "product":          c.get("product", ""),
+            "container_pallets": num(c.get("container_pallets"), 0),
         }
         for c in pkl.get("containers", [])
     ]
@@ -1220,7 +1665,8 @@ def build_rows(mbl: dict, pkl: dict, inv: dict, eta_date: str = "", external_id:
     # used only when nothing else gives a bag count for a row.
     net_weight_per_bag_kg = num(pkl.get("net_weight_per_bag_kg"), 0)
 
-    def _build_row(cid: str, lot_no: str, net_weight_mt, row_bags, row_seal: str, row_type: str) -> dict:
+    def _build_row(cid: str, lot_no: str, net_weight_mt, row_bags, row_seal: str, row_type: str,
+                   row_product: str = "", row_container_pallets=0) -> dict:
         mbl_entry = mbl_map.get(cid, {})
 
         seal_no = mbl_entry.get("seal", "") or row_seal
@@ -1259,8 +1705,25 @@ def build_rows(mbl: dict, pkl: dict, inv: dict, eta_date: str = "", external_id:
         else:
             gross_weight_kg = round(total_gross_fallback_kg, 3)
 
-        pallet_count = pallets_per_container
+        # Pallet count: prefer THIS row's own container-wide pallet total
+        # when a layout gives one per-container (e.g. Layout D, summed from
+        # printed "Item Total: N PAL" lines — a real printed figure, not a
+        # guess) — otherwise fall back to the flat shipment-wide
+        # pallets_per_container as before. Never invented when neither is
+        # given: stays 0.
+        pallet_count = row_container_pallets or pallets_per_container
         pkg_type = determine_pkg_type(net_weight_kg, bags)
+
+        # Product: prefer THIS row's own product when the layout gives one
+        # per row (e.g. Layout D, where one container can legitimately
+        # carry two different products across separate item blocks) —
+        # otherwise the shipment-wide product computed above. No code-side
+        # reformatting here deliberately — product identification strings
+        # vary too much across shippers/product families for a fixed
+        # pattern to safely rewrite (a rule tuned to one document's naming
+        # convention will misfire on another's); the extraction prompt is
+        # responsible for returning the right name, not this function.
+        row_product_final = s(row_product).strip() or product
 
         return {
             "reference":      ref_no,
@@ -1271,7 +1734,7 @@ def build_rows(mbl: dict, pkl: dict, inv: dict, eta_date: str = "", external_id:
             "container_type2": spaced_container_type(container_type),
             "seal_no":        seal_no,
             "country_code":   country_code,
-            "product":        product,
+            "product":        row_product_final,
             "lot_no":         lot_no,
             "bags_count":     bags,
             "pkg_type":       pkg_type,
@@ -1282,7 +1745,8 @@ def build_rows(mbl: dict, pkl: dict, inv: dict, eta_date: str = "", external_id:
         }
 
     rows = [
-        _build_row(ln["container_id"], ln["lot_no"], ln["net_weight_mt"], ln["bags"], ln["seal_no"], ln["container_type"])
+        _build_row(ln["container_id"], ln["lot_no"], ln["net_weight_mt"], ln["bags"], ln["seal_no"], ln["container_type"],
+                   ln["product"], ln["container_pallets"])
         for ln in pkl_lines
     ]
 

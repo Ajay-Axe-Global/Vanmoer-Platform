@@ -119,6 +119,15 @@ def normalize_container_type(raw: str) -> str:
     return cleaned or "??"
 
 
+def spaced_container_type(container_type: str) -> str:
+    """
+    Same container type, reformatted with a space between the size and the
+    letters — "40HC" -> "40 HC", "20FT" -> "20 FT". Purely cosmetic; the
+    value is otherwise identical to normalize_container_type()'s output.
+    """
+    return re.sub(r'(\d+)([A-Za-z]+)', r'\1 \2', container_type or "")
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # WEIGHT / PACKAGE-TYPE HELPERS
 # ═══════════════════════════════════════════════════════════════════════════

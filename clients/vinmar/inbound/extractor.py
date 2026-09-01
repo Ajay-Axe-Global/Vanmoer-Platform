@@ -32,6 +32,7 @@ from helpers.doc_common import (
     normalize_container_type,
     num,
     s,
+    spaced_container_type,
     to_kg,
 )
 from helpers.gemini_client import call_gemini
@@ -178,7 +179,7 @@ whole shipment).
 - "hs_code": the "HS CODE" value from the shipment-wide totals block near
   the end — document-wide, not per-container.
 - "container_type": from a summary line like "21x40HC CONTAINERS:" (e.g.
-  "40HC") — applies to every container, rows don't repeat a type.
+  "40HC") — applies to every container, rows don't repeat a type..
 - "total_bags" / "total_gross_weight_kg": the "TOTAL BAGS ..." and final
   "TOTAL ...KGS" figures from the shipment-wide totals block — cross-check
   values only, every row already carries its own bags/gross weight (below).
@@ -1107,8 +1108,12 @@ def get_customer_by_ref_prefix(ref_no: str) -> str:
 # ROW BUILDER
 # ═══════════════════════════════════════════════════════════════════════════
 
-def build_rows(mbl: dict, pkl: dict, inv: dict, eta_date: str = "") -> list[dict]:
-    ref_no = build_ref(mbl.get("ref_nos", [])) or build_ref(pkl.get("ref_nos", [])) or build_ref(inv.get("ref_nos", []))
+def build_rows(mbl: dict, pkl: dict, inv: dict, eta_date: str = "", external_id: str = "") -> list[dict]:
+    # A UI-entered External ID always wins over whatever reference the
+    # documents themselves carry — it's a deliberate manual override, not
+    # a fallback, so it's applied unconditionally when given, not just when
+    # extraction failed to find one.
+    ref_no = s(external_id).strip() or build_ref(mbl.get("ref_nos", [])) or build_ref(pkl.get("ref_nos", [])) or build_ref(inv.get("ref_nos", []))
 
     customer = (
         normalize_customer_name(pkl.get("consignee"))
@@ -1263,6 +1268,7 @@ def build_rows(mbl: dict, pkl: dict, inv: dict, eta_date: str = "") -> list[dict
             "customer":       customer,
             "container_ref":  f"{cid}/{ref_no}",
             "container_type": container_type,
+            "container_type2": spaced_container_type(container_type),
             "seal_no":        seal_no,
             "country_code":   country_code,
             "product":        product,

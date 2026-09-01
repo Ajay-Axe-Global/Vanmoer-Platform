@@ -60,6 +60,10 @@ COLUMN_CONFIG = [
     {"header": "Net Weight (KG)",  "field_key": "net_weight",     "width": 16, "num_format": "#,##0"},
     {"header": "Gross Weight (KG)","field_key": "gross_weight",   "width": 16, "num_format": "#,##0"},
     {"header": "ETA/Date",         "field_key": "eta_date",       "width": 20},
+    # Same value as "Container Type", reformatted with a space between the
+    # size and the letters (e.g. "40HC" -> "40 HC") — cosmetic duplicate
+    # column requested for a downstream format that expects the spaced form.
+    {"header": "Container Type2",  "field_key": "container_type2", "width": 16},
 ]
 
 OUTPUT_FILENAME = "Vinmar_Inbound_Outcome.xlsx"
@@ -94,7 +98,7 @@ class VinmarInboundTask(BaseTask):
     column_config = COLUMN_CONFIG
     writes_own_output = False
 
-    def process(self, files: dict, output_path: str | None = None, eta_date: str = "") -> dict:
+    def process(self, files: dict, output_path: str | None = None, eta_date: str = "", external_id: str = "") -> dict:
         # ── Step 1: LLM extraction ──────────────────────────────────
         # MBL extraction is a two-call pipeline internally (identify the
         # carrier, then dispatch to that carrier's own prompt) — see
@@ -108,8 +112,10 @@ class VinmarInboundTask(BaseTask):
 
         # ── Step 3: Build outcome rows ──────────────────────────────
         # eta_date is UI-selected (not extracted from the documents) and
-        # applies uniformly to every row in this shipment.
-        rows = build_rows(mbl_data, pkl_data, inv_data, eta_date)
+        # applies uniformly to every row in this shipment. external_id, if
+        # the user filled it in, overrides the extracted reference in both
+        # the Reference and Container/Ref columns — see build_rows().
+        rows = build_rows(mbl_data, pkl_data, inv_data, eta_date, external_id)
 
         # ── Summary stats ───────────────────────────────────────────
         containers = set(r["container_no"] for r in rows)
@@ -166,6 +172,10 @@ def process():
     except ValueError:
         return jsonify({"error": "Invalid ETA Date."}), 400
 
+    # Optional manual override — when filled in, replaces the
+    # extracted reference in both the Reference and Container/Ref columns.
+    external_id = (request.form.get("external_id") or "").strip()
+
     job_id, job_dir = new_job_dir()
     session = SessionLocal()
     try:
@@ -179,7 +189,7 @@ def process():
 
         # ── Run the task ────────────────────────────────────────────
         output_path = str(job_output_path(job_id))
-        result = _task.process(saved, output_path, eta_date=eta_date)
+        result = _task.process(saved, output_path, eta_date=eta_date, external_id=external_id)
 
         rows = result["rows"]
         summary = result["summary"]

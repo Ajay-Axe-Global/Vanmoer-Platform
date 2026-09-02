@@ -98,7 +98,8 @@ class VinmarInboundTask(BaseTask):
     column_config = COLUMN_CONFIG
     writes_own_output = False
 
-    def process(self, files: dict, output_path: str | None = None, eta_date: str = "", external_id: str = "") -> dict:
+    def process(self, files: dict, output_path: str | None = None, eta_date: str = "", external_id: str = "",
+                external_product: str = "") -> dict:
         # ── Step 1: LLM extraction ──────────────────────────────────
         # MBL extraction is a two-call pipeline internally (identify the
         # carrier, then dispatch to that carrier's own prompt) — see
@@ -112,10 +113,11 @@ class VinmarInboundTask(BaseTask):
 
         # ── Step 3: Build outcome rows ──────────────────────────────
         # eta_date is UI-selected (not extracted from the documents) and
-        # applies uniformly to every row in this shipment. external_id, if
-        # the user filled it in, overrides the extracted reference in both
-        # the Reference and Container/Ref columns — see build_rows().
-        rows = build_rows(mbl_data, pkl_data, inv_data, eta_date, external_id)
+        # applies uniformly to every row in this shipment. external_id and
+        # external_product, if the user filled them in, override the
+        # extracted reference / product respectively on every row — see
+        # build_rows().
+        rows = build_rows(mbl_data, pkl_data, inv_data, eta_date, external_id, external_product)
 
         # ── Summary stats ───────────────────────────────────────────
         containers = set(r["container_no"] for r in rows)
@@ -172,9 +174,11 @@ def process():
     except ValueError:
         return jsonify({"error": "Invalid ETA Date."}), 400
 
-    # Optional manual override — when filled in, replaces the
-    # extracted reference in both the Reference and Container/Ref columns.
+    # Optional manual overrides — when filled in, replace the extracted
+    # reference (Reference / Container/Ref columns) / product (Product
+    # column) respectively, on every row.
     external_id = (request.form.get("external_id") or "").strip()
+    external_product = (request.form.get("external_product") or "").strip()
 
     job_id, job_dir = new_job_dir()
     session = SessionLocal()
@@ -189,7 +193,8 @@ def process():
 
         # ── Run the task ────────────────────────────────────────────
         output_path = str(job_output_path(job_id))
-        result = _task.process(saved, output_path, eta_date=eta_date, external_id=external_id)
+        result = _task.process(saved, output_path, eta_date=eta_date, external_id=external_id,
+                                external_product=external_product)
 
         rows = result["rows"]
         summary = result["summary"]

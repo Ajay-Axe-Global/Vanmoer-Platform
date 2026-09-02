@@ -733,7 +733,7 @@ CARRIER_MBL_PROMPTS = {
 PKG_LIST_PROMPT = """You are a shipping-document data extractor. Extract all data from this \
 Packing List PDF and return ONLY a JSON object, no markdown, no explanation.
 
-This document uses ONE of four layouts. Identify which one FIRST from the
+This document uses ONE of five layouts. Identify which one FIRST from the
 detection cues below, then apply that layout's rules.
 
 ══════════════════════════════════════════
@@ -992,6 +992,54 @@ more than one, as above). If your count is lower than that printed total,
 you skipped rows — go back and re-scan every page of that container's
 item list (including pages you think you already covered) until your
 count matches exactly.
+
+══════════════════════════════════════════
+LAYOUT E — Hyosung Chemical style (circled-number header boxes, TWO
+separate tables — a grade-wide summary table AND a per-container table)
+══════════════════════════════════════════
+How to detect: shipper letterhead is "HYOSUNG CHEMICAL CORPORATION"; header
+uses circled numbers ("①Shipper", "②Applicant", "③Notify Party", "④Port of
+Loading", ... "⑩Description of Goods", "⑪Quantity", "⑫Net-weight",
+"⑬Gross weight", "⑭CBM"); the goods block reads "PRODUCT(1): <product>" /
+"GRADE: <grade>" / "QUANTITY: <n> MT" / "PO NO.: <ref>" / "PACKING: <n>KG
+<TYPE> BAGS". ⚠️ There are TWO tables, and they are NOT the same thing:
+  1. A GRADE-level summary table, columns GRADE | Quantity (BAGS) | NET
+     WEIGHT (MTS) | NET WEIGHT (KGS) | GROSS WEIGHT (KGS) | CBM, with one
+     row per grade plus a totals row — this is shipment-wide (or per-grade
+     if more than one grade ships), it is NEVER a per-container figure.
+  2. A separate per-container table below it, columns CNT NO. | SEAL NO. |
+     Lot No | Quantity(kg) | GRADE — THIS is the one that gives each
+     container's own net weight, in the "Quantity(kg)" column.
+⚠️ CRITICAL — do not use the first (summary) table's NET WEIGHT figure for
+every container row. Each container's real net weight is its OWN
+"Quantity(kg)" value in the SECOND table (e.g. two containers each showing
+"24,000.00" in Quantity(kg) — NOT the summary table's total "48,000.00"
+repeated for both).
+
+- "consignee": the "②Applicant" company name (or "③Notify Party" if
+  Applicant is blank) — not the "①Shipper".
+- "product": the value after "PRODUCT(1):" (e.g. "POLYPROPYLENE").
+- "grade": the value after "GRADE:" (e.g. "PP J340").
+@@REF_NOS_GUIDANCE@@ Look for "PO NO.:" in the goods description block.
+- "packing_description": the "PACKING:" value (e.g. "25KG PP BAGS").
+- "pallets_per_container": 0 (not stated on this layout).
+- "hs_code": leave empty "" if not printed.
+- "total_bags": the summary table's "Quantity (BAGS)" total row value (e.g.
+  1920).
+- "total_net_weight_mt": the summary table's "NET WEIGHT (MTS)" total row
+  value (e.g. 48).
+- "total_gross_weight_mt": the summary table's "GROSS WEIGHT (KGS)" total
+  row value, CONVERTED FROM KG TO MT (divide by 1000) — e.g. "48,513.60" ->
+  48.51360.
+- "net_weight_per_bag_kg": the "NET WT.:" value under the marks/numbers
+  column (e.g. "25KGS" -> 25.0), if printed. 0 if not.
+- "gross_weight_per_bag_kg": leave 0 — not printed on this layout.
+- Per-container table (CNT NO. | SEAL NO. | Lot No | Quantity(kg) | GRADE):
+  one entry per row, with "container_id" (CNT NO.), "seal_no" (SEAL NO.),
+  "lot_no" (Lot No), and "net_weight_mt" = THIS row's own "Quantity(kg)"
+  value CONVERTED TO MT (divide by 1000, e.g. "24,000.00" -> 24.0) — never
+  the summary table's total. Leave "bags" 0 (not printed per container on
+  this layout — it comes from the MBL instead) and "container_type" empty.
 
 ══════════════════════════════════════════
 OUTPUT FORMAT (same shape regardless of which layout you detected — leave

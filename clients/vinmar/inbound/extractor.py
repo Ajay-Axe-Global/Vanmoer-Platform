@@ -1599,12 +1599,21 @@ def get_customer_by_ref_prefix(ref_no: str) -> str:
 # ROW BUILDER
 # ═══════════════════════════════════════════════════════════════════════════
 
-def build_rows(mbl: dict, pkl: dict, inv: dict, eta_date: str = "", external_id: str = "") -> list[dict]:
+def build_rows(mbl: dict, pkl: dict, inv: dict, eta_date: str = "", external_id: str = "",
+               external_product: str = "") -> list[dict]:
     # A UI-entered External ID always wins over whatever reference the
     # documents themselves carry — it's a deliberate manual override, not
     # a fallback, so it's applied unconditionally when given, not just when
     # extraction failed to find one.
     ref_no = s(external_id).strip() or build_ref(mbl.get("ref_nos", [])) or build_ref(pkl.get("ref_nos", [])) or build_ref(inv.get("ref_nos", []))
+
+    # Same deliberate-override convention as External ID above: when the
+    # user fills in a Product on the UI, it replaces the extracted product
+    # on EVERY row unconditionally — including rows that had their own
+    # per-row product (e.g. Layout D, where each row can carry a different
+    # product) — a manual override is meant to win outright, not just fill
+    # in gaps the extraction left empty.
+    product_override = s(external_product).strip()
 
     customer = (
         normalize_customer_name(pkl.get("consignee"))
@@ -1762,16 +1771,19 @@ def build_rows(mbl: dict, pkl: dict, inv: dict, eta_date: str = "", external_id:
         pallet_count = row_container_pallets or pallets_per_container
         pkg_type = determine_pkg_type(net_weight_kg, bags)
 
-        # Product: prefer THIS row's own product when the layout gives one
-        # per row (e.g. Layout D, where one container can legitimately
-        # carry two different products across separate item blocks) —
-        # otherwise the shipment-wide product computed above. No code-side
-        # reformatting here deliberately — product identification strings
-        # vary too much across shippers/product families for a fixed
-        # pattern to safely rewrite (a rule tuned to one document's naming
-        # convention will misfire on another's); the extraction prompt is
-        # responsible for returning the right name, not this function.
-        row_product_final = s(row_product).strip() or product
+        # Product: a UI-entered override wins outright, on every row,
+        # regardless of what the layout gave that specific row (see the
+        # note at product_override's definition above). Otherwise prefer
+        # THIS row's own product when the layout gives one per row (e.g.
+        # Layout D, where one container can legitimately carry two
+        # different products across separate item blocks) — otherwise the
+        # shipment-wide product computed above. No code-side reformatting
+        # here deliberately — product identification strings vary too much
+        # across shippers/product families for a fixed pattern to safely
+        # rewrite (a rule tuned to one document's naming convention will
+        # misfire on another's); the extraction prompt is responsible for
+        # returning the right name, not this function.
+        row_product_final = product_override or s(row_product).strip() or product
 
         return {
             "reference":      ref_no,

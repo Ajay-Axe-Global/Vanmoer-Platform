@@ -39,6 +39,11 @@
     el.style.display = "block";
   }
 
+  // IANA name (e.g. "Asia/Kolkata"), sent with every period-based request so
+  // "Today"/"This week"/"This month" and the per-day chart bucket by the
+  // viewer's calendar day instead of the server's UTC day.
+  const VIEWER_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
   function fmtTimestamp(iso) {
     const d = new Date(iso);
     return d.toLocaleString(undefined, {
@@ -60,7 +65,7 @@
   async function loadStats() {
     const clientSlug = document.getElementById("chart-filter-client").value;
     const taskSlug = document.getElementById("chart-filter-task").value;
-    const params = new URLSearchParams();
+    const params = new URLSearchParams({ tz: VIEWER_TZ });
     if (clientSlug) params.set("client_slug", clientSlug);
     if (taskSlug) params.set("task_slug", taskSlug);
 
@@ -186,7 +191,7 @@
   }
 
   function periodParams(state) {
-    const params = new URLSearchParams({ period: state.period });
+    const params = new URLSearchParams({ period: state.period, tz: VIEWER_TZ });
     if (state.period === "custom") {
       if (!state.since || !state.until) return null;
       params.set("since", state.since);

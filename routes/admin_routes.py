@@ -1,5 +1,4 @@
 from flask import Blueprint, g, jsonify, request
-
 from admin import service
 from database.backup import backup_now
 from helpers.decorators import role_required
@@ -23,7 +22,7 @@ def post_client():
     try:
         return jsonify(service.create_client(name)), 201
     except ValueError as e:
-        return jsonify({"error": str(e)}), 400
+        return jsonify({"error": str(e)}), 400 
 
 
 @bp.route("/tasks", methods=["GET"])
@@ -114,7 +113,8 @@ def get_jobs_summary():
     period = request.args.get("period", "today")
     try:
         since, until = service.period_range(
-            period, request.args.get("since"), request.args.get("until")
+            period, request.args.get("since"), request.args.get("until"),
+            tz_name=request.args.get("tz"),
         )
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
@@ -133,7 +133,8 @@ def get_jobs_productivity():
     period = request.args.get("period", "today")
     try:
         since, until = service.period_range(
-            period, request.args.get("since"), request.args.get("until")
+            period, request.args.get("since"), request.args.get("until"),
+            tz_name=request.args.get("tz"),
         )
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
@@ -165,6 +166,7 @@ def get_stats():
     return jsonify(service.dashboard_stats(
         client_slug=request.args.get("client_slug") or None,
         task_slug=request.args.get("task_slug") or None,
+        tz_name=request.args.get("tz"),
     ))
 
 
@@ -174,7 +176,8 @@ def get_stats_by_client():
     period = request.args.get("period", "today")
     try:
         since, until = service.period_range(
-            period, request.args.get("since"), request.args.get("until")
+            period, request.args.get("since"), request.args.get("until"),
+            tz_name=request.args.get("tz"),
         )
     except ValueError as e:
         return jsonify({"error": str(e)}), 400

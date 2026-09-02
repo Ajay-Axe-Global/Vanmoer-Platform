@@ -5,6 +5,7 @@ called from scripts/tests without going through Flask.
 """
 
 import datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import case, func, or_
 
@@ -30,14 +31,32 @@ def _utc_iso(dt: datetime.datetime) -> str:
     return dt.isoformat() + "Z"
 
 
+def _resolve_tz(tz_name: str | None) -> datetime.tzinfo:
+    if not tz_name:
+        return datetime.timezone.utc
+    try:
+        return ZoneInfo(tz_name)
+    except ZoneInfoNotFoundError:
+        return datetime.timezone.utc
+
+
 def period_range(period: str, since: str | None = None,
-                  until: str | None = None) -> tuple[datetime.datetime, datetime.datetime]:
+                  until: str | None = None, tz_name: str | None = None,
+                  ) -> tuple[datetime.datetime, datetime.datetime]:
     """Resolves a period keyword into a half-open [since, until) UTC datetime
     range, server-side, so "Today"/"This week"/"This month" mean the same
     thing everywhere instead of being recomputed against the viewer's local
     clock in JS. `since`/`until` are plain "YYYY-MM-DD" date strings, only
-    used (and required) when period == "custom"."""
-    today = datetime.datetime.utcnow().date()
+    used (and required) when period == "custom".
+
+    "Today" etc. are calendar days in the *viewer's* timezone (`tz_name`, an
+    IANA name like "Asia/Kolkata" sent by the frontend) — not the server's
+    UTC day. JobHistory.timestamp is stored as naive UTC, so the resulting
+    local-midnight boundaries are converted back to naive UTC before being
+    returned, for direct use in a `JobHistory.timestamp >= since` filter.
+    Falls back to UTC if no/unrecognized tz_name is given."""
+    tz = _resolve_tz(tz_name)
+    today = datetime.datetime.now(tz).date()
     tomorrow = today + datetime.timedelta(days=1)
 
     if period == "custom":
@@ -60,9 +79,11 @@ def period_range(period: str, since: str | None = None,
     else:
         raise ValueError(f"Unknown period: {period}")
 
+    since_local = datetime.datetime.combine(since_date, datetime.time.min, tzinfo=tz)
+    until_local = datetime.datetime.combine(until_date, datetime.time.min, tzinfo=tz)
     return (
-        datetime.datetime.combine(since_date, datetime.time.min),
-        datetime.datetime.combine(until_date, datetime.time.min),
+        since_local.astimezone(datetime.timezone.utc).replace(tzinfo=None),
+        until_local.astimezone(datetime.timezone.utc).replace(tzinfo=None),
     )
 
 
@@ -386,7 +407,7 @@ def list_jobs(user_id: int | None = None, client_slug: str | None = None,
 
 
 def dashboard_stats(days: int = 14, client_slug: str | None = None,
-                     task_slug: str | None = None) -> dict:
+                     task_slug: str | None = None, tz_name: str | None = None) -> dict:
     """Stat tiles + a files-per-day series for the dashboard chart, optionally
     scoped to one client and/or task.
 
@@ -394,9 +415,17 @@ def dashboard_stats(days: int = 14, client_slug: str | None = None,
     as 5), not a raw job/run count — see build_reference() in helpers/jobs.py.
     Success/failure rate stays run-based (a run either produced output or it
     didn't), a separate concept from how many files that run represented.
+
+    Day buckets ("Today", the per-day series) are calendar days in the
+    viewer's timezone (`tz_name`), not the server's UTC day — grouping by
+    `func.date(timestamp)` in SQL would bucket by the stored UTC day instead,
+    which silently shifts jobs made near local midnight onto the wrong day.
+    JobHistory.timestamp is naive UTC, so buckets are computed in Python
+    after converting each row's timestamp into the viewer's tz.
     """
     session = SessionLocal()
     try:
+        tz = _resolve_tz(tz_name)
         file_count_expr = func.coalesce(
             JobHistory.reference_count,
             case((JobHistory.status == "success", 1), else_=0),
@@ -415,16 +444,20 @@ def dashboard_stats(days: int = 14, client_slug: str | None = None,
         failed = total_runs - success
         total_files = base_query(func.sum(file_count_expr)).scalar() or 0
 
-        today = datetime.datetime.utcnow().date()
-        since = datetime.datetime.combine(today - datetime.timedelta(days=days - 1), datetime.time.min)
-        day_col = func.date(JobHistory.timestamp)
+        today = datetime.datetime.now(tz).date()
+        since_date = today - datetime.timedelta(days=days - 1)
+        since_utc = datetime.datetime.combine(since_date, datetime.time.min, tzinfo=tz) \
+            .astimezone(datetime.timezone.utc).replace(tzinfo=None)
         rows = (
-            base_query(day_col, func.sum(file_count_expr))
-            .filter(JobHistory.timestamp >= since)
-            .group_by(day_col)
+            base_query(JobHistory.timestamp, file_count_expr)
+            .filter(JobHistory.timestamp >= since_utc)
             .all()
         )
-        counts_by_day = {d: c or 0 for d, c in rows}
+        counts_by_day: dict[str, int] = {}
+        for ts, count in rows:
+            local_date = ts.replace(tzinfo=datetime.timezone.utc).astimezone(tz).date().isoformat()
+            counts_by_day[local_date] = counts_by_day.get(local_date, 0) + (count or 0)
+
         series = []
         for i in range(days):
             d = today - datetime.timedelta(days=days - 1 - i)
@@ -434,7 +467,7 @@ def dashboard_stats(days: int = 14, client_slug: str | None = None,
         # Calendar week (Sunday-Saturday), same boundary as the "This week"
         # period filter (period_range) — not a trailing-7-day window, so the
         # two stay in agreement instead of drifting apart mid-week.
-        week_since, week_until = period_range("week")
+        week_since, week_until = period_range("week", tz_name=tz_name)
         files_this_week = (
             base_query(func.sum(file_count_expr))
             .filter(JobHistory.timestamp >= week_since, JobHistory.timestamp < week_until)

@@ -336,6 +336,21 @@ prefix anywhere on the page.
   plain number, e.g. "No of Packages: 7920") — this is the TOTAL BAG COUNT
   for the whole shipment, not a per-row value. If present, extract it as
   "total_bags". If no such field exists, set "total_bags" to 0.
+- ⚠️ ALSO check the very bottom of the per-container TABLE ITSELF (see TABLE
+  STRUCTURE below) for a "Total:" row — e.g. "Total: 323 PAL 19380
+  493.2210 MT 564.6990 MT 484.5000 MT" — printed after the last container's
+  last row, on the standard (Kemya/dual-block/etc.) table layout. When this
+  row exists, its PAL figure and its BAGS figure are the true document-wide
+  "total_pallets"/"total_bags" — extract them from here even if the header
+  block above never mentioned a total. This "Total:" row is your own
+  answer key: after you finish transcribing every table row, come back and
+  add up the "bags" you gave every row — if your own sum doesn't match this
+  row's BAGS figure, you missed a row or merged two rows into one somewhere
+  above; go back and re-scan the table (pay special attention to any place
+  where one container has only a single row and butts directly against the
+  next container's row with NO blank line between them — that is the
+  single easiest place to lose or mislabel a row, see WORKED EXAMPLE 3
+  below) until your row-by-row sum matches this printed total exactly.
 
 ══════════════════════════════════════════
 TABLE STRUCTURE
@@ -513,6 +528,54 @@ return must equal the number of physical table rows in the document,
 counted rows included.
 
 ══════════════════════════════════════════
+WORKED EXAMPLE 3 — a single-lot container with NO blank line before the
+NEXT container's row (the case most likely to make you drop or relabel a
+row — read this one especially carefully)
+══════════════════════════════════════════
+Every multi-lot container's block is normally followed by a blank spacer
+line before the next container starts — but a container with only ONE lot
+produces no continuation row, so it has NO trailing blank line of its own.
+When that single-lot container is immediately followed by another
+container's row (i.e. two container blocks sit back-to-back with ZERO
+vertical gap between them), that junction is the single easiest place in
+the whole document to misread — do not let the lack of a blank-line cue
+make you skip a row or shift an ID onto the wrong row:
+
+    AAAA1111111  ...  0011111111   2 PAL   120    ...   29.700 MT  ...  3.0 MT
+      2222222
+                 ...  0022222222  15 PAL   900    ...                  22.5 MT
+
+    BBBB3333333  ...  0011111111  17 PAL  1020    ...   29.700 MT  ...  25.5 MT
+      4444444
+    CCCC5555555  ...  0033333333   3 PAL   180    ...   29.700 MT  ...  4.5 MT
+      6666666
+                 ...  0044444444  14 PAL   840    ...                  21.0 MT
+
+This is SEVEN physical rows → output EXACTLY seven entries:
+  Row 1: AAAA1111111, HAS VGM → open AAAA1111111.
+  Row 2: no id, NO VGM, 900 bags → continuation of AAAA1111111 — its own
+         entry, container_id="". Do NOT let this row's data end up labeled
+         BBBB3333333 just because BBBB3333333's real row happens to come
+         next — BBBB3333333 has not appeared in the document yet at this
+         point, so nothing here can legitimately belong to it.
+  Row 3: BBBB3333333, HAS VGM → open BBBB3333333, its own separate
+         1020-bag entry. BBBB3333333 has only this one row — it has NO
+         continuation, so the very next row (CCCC5555555) starts with
+         ZERO blank-line separation from it. Do not treat CCCC5555555's
+         row as though it were still part of BBBB3333333.
+  Row 4: CCCC5555555, HAS VGM → open CCCC5555555, its own separate
+         180-bag entry — this is a BRAND NEW container starting right
+         where BBBB3333333's single row ended, not a continuation of it.
+  Row 5: no id, NO VGM, 840 bags → continuation of CCCC5555555 — its own
+         entry, container_id="".
+
+Do NOT collapse rows 2-4 together, and do NOT drop row 4 (CCCC5555555's
+own 180-bag row) just because it sits directly against the row above it —
+a container with its own printed ID and its own VGM value is ALWAYS a
+real, separate row, no matter how little vertical space separates it from
+whatever came immediately before it.
+
+══════════════════════════════════════════
 OUTPUT FORMAT
 ══════════════════════════════════════════
 {
@@ -640,8 +703,52 @@ def extract_packing_list(pdf_path: str) -> dict:
     Gemini returns FLAT, order-preserved rows[] (one row = one table line,
     transcribed as-is, no grouping decisions). Python groups them into
     containers deterministically using has_vgm.
+
+    Occasionally the model drops or misattributes a physical row — most
+    often at a junction where a single-lot container's row sits directly
+    against the next container's row with no blank-line gap between them
+    (see WORKED EXAMPLE 3 in the prompt). That failure is invisible to
+    has_vgm-based grouping (it operates on whatever rows it's handed) but
+    is cheaply detectable: sum every row's own "bags" and compare it to
+    the document's own printed total ("total_bags", read from the table's
+    "Total:" footer row). A mismatch means a row went missing/duplicated.
+    temperature=0.0 is deterministic, so a bare retry on identical input
+    reliably reproduces the identical mistake (confirmed: the same document
+    failed the same way twice in a row) — retries instead run at a higher
+    temperature to give the model a different sampling path, keeping
+    whichever attempt reconciles first (or the closest miss if none do).
     """
-    data = call_gemini(PKG_LIST_PROMPT, pdf_path=pdf_path, max_output_tokens=16384)
+    MAX_ATTEMPTS = 3
+    best_data, best_diff = None, None
+
+    for attempt in range(MAX_ATTEMPTS):
+        temperature = 0.0 if attempt == 0 else 0.4
+        data = call_gemini(PKG_LIST_PROMPT, pdf_path=pdf_path,
+                            max_output_tokens=16384, temperature=temperature)
+        suffix = "" if attempt == 0 else f"_retry{attempt}"
+        _dump_json(pdf_path, f"pkg_list_raw{suffix}.json", data)
+
+        rows = data.get("rows", [])
+        row_bag_sum = sum(_num(r.get("bags"), 0) for r in rows)
+        doc_total_bags = _num(data.get("total_bags"), 0)
+        diff = abs(row_bag_sum - doc_total_bags) if doc_total_bags else 0
+
+        print(f"  [EXTRACT] Attempt {attempt + 1} (temp={temperature}): "
+              f"row-sum bags={row_bag_sum} vs document total={doc_total_bags} "
+              f"(diff={diff})")
+
+        if best_diff is None or diff < best_diff:
+            best_data, best_diff = data, diff
+        if diff == 0:
+            break
+
+    if best_diff:
+        print(f"  [EXTRACT WARNING] Packing list bag count never reconciled "
+              f"after {MAX_ATTEMPTS} attempts — off by {best_diff} bags from "
+              f"the document's own total. A row is likely missing or "
+              f"misattributed; this shipment needs manual verification.")
+
+    data = best_data
     _dump_json(pdf_path, "pkg_list_raw.json", data)
 
     data["rows"] = _repair_split_container_ids(data.get("rows", []))

@@ -74,6 +74,24 @@ def _fix_container_id(raw: str, existing_seal: str = "") -> tuple[str, str]:
     return container_id, existing_seal
 
 
+# Every SABIC Sales Order/STO/PO base number is exactly 10 digits starting
+# "450..." (see MBL_PROMPT/PKG_LIST_PROMPT). Deterministic safety net for
+# the "PO: 4506636062 000010" → sabic_po field: if the model fails to drop
+# the trailing sub-item suffix (either leaving the space in, or — the
+# observed failure — gluing the two parts together into one long digit
+# string with no space), pull out just the real 10-digit number instead of
+# trusting the prompt alone to have stripped it correctly.
+_SALES_ORDER_RE = re.compile(r'(450\d{7})')
+
+
+def _fix_sales_order_no(raw) -> str:
+    s = str(raw or "").strip()
+    if not s:
+        return s
+    m = _SALES_ORDER_RE.search(s)
+    return m.group(1) if m else s
+
+
 # A truncated container id: 4 letters + FEWER than 7 digits. A correctly
 # read container id is always exactly 4 letters + 7 digits (ISO 6346), so
 # this shape only ever shows up when a page break cut the number in half.
@@ -304,8 +322,13 @@ from Layout A, which always has a literal "Sabic PO:"/"Sabic Delivery:"
 label. This means the page has TWO "Delivery:" labels total, one per
 block — do not just grab the first one you see.
   - "Order/STO:" (left block) → sto.
-  - "PO:" (right block) → sabic_po — base number only, drop the trailing
-    sub-item suffix (e.g. "4506636062 000010" → "4506636062").
+  - "PO:" (right block) → sabic_po — base number only, DELETE the trailing
+    sub-item suffix entirely, do not just remove the space between the two
+    parts. "4506636062 000010" → "4506636062" (10 digits). Do NOT output
+    "4506636062000010" (16 digits, the two numbers glued together with no
+    space) — that is not a real reference number and is the single most
+    common mistake extracting this field; the six-digit suffix after the
+    space must be thrown away completely, not kept and just re-joined.
   - "Delivery:" under the RIGHT ("PO:") block → sabic_delivery — this is
     the delivery number that matches the MBL and Invoice. Leave
     delivery_no empty for this layout (same convention as Layout A).
@@ -576,6 +599,61 @@ real, separate row, no matter how little vertical space separates it from
 whatever came immediately before it.
 
 ══════════════════════════════════════════
+WORKED EXAMPLE 4 — the opening lot is SMALLER than its own continuation
+lot (do not treat lot size as a signal for anything — it is not)
+══════════════════════════════════════════
+Every earlier example happened to show the FIRST lot as the bigger number.
+That is a coincidence of those particular documents, not a rule. A
+container's opening lot can be small (even just 1 PAL) and its
+continuation lot can be much larger — this does NOT make the small row
+a footnote, an error, or something to merge away, and it does NOT make
+the large row below it a new container:
+
+    MRKU5908400  ...  0061971430  17 PAL  1020   ...  29.704 MT  ...  25.5 MT
+      1122301
+    TCKU6572196  ...  0059506694   1 PAL    60   ...  29.704 MT  ...   1.5 MT
+      1123099
+                 ...  0061971430  16 PAL   960   ...                  24.0 MT
+
+    MRKU5984946  ...  0061971430  17 PAL  1020   ...  29.704 MT  ...  25.5 MT
+      1122374
+
+This is FOUR physical rows → output EXACTLY four entries:
+  Row 1: MRKU5908400, HAS VGM → open MRKU5908400, 1020-bag entry.
+  Row 2: TCKU6572196, HAS VGM → open TCKU6572196. Its OWN entry is only
+         60 bags — that is correct and complete as printed, not a partial
+         or suspicious value. current = TCKU6572196.
+  Row 3: no id, NO VGM, lot 0061971430, 960 bags → continuation of
+         TCKU6572196 (the container that opened directly above it, same
+         as every other continuation row in this document). Its own
+         entry: container_id="", has_vgm=false, bags=960. The fact that
+         960 is much bigger than TCKU6572196's own opening row (60) is
+         irrelevant — do NOT reassign these 960 bags to MRKU5984946
+         below just because 960 "looks like it belongs to a full
+         container" or because MRKU5984946's real row (also ~1020) looks
+         like a more natural match for it. TCKU6572196 legitimately has
+         two lots totalling 1020 bags (60 + 960); MRKU5984946 is a
+         completely separate container with its own unrelated 1020-bag
+         row still to come.
+  Row 4: MRKU5984946, HAS VGM → open MRKU5984946, its own separate
+         1020-bag entry — untouched by row 3 above it.
+
+Expected JSON for these four rows (note row 3's blank container_id and
+false has_vgm — this is what row 3 must look like, not a fifth container):
+[
+  {"container_id": "MRKU5908400", "seal": "1122301", "has_vgm": true,  "lot": "0061971430", "pallet_qty": 17, "bags": 1020, ...},
+  {"container_id": "TCKU6572196", "seal": "1123099", "has_vgm": true,  "lot": "0059506694", "pallet_qty": 1,  "bags": 60,   ...},
+  {"container_id": "",            "seal": "",        "has_vgm": false, "lot": "0061971430", "pallet_qty": 16, "bags": 960,  ...},
+  {"container_id": "MRKU5984946", "seal": "1122374", "has_vgm": true,  "lot": "0061971430", "pallet_qty": 17, "bags": 1020, ...}
+]
+
+Self-check before finalizing: sum every row's "bags" field and compare it
+to the document's own printed "Total:" line. If your sum is short by
+roughly one container's worth of bags, you almost certainly did what this
+example warns against — merged or dropped a continuation row instead of
+emitting it separately. Re-read the table and fix it before responding.
+
+══════════════════════════════════════════
 OUTPUT FORMAT
 ══════════════════════════════════════════
 {
@@ -804,12 +882,18 @@ def extract_packing_list(pdf_path: str) -> dict:
 
     result = {
         "delivery_no":    document_delivery_no,
-        "sto":            data.get("sto", ""),
-        "sabic_po":       data.get("sabic_po", ""),
+        "sto":            _fix_sales_order_no(data.get("sto", "")),
+        "sabic_po":       _fix_sales_order_no(data.get("sabic_po", "")),
         "sabic_delivery": data.get("sabic_delivery", ""),
         "total_pallets":  _num(data.get("total_pallets"), 0),
         "total_bags":     _num(data.get("total_bags"), 0),
         "lines":          flat_lines,
+        # Non-zero when the row-level bag counts never reconciled against
+        # the document's own printed total across all extraction attempts
+        # (see the retry loop above) — a strong signal that a row was
+        # dropped or its data got misattributed to the wrong container.
+        # Surfaced in validate() so this isn't a console-only warning.
+        "bag_reconciliation_diff": best_diff or 0,
     }
 
     _dump_json(pdf_path, "pkg_list.json", result)
@@ -1074,6 +1158,16 @@ def _build_ref(ref_nos: list) -> str:
 
 def validate(mbl: dict, pkl: dict, inv: dict) -> list[str]:
     results = []
+
+    bag_diff = pkl.get("bag_reconciliation_diff", 0)
+    if bag_diff:
+        results.append(
+            f"[X]  EXTRACTION WARNING — packing list row bag counts never matched "
+            f"the document's own printed total (off by {bag_diff} bags) even after "
+            f"retrying extraction. A row is likely missing or its data landed on "
+            f"the wrong container — verify every container/lot against the "
+            f"original PDF before using this output."
+        )
 
     mbl_ref = _build_ref(mbl.get("ref_nos", []))
     inv_ref = _build_ref([inv.get("sales_ref", "")])

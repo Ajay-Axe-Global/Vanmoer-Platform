@@ -10,14 +10,14 @@ from database.models import Client, Task, User
 from helpers.jwt_utils import hash_password
 
 DEFAULT_ADMIN_USERNAME = "admin"
-DEFAULT_ADMIN_PASSWORD = "admin123"  # CHANGE THIS after first login
+DEFAULT_ADMIN_PASSWORD = "admin123"  # "CHANGE THIS" after first login
 
 
 def seed():
     init_db()
     session = SessionLocal()
     try:
-        for name in ("Carpenter", "Sabic", "Vinmar"):
+        for name in ("Carpenter", "Sabic", "Vinmar", "Emvia"):
             slug = name.lower()
             if not session.query(Client).filter_by(slug=slug).first():
                 session.add(Client(name=name, slug=slug))

@@ -1,0 +1,33 @@
+{
+  "destination_country": "Belgium",
+  "grand_total_pieces": 115,
+  "grand_total_net_mt": 1.626,
+  "containers": [
+    {
+      "container_no": "MSMU3246458",
+      "bundles": [
+        {
+          "product": "EN 10056",
+          "batch_no": "8664588",
+          "pieces": 37,
+          "net_weight_mt": 0.532,
+          "gross_weight_mt": 0.534
+        },
+        {
+          "product": "EN 10056",
+          "batch_no": "8664588",
+          "pieces": 39,
+          "net_weight_mt": 0.562,
+          "gross_weight_mt": 0.564
+        },
+        {
+          "product": "EN 10056",
+          "batch_no": "8664591",
+          "pieces": 39,
+          "net_weight_mt": 0.562,
+          "gross_weight_mt": 0.564
+        }
+      ]
+    }
+  ]
+}

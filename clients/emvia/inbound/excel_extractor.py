@@ -41,11 +41,15 @@ HEADER_ALIASES: dict[str, list[str]] = {
     "container":         ["container", "container no", "container number", "container nr"],
     "specification":     ["specification", "spec"],
     "size_thickness":    ["size x thickness", "size thickness", "size and thickness"],
+    "total_bndls":       ["total bndls", "tot bndls", "total bundles", "tot bundles"],
     "pcs_per_bdl":       ["pcs bdl", "pcs per bdl", "pieces bdl", "pieces per bundle"],
     "tot_gross_weight":  ["tot gross weight", "total gross weight", "tot gross wt", "total gross wt"],
 }
 
-REQUIRED_FIELDS = ("ref", "receiver", "container", "specification", "size_thickness", "pcs_per_bdl", "tot_gross_weight")
+REQUIRED_FIELDS = (
+    "ref", "receiver", "container", "specification", "size_thickness",
+    "total_bndls", "pcs_per_bdl", "tot_gross_weight",
+)
 
 # How many of the sheet's leading rows to scan for the real header row — a
 # sender's sheet commonly has a title/logo/blank row (or two) above the
@@ -133,12 +137,17 @@ def extract_packing_list_excel(path: str) -> dict:
             continue  # not a real bundle row
 
         cid, _ = fix_container_id(container_raw)
+        # This sheet gives only one weight column ("TOT GROSS weight") — no
+        # separate net figure exists anywhere on it, so Net Weight mirrors
+        # Gross Weight (per client instruction) rather than being left at 0.
+        gross_weight_kg = num(row.get(field_to_column["tot_gross_weight"]), 0)
         containers.setdefault(cid, []).append({
             "product":          s(row.get(field_to_column["specification"])).strip(),
             "batch_no":         s(row.get(field_to_column["size_thickness"])).strip(),
             "pieces":           pieces,
-            "net_weight_kg":    0,
-            "gross_weight_kg":  num(row.get(field_to_column["tot_gross_weight"]), 0),
+            "pallet_count":     num(row.get(field_to_column["total_bndls"]), 0),
+            "net_weight_kg":    gross_weight_kg,
+            "gross_weight_kg":  gross_weight_kg,
             "reference":        s(row.get(field_to_column["ref"])).strip(),
             "receiver":         s(row.get(field_to_column["receiver"])).strip(),
         })

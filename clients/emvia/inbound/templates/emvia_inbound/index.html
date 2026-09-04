@@ -4,6 +4,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="/auth/client.js"></script>
+    <script>VanmoerAuth.guardCurrentTaskPage();</script>
     <title>Emvia Inbound</title>
     <style>
         * {
@@ -226,7 +228,8 @@
         }
 
         .field-group input[type="date"],
-        .field-group input[type="text"] {
+        .field-group input[type="text"],
+        .field-group select {
             width: 100%;
             padding: 12px 14px;
             font-size: 14px;
@@ -240,8 +243,20 @@
             color-scheme: dark;
         }
 
+        .field-group select {
+            cursor: pointer;
+            appearance: none;
+            -webkit-appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='%2394a3b8'%3E%3Cpath fill-rule='evenodd' d='M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z' clip-rule='evenodd'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 14px center;
+            background-size: 16px;
+            padding-right: 40px;
+        }
+
         .field-group input[type="date"]:focus,
-        .field-group input[type="text"]:focus {
+        .field-group input[type="text"]:focus,
+        .field-group select:focus {
             border-color: #3b82f6;
         }
 
@@ -462,7 +477,7 @@
     <div class="container">
         <div class="page-header">
             <h1>Emvia Inbound</h1>
-            <p>Warehouse 1147 — Upload MBL &amp; Packing List → Generate Outcome Excel</p>
+            <p>Upload MBL &amp; Packing List → Generate Outcome Excel</p>
         </div>
 
         <!-- Upload Section -->
@@ -507,8 +522,11 @@
 
                 <div class="field-group">
                     <label for="warehouse">Warehouse</label>
-                    <input type="text" id="warehouse" value="1147" onchange="checkReady()">
-                    <span class="hint">Warehouse 1147 flow (only warehouse supported currently).</span>
+                    <select id="warehouse" onchange="checkReady()">
+                        <option value="KRUIPIN 1147 (VMR) [765]">KRUIPIN 1147 (VMR) [765]</option>
+                        <option value="NNRC 660">NNRC 660</option>
+                    </select>
+                    <span class="hint">Selected warehouse is written to the Warehouse column as shown.</span>
                 </div>
             </div>
 
@@ -549,7 +567,6 @@
         </div>
     </div>
 
-    <script src="/auth/client.js"></script>
     <script>
         VanmoerAuth.requireAuth();
 
@@ -686,6 +703,7 @@
             statsRow.innerHTML = '';
             const chips = [
                 { value: s.mbl_no || '—', label: 'MBL No' },
+                { value: s.carrier || '—', label: 'Carrier' },
                 { value: s.warehouse || '—', label: 'Warehouse' },
                 { value: s.total_containers || 0, label: 'Containers' },
                 { value: s.total_rows || 0, label: 'Rows' },
@@ -732,7 +750,7 @@
             clearFile('mblFile', 'mblName');
             clearFile('pklFile', 'pklName');
             document.getElementById('reference').value = '';
-            document.getElementById('warehouse').value = '1147';
+            document.getElementById('warehouse').selectedIndex = 0;
             document.getElementById('etaDate').value = '';
             checkReady();
             document.getElementById('uploadSection').style.display = 'block';

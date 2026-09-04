@@ -1,16 +1,23 @@
 """
-Emvia Inbound (Warehouse 1147) — task module.
+Emvia Inbound — task module, covering both warehouses (1147 and NNRC 660).
 
 Follows the same two-part structure as clients/vinmar/inbound/task.py:
   1. EmviaInboundTask(BaseTask)  — extraction, validation, Excel output
   2. Flask Blueprint              — index / process / download routes
 
-Warehouse 1147 only, for this pass (NNRC comes later). The Packing List can
-be either the PDF layout (extractor.py, Gemini-based) or an Excel sheet
-(excel_extractor.py, pandas-based, no LLM — see that module's docstring for
-why) — which path runs is decided by the uploaded file's own extension, not
-a client-trusted form flag, so it's always correct regardless of what the
-UI's toggle happened to show.
+The Packing List extraction path is chosen from the UI's warehouse
+selection AND (for warehouse 1147 only) the uploaded file's own extension —
+never a separately client-trusted flag, so routing is always correct
+regardless of what the UI happened to show:
+  - Warehouse NNRC 660  -> extract_packing_list_nnrc() (PDF only — see
+    extractor.py's module docstring; no Excel format for this warehouse).
+  - Warehouse 1147, .xlsx/.xls upload -> extract_packing_list_excel()
+    (excel_extractor.py, pandas-based, no LLM — see that module's docstring
+    for why).
+  - Warehouse 1147, .pdf upload -> extract_packing_list() (extractor.py,
+    Gemini-based, VE Staal B.V. layout).
+The MBL extraction (extract_mbl()) is shared across both warehouses — it
+dispatches internally by ocean carrier, not by warehouse.
 """
 
 import traceback
@@ -34,7 +41,7 @@ from helpers.excel_writer import write_excel
 from helpers.jobs import build_reference, job_output_path, log_job, new_job_dir
 
 from .excel_extractor import extract_packing_list_excel
-from .extractor import build_rows, extract_mbl, extract_packing_list, validate
+from .extractor import build_rows, extract_mbl, extract_packing_list, extract_packing_list_nnrc, validate
 
 EXCEL_EXTENSIONS = {".xlsx", ".xls"}
 
@@ -52,11 +59,14 @@ COLUMN_CONFIG = [
     {"header": "Mbl Number",      "field_key": "mbl_no",         "width": 20},
     {"header": "Seal No",         "field_key": "seal_no",        "width": 18},
     {"header": "Container Type",  "field_key": "container_type", "width": 14},
-    {"header": "Warehouse",       "field_key": "warehouse",      "width": 12},
+    {"header": "Warehouse",       "field_key": "warehouse",      "width": 24},
     {"header": "Country Code",    "field_key": "country_code",   "width": 10},
     {"header": "Product",         "field_key": "product",        "width": 14},
     {"header": "Batch No",        "field_key": "batch_no",       "width": 14},
-    {"header": "Pieces Qty",      "field_key": "pieces_qty",     "width": 12, "num_format": "#,##0"},
+    # Mutually exclusive per row — see build_rows(): the MBL's own
+    # package_type (BUNDLE vs BAG) decides which one gets the pieces
+    # figure, the other stays blank.
+    {"header": "Bags",            "field_key": "bags_qty",       "width": 12, "num_format": "#,##0"},
     {"header": "Net Weight (KG)", "field_key": "net_weight",     "width": 16, "num_format": "#,##0"},
     {"header": "Gross Weight (KG)", "field_key": "gross_weight", "width": 16, "num_format": "#,##0"},
     {"header": "Pallet Count",    "field_key": "pallet_count",   "width": 12, "num_format": "#,##0"},
@@ -64,6 +74,7 @@ COLUMN_CONFIG = [
     # directly on that sheet); empty for PDF-sourced rows, which have no
     # per-row Receiver value anywhere on the document.
     {"header": "Ref+Receiver",    "field_key": "ref_receiver",   "width": 26},
+    {"header": "Bundles",         "field_key": "bundles_qty",    "width": 12, "num_format": "#,##0"},
 ]
 
 OUTPUT_FILENAME = "Emvia_Inbound_Outcome.xlsx"
@@ -98,12 +109,16 @@ class EmviaInboundTask(BaseTask):
     writes_own_output = False
 
     def process(self, files: dict, output_path: str | None = None, reference: str = "",
-                warehouse: str = "1147") -> dict:
+                warehouse: str = "KRUIPIN 1147(VMR)[765]") -> dict:
         # ── Step 1: extraction ──────────────────────────────────────
         mbl_data = extract_mbl(files["mbl"])
 
         pkl_path = files["packing_list"]
-        if Path(pkl_path).suffix.lower() in EXCEL_EXTENSIONS:
+        if "NNRC" in warehouse.upper():
+            # NNRC 660's Export Packing List is PDF-only — no Excel format
+            # for this warehouse, so the file extension isn't consulted.
+            pkl_data = extract_packing_list_nnrc(pkl_path)
+        elif Path(pkl_path).suffix.lower() in EXCEL_EXTENSIONS:
             pkl_data = extract_packing_list_excel(pkl_path)
         else:
             pkl_data = extract_packing_list(pkl_path)
@@ -118,11 +133,14 @@ class EmviaInboundTask(BaseTask):
 
         # ── Summary stats ───────────────────────────────────────────
         containers = set(r["container_no"] for r in rows)
-        total_pieces = sum(r["pieces_qty"] for r in rows)
+        # bags_qty/bundles_qty are mutually exclusive per row (one holds
+        # the pieces figure, the other is "" — falsy, so `or 0` covers it).
+        total_pieces = sum((r["bags_qty"] or 0) + (r["bundles_qty"] or 0) for r in rows)
         total_net = sum(r["net_weight"] for r in rows)
 
         summary = {
             "mbl_no":           mbl_data.get("mbl_no", ""),
+            "carrier":          mbl_data.get("carrier", ""),
             "reference":        reference,
             "warehouse":        warehouse,
             "total_rows":       len(rows),
@@ -171,7 +189,7 @@ def process():
         return jsonify({"error": "Invalid ETA Date."}), 400
 
     reference = (request.form.get("reference") or "").strip()
-    warehouse = (request.form.get("warehouse") or "1147").strip()
+    warehouse = (request.form.get("warehouse") or "KRUIPIN 1147(VMR)[765]").strip()
 
     job_id, job_dir = new_job_dir()
     session = SessionLocal()

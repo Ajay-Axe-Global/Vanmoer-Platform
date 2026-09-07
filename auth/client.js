@@ -41,6 +41,78 @@ const VanmoerAuth = {
     return auth;
   },
 
+  /**
+   * Like requireAuth(), but for a specific client/task page: also verifies
+   * the token actually grants access to (clientSlug, taskSlug) — admins
+   * pass automatically. requireAuth() alone only proves "logged in", so a
+   * user with grants for other tasks could otherwise load any task page
+   * directly by URL even without a grant for it (the server-side API
+   * routes are still protected, but the page shell itself would render).
+   * Redirects to /dashboard, not /login, since the user IS authenticated —
+   * they just don't belong on this particular task.
+   */
+  requireTaskAccess(clientSlug, taskSlug) {
+    const auth = this.requireAuth();
+    if (!auth) return null;
+    if (auth.role === "admin") return auth;
+    const grants = auth.grants || [];
+    const hasAccess = grants.some(
+      (g) => g.client_slug === clientSlug && g.task_slug === taskSlug
+    );
+    if (!hasAccess) {
+      window.location.href = "/dashboard";
+      return null;
+    }
+    return auth;
+  },
+
+  /**
+   * requireTaskAccess() for the page currently being viewed — reads
+   * (clientSlug, taskSlug) straight off the URL, since every task page is
+   * served at /app/<client_slug>/<task_slug>/... . Lets each task template
+   * gate itself without the server having to pass its own slugs into the
+   * page (which would mean touching every task.py + template pair instead
+   * of just this one place).
+   */
+  requireCurrentTaskAccess() {
+    const parts = window.location.pathname.split("/").filter(Boolean);
+    // parts = ["app", "<client_slug>", "<task_slug>", ...]
+    const [, clientSlug, taskSlug] = parts;
+    return this.requireTaskAccess(clientSlug, taskSlug);
+  },
+
+  /**
+   * Same check as requireCurrentTaskAccess(), but meant to run from <head>
+   * — before the body has parsed — instead of at the bottom of the page.
+   * Touches no DOM (no mountUserMenu call, since document.body doesn't
+   * exist yet this early), just the redirect. Called this early, an
+   * unauthorized visitor's browser starts navigating away before the task
+   * page's own markup ever paints, instead of flashing it for a moment
+   * and then bouncing (which is what happened when this check only ran in
+   * a <script> at the bottom of body, after the whole page had rendered).
+   * Uses location.replace() so the blocked page never lands in history.
+   */
+  guardCurrentTaskPage() {
+    const parts = window.location.pathname.split("/").filter(Boolean);
+    const [, clientSlug, taskSlug] = parts;
+    const auth = this.get();
+    if (!auth || !auth.token) {
+      window.location.replace("/login");
+      return false;
+    }
+    if (auth.role !== "admin") {
+      const grants = auth.grants || [];
+      const hasAccess = grants.some(
+        (g) => g.client_slug === clientSlug && g.task_slug === taskSlug
+      );
+      if (!hasAccess) {
+        window.location.replace("/dashboard");
+        return false;
+      }
+    }
+    return true;
+  },
+
   /** Floating top-right account icon — click to see name/username + log out. */
   mountUserMenu(auth) {
     if (document.getElementById("vma-user-menu")) return;

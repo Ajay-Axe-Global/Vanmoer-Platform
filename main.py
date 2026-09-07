@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from flask import Flask, send_from_directory
+from flask import Flask, send_from_directory 
 
 from database.backup import backup_now
 from database.seed import seed
@@ -48,7 +48,7 @@ def _start_backup_scheduler():
 
 def create_app() -> Flask:
     app = Flask(__name__, static_folder=None)
-    app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50MB max upload
+    app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50 MB max upload
 
     # Idempotent: creates clients/tasks/the default admin only if missing, so
     # it's safe to run on every boot instead of requiring a manual

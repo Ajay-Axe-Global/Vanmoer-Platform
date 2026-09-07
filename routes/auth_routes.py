@@ -35,5 +35,6 @@ def login():
                 for grant in user.grants
             ],
         })
+
     finally:
         session.close()

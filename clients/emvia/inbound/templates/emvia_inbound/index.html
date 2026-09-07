@@ -6,7 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <script src="/auth/client.js"></script>
     <script>VanmoerAuth.guardCurrentTaskPage();</script>
-    <title>Vinmar Inbound</title>
+    <title>Emvia Inbound</title>
     <style>
         * {
             margin: 0;
@@ -59,7 +59,7 @@
         /* ── Upload Cards ───────────────────────────────────── */
         .upload-grid {
             display: grid;
-            grid-template-columns: repeat(3, 1fr);
+            grid-template-columns: repeat(2, 1fr);
             gap: 16px;
             margin-bottom: 28px;
         }
@@ -136,7 +136,81 @@
             display: block;
         }
 
-        /* ── ETA Date field ─────────────────────────────────── */
+        /* ── Excel/PDF Toggle ────────────────────────────────── */
+        .toggle-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 24px;
+        }
+
+        .toggle-text {
+            font-size: 13px;
+            font-weight: 600;
+            color: #cbd5e1;
+            margin-right: 4px;
+        }
+
+        .toggle-side {
+            font-size: 12px;
+            color: #64748b;
+        }
+
+        .toggle-switch {
+            position: relative;
+            display: inline-block;
+            width: 42px;
+            height: 24px;
+        }
+
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            inset: 0;
+            background: #334155;
+            border-radius: 24px;
+            transition: background .2s;
+        }
+
+        .toggle-slider::before {
+            content: "";
+            position: absolute;
+            height: 18px;
+            width: 18px;
+            left: 3px;
+            bottom: 3px;
+            background: #e2e8f0;
+            border-radius: 50%;
+            transition: transform .2s;
+        }
+
+        .toggle-switch input:checked+.toggle-slider {
+            background: #3b82f6;
+        }
+
+        .toggle-switch input:checked+.toggle-slider::before {
+            transform: translateX(18px);
+        }
+
+        /* ── Fields ──────────────────────────────────────────── */
+        .field-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+
+        @media (max-width: 640px) {
+            .field-row {
+                grid-template-columns: 1fr;
+            }
+        }
+
         .field-group {
             margin-bottom: 20px;
         }
@@ -154,7 +228,8 @@
         }
 
         .field-group input[type="date"],
-        .field-group input[type="text"] {
+        .field-group input[type="text"],
+        .field-group select {
             width: 100%;
             padding: 12px 14px;
             font-size: 14px;
@@ -168,13 +243,21 @@
             color-scheme: dark;
         }
 
-        .field-group input[type="date"]:focus,
-        .field-group input[type="text"]:focus {
-            border-color: #3b82f6;
+        .field-group select {
+            cursor: pointer;
+            appearance: none;
+            -webkit-appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='%2394a3b8'%3E%3Cpath fill-rule='evenodd' d='M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z' clip-rule='evenodd'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 14px center;
+            background-size: 16px;
+            padding-right: 40px;
         }
 
-        .field-group input[type="date"]:invalid {
-            border-color: #334155;
+        .field-group input[type="date"]:focus,
+        .field-group input[type="text"]:focus,
+        .field-group select:focus {
+            border-color: #3b82f6;
         }
 
         .field-group .hint {
@@ -393,8 +476,8 @@
 <body>
     <div class="container">
         <div class="page-header">
-            <h1>Vinmar Inbound</h1>
-            <p>Upload MBL, Packing List &amp; Invoice → Generate Outcome Excel</p>
+            <h1>Emvia Inbound</h1>
+            <p>Upload MBL &amp; Packing List → Generate Outcome Excel</p>
         </div>
 
         <!-- Upload Section -->
@@ -402,7 +485,7 @@
             <div class="upload-grid">
                 <div class="upload-card" onclick="this.querySelector('input').click()">
                     <span class="icon">📋</span>
-                    <div class="label">MBL / Sea Waybill</div>
+                    <div class="label">MBL / Bill of Lading</div>
                     <div class="filename" id="mblName">Click to upload PDF</div>
                     <input type="file" id="mblFile" accept=".pdf" onchange="onFileSelect(this, 'mblName')">
                     <button class="remove-btn"
@@ -410,34 +493,41 @@
                 </div>
 
                 <div class="upload-card" onclick="this.querySelector('input').click()">
-                    <span class="icon">📦</span>
-                    <div class="label">Packing List</div>
+                    <span class="icon" id="pklIcon">📦</span>
+                    <div class="label" id="pklLabel">Packing List</div>
                     <div class="filename" id="pklName">Click to upload PDF</div>
                     <input type="file" id="pklFile" accept=".pdf" onchange="onFileSelect(this, 'pklName')">
                     <button class="remove-btn"
                         onclick="event.stopPropagation(); clearFile('pklFile', 'pklName')">&times;</button>
                 </div>
+            </div>
 
-                <div class="upload-card" onclick="this.querySelector('input').click()">
-                    <span class="icon">🧾</span>
-                    <div class="label">Commercial Invoice</div>
-                    <div class="filename" id="invName">Click to upload PDF</div>
-                    <input type="file" id="invFile" accept=".pdf" onchange="onFileSelect(this, 'invName')">
-                    <button class="remove-btn"
-                        onclick="event.stopPropagation(); clearFile('invFile', 'invName')">&times;</button>
+            <div class="toggle-row">
+                <span class="toggle-text">Packing List format:</span>
+                <span class="toggle-side" id="pdfSideLabel">PDF</span>
+                <label class="toggle-switch">
+                    <input type="checkbox" id="excelToggle" onchange="onExcelToggle()">
+                    <span class="toggle-slider"></span>
+                </label>
+                <span class="toggle-side" id="excelSideLabel">Excel</span>
+            </div>
+
+            <div class="field-row">
+                <div class="field-group">
+                    <label for="reference">Reference</label>
+                    <input type="text" id="reference" placeholder="e.g. buyer PO / shipment reference"
+                        onchange="checkReady()">
+                    <span class="hint">Used to build the Reference and Container/Ref columns.</span>
                 </div>
-            </div>
 
-            <div class="field-group">
-                <label for="externalId">External ID</label>
-                <input type="text" id="externalId" placeholder="Optional — overrides Reference / Container Ref">
-                <span class="hint">If filled in, replaces the extracted reference in the Reference and Container/Ref columns.</span>
-            </div>
-
-            <div class="field-group">
-                <label for="externalProduct">Product</label>
-                <input type="text" id="externalProduct" placeholder="Optional — overrides Product column">
-                <span class="hint">If filled in, replaces the extracted product on every row of the Product column.</span>
+                <div class="field-group">
+                    <label for="warehouse">Warehouse</label>
+                    <select id="warehouse" onchange="checkReady()">
+                        <option value="KRUIPIN 1147 (VMR) [765]">KRUIPIN 1147 (VMR) [765]</option>
+                        <option value="NNRC 660">NNRC 660</option>
+                    </select>
+                    <span class="hint">Selected warehouse is written to the Warehouse column as shown.</span>
+                </div>
             </div>
 
             <div class="field-group">
@@ -480,7 +570,7 @@
     <script>
         VanmoerAuth.requireAuth();
 
-        const OUTPUT_FILENAME = 'Vinmar_Inbound_Outcome.xlsx';
+        const OUTPUT_FILENAME = 'Emvia_Inbound_Outcome.xlsx';
 
         /* ── File selection ───────────────────────────────── */
 
@@ -492,7 +582,9 @@
                 nameEl.classList.add('active');
                 card.classList.add('has-file');
             } else {
-                nameEl.textContent = 'Click to upload PDF';
+                nameEl.textContent = nameId === 'pklName'
+                    ? (document.getElementById('excelToggle').checked ? 'Click to upload Excel' : 'Click to upload PDF')
+                    : 'Click to upload PDF';
                 nameEl.classList.remove('active');
                 card.classList.remove('has-file');
             }
@@ -508,18 +600,33 @@
         function checkReady() {
             const mbl = document.getElementById('mblFile').files.length;
             const pkl = document.getElementById('pklFile').files.length;
-            const inv = document.getElementById('invFile').files.length;
             const eta = document.getElementById('etaDate').value;
-            document.getElementById('generateBtn').disabled = !(mbl && pkl && inv && eta);
+            document.getElementById('generateBtn').disabled = !(mbl && pkl && eta);
+        }
+
+        /* ── Excel/PDF toggle ─────────────────────────────── */
+
+        function onExcelToggle() {
+            const isExcel = document.getElementById('excelToggle').checked;
+            const pklFile = document.getElementById('pklFile');
+            const pklIcon = document.getElementById('pklIcon');
+            const pklLabel = document.getElementById('pklLabel');
+
+            // Switching format clears whatever was already selected — a
+            // PDF picked before flipping the toggle isn't a valid Excel
+            // upload (and vice versa), so it must not silently carry over.
+            clearFile('pklFile', 'pklName');
+
+            pklFile.accept = isExcel ? '.xlsx,.xls' : '.pdf';
+            pklIcon.textContent = isExcel ? '📊' : '📦';
+            pklLabel.textContent = isExcel ? 'Packing List (Excel)' : 'Packing List (PDF)';
         }
 
         /* ── Loader steps ─────────────────────────────────── */
 
         const LOADER_STEPS = [
-            'Identifying carrier…',
             'Extracting MBL data…',
             'Extracting Packing List data…',
-            'Extracting Invoice data…',
             'Cross-validating documents…',
             'Building outcome rows…',
             'Generating Excel…',
@@ -547,13 +654,12 @@
             const fd = new FormData();
             fd.append('mbl', document.getElementById('mblFile').files[0]);
             fd.append('packing_list', document.getElementById('pklFile').files[0]);
-            fd.append('invoice', document.getElementById('invFile').files[0]);
+            fd.append('reference', document.getElementById('reference').value);
+            fd.append('warehouse', document.getElementById('warehouse').value);
             // Native <input type="date"> always yields "YYYY-MM-DD" regardless
             // of browser locale — the backend formats it into the OP's
-            // "YYYYMMDD 00:00:00" column format.
+            // "YYYYMMDD 00:00:00" convention.
             fd.append('eta_date', document.getElementById('etaDate').value);
-            fd.append('external_id', document.getElementById('externalId').value);
-            fd.append('external_product', document.getElementById('externalProduct').value);
 
             document.getElementById('uploadSection').style.display = 'none';
             document.getElementById('loader').classList.add('visible');
@@ -598,9 +704,10 @@
             const chips = [
                 { value: s.mbl_no || '—', label: 'MBL No' },
                 { value: s.carrier || '—', label: 'Carrier' },
+                { value: s.warehouse || '—', label: 'Warehouse' },
                 { value: s.total_containers || 0, label: 'Containers' },
                 { value: s.total_rows || 0, label: 'Rows' },
-                { value: (s.total_bags || 0).toLocaleString(), label: 'Total Bags' },
+                { value: (s.total_pieces || 0).toLocaleString(), label: 'Total Pieces' },
                 { value: (s.total_net_weight || 0) + ' KG', label: 'Net Weight' },
             ];
             chips.forEach(c => {
@@ -642,10 +749,9 @@
             document.getElementById('errorMsg').classList.remove('visible');
             clearFile('mblFile', 'mblName');
             clearFile('pklFile', 'pklName');
-            clearFile('invFile', 'invName');
+            document.getElementById('reference').value = '';
+            document.getElementById('warehouse').selectedIndex = 0;
             document.getElementById('etaDate').value = '';
-            document.getElementById('externalId').value = '';
-            document.getElementById('externalProduct').value = '';
             checkReady();
             document.getElementById('uploadSection').style.display = 'block';
         }

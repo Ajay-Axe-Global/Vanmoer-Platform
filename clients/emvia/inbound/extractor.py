@@ -1078,8 +1078,9 @@ def validate(mbl: dict, pkl: dict) -> list[str]:
     mbl_containers = mbl.get("containers", [])
     package_types = {c.get("package_type", "") for c in mbl_containers}
     if mbl_containers and "" in package_types:
-        results.append("[!]  PACKAGE TYPE — MBL didn't state BUNDLE/BAG for at least one container; those rows "
-                        "defaulted to the Bags column — check the Bags/Bundles columns manually")
+        results.append("[!]  PACKAGE TYPE — MBL didn't state BUNDLE/BAG for at least one container — verify "
+                        "manually (Bags and Bundles columns are both filled from the same pieces figure "
+                        "regardless, so this doesn't affect the output, only confirms what the MBL actually says)")
     elif len(package_types) > 1:
         results.append(f"[!]  PACKAGE TYPE — MBL containers disagree on package type ({sorted(package_types)}) — "
                         f"a shipment is normally all-bundles or all-bags, verify manually")
@@ -1180,13 +1181,14 @@ def validate(mbl: dict, pkl: dict) -> list[str]:
 # ROW BUILDER
 # ═══════════════════════════════════════════════════════════════════════════
 
-def build_rows(mbl: dict, pkl: dict, reference: str, warehouse: str) -> list[dict]:
+def build_rows(mbl: dict, pkl: dict, reference: str, warehouse: str, eta_date: str = "") -> list[dict]:
     ui_reference = s(reference).strip()
     warehouse = s(warehouse).strip()
 
-    country_code = get_country_code(
-        s(pkl.get("destination_country")).strip() or s(mbl.get("destination_country")).strip()
-    )
+    # Origin (Port of Loading), matching Sabic/Vinmar Inbound's convention —
+    # NOT destination. E.g. Nhava Sheva, India -> Port of Discharge Antwerp,
+    # Belgium should give "IN", not "BE".
+    country_code = get_country_code(s(mbl.get("port_of_loading")).strip())
 
     mbl_map = {c["id"]: c for c in mbl.get("containers", []) if c.get("id")}
 
@@ -1196,12 +1198,11 @@ def build_rows(mbl: dict, pkl: dict, reference: str, warehouse: str) -> list[dic
         mbl_entry = mbl_map.get(cid, {})
         container_type = normalize_container_type(mbl_entry.get("type", "")) if mbl_entry.get("type") else ""
         seal_no = mbl_entry.get("seal", "")
-        # Read off the MBL (see PACKAGE_TYPE_RULE) — decides which of the
-        # Bags/Bundles columns this container's rows populate. Defaults to
-        # Bags when the MBL didn't state one (e.g. generic-fallback carrier
-        # that hasn't been taught this yet), so the pieces figure is never
-        # silently dropped from the output entirely.
-        package_type = mbl_entry.get("package_type", "")
+        # package_type (BUNDLE/BAG, see PACKAGE_TYPE_RULE) is still read and
+        # validated (see validate()'s [!] PACKAGE TYPE check) but no longer
+        # decides column placement — Bags and Bundles both get the same
+        # pieces figure on every row now, regardless of which type the MBL
+        # states, per client instruction.
 
         for b in c.get("bundles", []):
             # Excel-sourced bundles carry their OWN Ref/Receiver per row
@@ -1213,7 +1214,6 @@ def build_rows(mbl: dict, pkl: dict, reference: str, warehouse: str) -> list[dic
             ref_receiver = f"{row_reference}+{receiver}" if receiver else ""
 
             pieces = num(b.get("pieces"), 0)
-            is_bundle = package_type == "BUNDLE"
 
             rows.append({
                 "reference":      row_reference,
@@ -1226,12 +1226,7 @@ def build_rows(mbl: dict, pkl: dict, reference: str, warehouse: str) -> list[dic
                 "country_code":   country_code,
                 "product":        b.get("product", ""),
                 "batch_no":       b.get("batch_no", ""),
-                # Mutually exclusive — a row's pieces figure goes into
-                # exactly one of these, per the MBL's own package_type; the
-                # other stays "" (blank cell), never 0 (0 would wrongly
-                # read as "zero bundles/bags" rather than "not applicable").
-                "bags_qty":       "" if is_bundle else pieces,
-                "bundles_qty":    pieces if is_bundle else "",
+                "bags_qty":       pieces,
                 "net_weight":     num(b.get("net_weight_kg"), 0),
                 "gross_weight":   num(b.get("gross_weight_kg"), 0),
                 # 0 unless the source document states its own pallet count
@@ -1240,6 +1235,10 @@ def build_rows(mbl: dict, pkl: dict, reference: str, warehouse: str) -> list[dic
                 # correctly falls back to 0 there).
                 "pallet_count":   num(b.get("pallet_count"), 0),
                 "ref_receiver":   ref_receiver,
+                # Storage Type: no source document states this — left
+                # blank for both warehouses until you specify the rule.
+                "storage_type":   "",
+                "eta_date":       eta_date,
             })
 
     return rows

@@ -63,9 +63,6 @@ COLUMN_CONFIG = [
     {"header": "Country Code",    "field_key": "country_code",   "width": 10},
     {"header": "Product",         "field_key": "product",        "width": 14},
     {"header": "Batch No",        "field_key": "batch_no",       "width": 14},
-    # Mutually exclusive per row — see build_rows(): the MBL's own
-    # package_type (BUNDLE vs BAG) decides which one gets the pieces
-    # figure, the other stays blank.
     {"header": "Bags",            "field_key": "bags_qty",       "width": 12, "num_format": "#,##0"},
     {"header": "Net Weight (KG)", "field_key": "net_weight",     "width": 16, "num_format": "#,##0"},
     {"header": "Gross Weight (KG)", "field_key": "gross_weight", "width": 16, "num_format": "#,##0"},
@@ -74,7 +71,10 @@ COLUMN_CONFIG = [
     # directly on that sheet); empty for PDF-sourced rows, which have no
     # per-row Receiver value anywhere on the document.
     {"header": "Ref+Receiver",    "field_key": "ref_receiver",   "width": 26},
-    {"header": "Bundles",         "field_key": "bundles_qty",    "width": 12, "num_format": "#,##0"},
+    # Both warehouses, all types — no source document states this; left
+    # blank on every row until the client specifies the rule.
+    {"header": "Storage Type",    "field_key": "storage_type",   "width": 16},
+    {"header": "ETA/Date",        "field_key": "eta_date",       "width": 20},
 ]
 
 OUTPUT_FILENAME = "Emvia_Inbound_Outcome.xlsx"
@@ -109,7 +109,7 @@ class EmviaInboundTask(BaseTask):
     writes_own_output = False
 
     def process(self, files: dict, output_path: str | None = None, reference: str = "",
-                warehouse: str = "KRUIPIN 1147(VMR)[765]") -> dict:
+                warehouse: str = "KRUIPIN 1147(VMR)[765]", eta_date: str = "") -> dict:
         # ── Step 1: extraction ──────────────────────────────────────
         mbl_data = extract_mbl(files["mbl"])
 
@@ -127,15 +127,15 @@ class EmviaInboundTask(BaseTask):
         validation = validate(mbl_data, pkl_data)
 
         # ── Step 3: Build outcome rows ──────────────────────────────
-        # reference/warehouse are UI-entered (not extracted from the
-        # documents) and apply uniformly to every row in this shipment.
-        rows = build_rows(mbl_data, pkl_data, reference, warehouse)
+        # reference/warehouse/eta_date are UI-selected (not extracted from
+        # the documents) and apply uniformly to every row in this shipment.
+        rows = build_rows(mbl_data, pkl_data, reference, warehouse, eta_date)
 
         # ── Summary stats ───────────────────────────────────────────
         containers = set(r["container_no"] for r in rows)
-        # bags_qty/bundles_qty are mutually exclusive per row (one holds
-        # the pieces figure, the other is "" — falsy, so `or 0` covers it).
-        total_pieces = sum((r["bags_qty"] or 0) + (r["bundles_qty"] or 0) for r in rows)
+        # Bags and Bundles both carry the same pieces figure per row (see
+        # build_rows()) — sum just one, summing both would double-count.
+        total_pieces = sum(r["bags_qty"] for r in rows)
         total_net = sum(r["net_weight"] for r in rows)
 
         summary = {
@@ -143,6 +143,7 @@ class EmviaInboundTask(BaseTask):
             "carrier":          mbl_data.get("carrier", ""),
             "reference":        reference,
             "warehouse":        warehouse,
+            "eta_date":         eta_date,
             "total_rows":       len(rows),
             "total_containers": len(containers),
             "total_pieces":     total_pieces,
@@ -184,7 +185,7 @@ def process():
     if not eta_date_raw:
         return jsonify({"error": "ETA Date is required."}), 400
     try:
-        format_eta_date(eta_date_raw)
+        eta_date = format_eta_date(eta_date_raw)
     except ValueError:
         return jsonify({"error": "Invalid ETA Date."}), 400
 
@@ -204,7 +205,7 @@ def process():
 
         # ── Run the task ────────────────────────────────────────────
         output_path = str(job_output_path(job_id))
-        result = _task.process(saved, output_path, reference=reference, warehouse=warehouse)
+        result = _task.process(saved, output_path, reference=reference, warehouse=warehouse, eta_date=eta_date)
 
         rows = result["rows"]
         summary = result["summary"]

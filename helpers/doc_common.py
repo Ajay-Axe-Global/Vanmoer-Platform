@@ -46,6 +46,7 @@ PORT_COUNTRY_MAP = {
     "JAKARTA": "ID", "INDONESIA": "ID",
     "HO CHI MINH": "VN", "VIETNAM": "VN",
     "KARACHI": "PK", "PAKISTAN": "PK",
+    "PORT SAID": "EG", "ALEXANDRIA": "EG", "DAMIETTA": "EG", "SUEZ": "EG", "EGYPT": "EG",
     "COLOMBO": "LK", "SRI LANKA": "LK",
 }
 

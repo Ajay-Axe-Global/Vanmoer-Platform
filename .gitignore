@@ -22,8 +22,10 @@ database/*.sqlite3
 *.db-wal
 *.db-journal
 
+
 # Uploads (user content)
 uploads/
+
 
 # Logs
 *.log
@@ -33,3 +35,4 @@ uploads/
 Thumbs.db
 .vscode/
 .idea/
+

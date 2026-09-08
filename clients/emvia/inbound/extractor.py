@@ -402,8 +402,21 @@ container shaped like:
   "GCXU5024097", seal "1557133" (some scans print this pair with the seal
   digits run together with the container id on one line and a slash
   between them — always the last several digits after the final "/" are
-  the seal, the container id is exactly the first 4 letters + 7 digits),
-  type "DC 4H".
+  the seal, the container id is exactly the first 4 letters + 7 digits).
+
+⚠️ CONTAINER TYPE — the row's own "<TYPE CODE>" (e.g. "DC 4H") is a terse
+ISO type-size code, NOT the container size on its own, and must NOT be
+returned as-is. "DC" means Dry Container — the standard/general-purpose
+container, NEVER a High Cube one, regardless of any digit+letter code
+after it (e.g. "4H" is an internal ISO size/type code, not a "High Cube"
+indicator, even though it contains the letter "H"). The container SIZE
+comes from elsewhere on the document — the "Total Number of Containers or
+Packages (in words)" field (e.g. "1 X 40'H DC CONTAINER" -> size "40")
+states it, applying to every container in the shipment. Combine these
+into the final "type" value yourself: size + "FT" (e.g. "40FT") whenever
+the row's own code contains "DC" — never output "HC"/"High Cube" for a
+"DC" row. Only use "HC" if the row's own code, or the goods description,
+explicitly says "High Cube" / "HC" / "9'6" instead of "DC".
 
 - "gross_weight": the single "Gross Weight" figure printed in that column
   for the shipment (e.g. "26,550.000"), EXACTLY as printed — do not
@@ -686,6 +699,20 @@ the bundle table, STOP and follow these steps BEFORE continuing:
   3. If NO → the previous page's last row already had its "//" line, and
      this page starts fresh with a new row. Proceed normally.
 Do this check at EVERY page transition. Never skip it.
+
+⚠️ CRITICAL — NEVER EMIT A SPLIT ROW TWICE. An orphaned "// <batch>" line
+at the top of a new page (step 2 above) belongs to a row you ALREADY
+emitted — it fills in that row's missing batch_no, it does NOT start, and
+must NEVER produce, a second row of its own. Concretely: if the previous
+page's last row already gave you its bundle number, pieces, gross/tare/net
+weight (everything except the batch), and you then read an orphaned "//"
+line at the top of the next page, go back and set THAT SAME row's batch_no
+— do not also emit a brand-new row that repeats that row's pieces/weights
+a second time. One bundle row's Pcs/Gross Wt/Tare Wt/NetWt figures must
+appear in your output EXACTLY ONCE, never twice under two different batch
+numbers. This exact mistake — duplicating a split row instead of just
+patching its batch_no — is the single most common way this document's row
+count and Grand Total end up wrong; watch for it specifically.
  
 ⚠️ CRITICAL — every batch number on this document is DIFFERENT, even
 between consecutive rows. If you find yourself about to output the SAME
@@ -695,7 +722,47 @@ Never copy a neighboring row's batch number. Two mistakes are equally wrong:
 (a) pairing the orphaned batch with the following row's numbers instead of
 the row it belongs to, and (b) duplicating the previous row's batch number
 because the orphaned line was missed — both have been seen to happen.
- 
+
+⚠️ SPECIAL CASE — ORPHANED "//" FOLLOWED BY A TOTAL ROW, NOT A DATA ROW.
+The orphaned "//" line at the top of a new page can land right BEFORE a
+SIZE TOTAL / SHAPE TOTAL / GRADE TOTAL row — NOT before a new data row.
+This happens when the split bundle was the LAST (or only) row in its size
+group, so the SIZE TOTAL printed directly after the orphaned "//" has the
+EXACT SAME Pcs and weight figures as the split bundle itself. Here is
+exactly what this looks like:
+
+  ══════ end of page N ══════
+  1.4301/1.4307   28.000 MM   ROUND   3.00 - 3.10   h9   GFG44   14001148100
+                                                    37    0.551   0.001   0.550
+  ══════ start of page N+1 ══════
+  // 4840849
+                    SIZE TOTAL
+                                                    37    0.551   0.001   0.550
+                    SHAPE TOTAL
+                                                   676    4.769   0.011   4.758
+                    GRADE TOTAL
+                                                   676    4.769   0.011   4.758
+
+CORRECT READING — ONE row only:
+  bundle 14001148100, batch_no "4840849", pieces 37, gross_weight_mt 0.551,
+  net_weight_mt 0.550. The "// 4840849" belongs UPWARD to bundle
+  14001148100 on the previous page. The SIZE TOTAL line below it is just a
+  subtotal — it has NO Bundle number, NO Heat No, NO Tolerance of its own,
+  it is NOT a data row. Do NOT read the SIZE TOTAL's numbers as a second
+  row's Pcs/weights.
+
+THE MOST COMMON WRONG OUTPUT for the above (DO NOT produce this):
+  {"batch_no": "<fabricated>", "pieces": 37, "net_weight_mt": 0.550, ...},
+  {"batch_no": "4840849",      "pieces": 37, "net_weight_mt": 0.550, ...}
+  ← WRONG: TWO rows with identical pieces and weights. The model could not
+  find the "//" line for bundle 14001148100 on the same page, so it
+  fabricated a batch number for one row (sometimes by misreading part of
+  the bundle number "14001148100" itself as a batch) and then created a
+  SECOND row when it found the orphaned "// 4840849" on the next page
+  paired with the SIZE TOTAL's identical numbers. This always doubles the
+  real bundle's contribution — the row count, pieces total, and net weight
+  total all end up higher than the document's own GRAND TOTAL.
+  
 ⚠️ This document is a photocopy/scan — digits can look similar to each other
 (e.g. 2 vs 6, 8 vs 6, 3 vs 8), which is a common cause of misreading one
 digit in an otherwise-correct number. Read each digit of the batch number
@@ -869,6 +936,16 @@ Return:
 
 _BATCH_NO_RE = re.compile(r"//\s*(\d{5,9})")
 
+# The Bundle cell's OWN first-line number (e.g. "14001148172", "13000549194")
+# — always 10-13 digits on every sample seen, cleanly distinct from the
+# 5-9-digit batch number that follows "//" on the line below it. Unlike the
+# batch line, this number is NEVER split across a page break (only the "//"
+# line gets orphaned onto the next page — see PKG_LIST_PROMPT's worked
+# example) — so its count is a page-break-immune ground truth for the TRUE
+# number of bundle rows in the document, usable even when the batch-number
+# count above doesn't line up.
+_BUNDLE_NO_RE = re.compile(r"\b(\d{10,13})\b")
+
 
 def _pdf_batch_numbers(pdf_path: str) -> list[str]:
     """Every '// <digits>' batch-number token in the PDF's own text layer,
@@ -882,6 +959,16 @@ def _pdf_batch_numbers(pdf_path: str) -> list[str]:
     with pdfplumber.open(pdf_path) as pdf:
         full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
     return _BATCH_NO_RE.findall(full_text)
+
+
+def _pdf_bundle_numbers(pdf_path: str) -> list[str]:
+    """Every bundle cell's own long first-line number, in document order —
+    see _BUNDLE_NO_RE above for why this is a more reliable row-count ground
+    truth than the batch-token count (immune to the page-break split that
+    only ever affects the "//" line, never this one)."""
+    with pdfplumber.open(pdf_path) as pdf:
+        full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+    return _BUNDLE_NO_RE.findall(full_text)
 
 
 def _normalize_package_type(raw: str) -> str:
@@ -900,6 +987,26 @@ def _normalize_package_type(raw: str) -> str:
 # ═══════════════════════════════════════════════════════════════════════════
 # EXTRACTION FUNCTIONS
 # ═══════════════════════════════════════════════════════════════════════════
+
+def _normalize_container_type_emvia(raw: str) -> str:
+    """Wraps the shared doc_common.normalize_container_type() with one
+    Emvia-specific safety net: "DC" (Dry Container) means the standard,
+    non-High-Cube container — but the shared helper's default for an
+    unrecognized 40'/20' string is "40HC", and a bare code like "DC 4H"
+    (HMM's per-row type designator, with NO literal "40"/"20" digit
+    substring at all) doesn't match anything in the shared helper's
+    keyword lists, so it fell straight through as the literal raw string
+    ("DC 4H") instead of ever reaching that default. The MBL prompt is now
+    taught to resolve "DC" rows to "<size>FT" itself (see HMM_MBL_PROMPT),
+    but this stays as a defensive second layer: if a "DC" string somehow
+    still reaches here without a recognized "FT"/"HC" keyword, force it
+    toward FT rather than letting the shared helper's HC-biased default
+    win for a container that is explicitly NOT high-cube."""
+    upper = (raw or "").upper()
+    if "DC" in upper and "HC" not in upper and "HIGH CUBE" not in upper and "FT" not in upper:
+        raw = f"{raw} FT"
+    return normalize_container_type(raw)
+
 
 def extract_mbl(pdf_path: str) -> dict:
     # Two-call pipeline (see module docstring): identify the carrier, then
@@ -976,16 +1083,41 @@ def extract_packing_list(pdf_path: str) -> dict:
     # batch_no values in place).
     all_bundles = [b for c in containers for b in c["bundles"]]
     pdf_batches = _pdf_batch_numbers(pdf_path)
+    pdf_bundle_nos = _pdf_bundle_numbers(pdf_path)
+
+    # Row-count ground truth (see _BUNDLE_NO_RE) — independent of, and more
+    # reliable than, the batch-token count below, since it can't be thrown
+    # off by a page-break-orphaned "//" line. A mismatch here means Gemini
+    # duplicated or skipped whole rows (not just mis-paired a batch number),
+    # which validate() reports on explicitly.
+    data["pdf_bundle_row_count"] = len(pdf_bundle_nos)
+    data["gemini_bundle_row_count"] = len(all_bundles)
+
     if pdf_batches and len(pdf_batches) == len(all_bundles):
         for bundle, batch_no in zip(all_bundles, pdf_batches):
             bundle["batch_no"] = batch_no
         data["batch_no_source"] = "pdf_text_layer"
     else:
+        # Falling back to Gemini's own batch_no readings — at minimum,
+        # strip out the one specific failure mode seen in practice: a
+        # batch_no that is actually the ROW'S OWN bundle number (the long
+        # first-line value, e.g. "14001148100") rather than its "//" value.
+        # That can never be a real batch on this document — it always means
+        # Gemini mixed the two up, not a genuine reading — so blank it out
+        # rather than show a value that's confirmed wrong.
+        bundle_no_set = set(pdf_bundle_nos)
+        suspect_count = 0
+        for b in all_bundles:
+            if b["batch_no"] and b["batch_no"] in bundle_no_set:
+                b["batch_no"] = ""
+                suspect_count += 1
         data["batch_no_source"] = "gemini"
         data["batch_no_count_mismatch"] = {
             "pdf_text_layer_count": len(pdf_batches),
             "gemini_row_count": len(all_bundles),
         }
+        if suspect_count:
+            data["suspect_batch_number_count"] = suspect_count
 
     dump_json(pdf_path, "pkg_list.json", data)
     return data
@@ -1069,6 +1201,31 @@ def validate(mbl: dict, pkl: dict) -> list[str]:
                         f"but extraction returned {mismatch['gemini_row_count']} bundle rows; counts must match "
                         f"exactly to safely auto-correct, so batch numbers below are the AI model's own reading "
                         f"(unverified) — check them manually")
+        suspect_count = num(pkl.get("suspect_batch_number_count"), 0)
+        if suspect_count:
+            results.append(f"[X]  BATCH NO — {suspect_count} row(s) had their batch_no cleared because the "
+                            f"extraction returned the row's own BUNDLE number instead of its \"//\" batch number "
+                            f"— fill those in manually from the PDF")
+
+    # Row-count ground truth, independent of the batch-token check above and
+    # immune to the same page-break split (see _BUNDLE_NO_RE) — pinpoints
+    # whether rows were DUPLICATED or SKIPPED, rather than just "skipped or
+    # misread" (the Pieces/Net Weight Grand-Total checks further below can't
+    # tell the two apart on their own).
+    pdf_bundle_row_count = num(pkl.get("pdf_bundle_row_count"), 0)
+    gemini_bundle_row_count = num(pkl.get("gemini_bundle_row_count"), 0)
+    if pdf_bundle_row_count:
+        if pdf_bundle_row_count == gemini_bundle_row_count:
+            results.append(f"[OK] ROW COUNT — PDF text layer confirms {pdf_bundle_row_count} bundle rows, matches extraction")
+        elif gemini_bundle_row_count > pdf_bundle_row_count:
+            results.append(f"[X]  ROW COUNT — PDF text layer has {pdf_bundle_row_count} bundle number(s) but "
+                            f"extraction returned {gemini_bundle_row_count} rows — a row was almost certainly "
+                            f"DUPLICATED (commonly the one whose \"//\" batch line was orphaned across a page "
+                            f"break, see the Batch No check above); re-check the Packing List pages manually")
+        else:
+            results.append(f"[X]  ROW COUNT — PDF text layer has {pdf_bundle_row_count} bundle number(s) but "
+                            f"extraction returned only {gemini_bundle_row_count} rows — one or more rows were "
+                            f"SKIPPED; re-check the Packing List pages manually")
 
     if s(mbl.get("mbl_no")).strip():
         results.append(f"[OK] MBL No — {s(mbl.get('mbl_no')).strip()}")
@@ -1196,7 +1353,7 @@ def build_rows(mbl: dict, pkl: dict, reference: str, warehouse: str, eta_date: s
     for c in pkl.get("containers", []):
         cid = c.get("container_no", "")
         mbl_entry = mbl_map.get(cid, {})
-        container_type = normalize_container_type(mbl_entry.get("type", "")) if mbl_entry.get("type") else ""
+        container_type = _normalize_container_type_emvia(mbl_entry.get("type", "")) if mbl_entry.get("type") else ""
         seal_no = mbl_entry.get("seal", "")
         # package_type (BUNDLE/BAG, see PACKAGE_TYPE_RULE) is still read and
         # validated (see validate()'s [!] PACKAGE TYPE check) but no longer
@@ -1205,11 +1362,12 @@ def build_rows(mbl: dict, pkl: dict, reference: str, warehouse: str, eta_date: s
         # states, per client instruction.
 
         for b in c.get("bundles", []):
-            # Excel-sourced bundles carry their OWN Ref/Receiver per row
-            # (read straight off the sheet) — that always wins over the
-            # UI-entered Reference field, which exists only for the PDF
-            # path where no such per-row value is printed anywhere.
-            row_reference = s(b.get("reference")).strip() or ui_reference
+            # A UI-entered Reference is a deliberate manual override and
+            # always wins outright when given — same convention as
+            # Vinmar's external_id. Only when the UI field is left blank
+            # does an Excel-sourced bundle's OWN per-row Ref (read straight
+            # off the sheet) get used instead.
+            row_reference = ui_reference or s(b.get("reference")).strip()
             receiver = s(b.get("receiver")).strip()
             ref_receiver = f"{row_reference}+{receiver}" if receiver else ""
 

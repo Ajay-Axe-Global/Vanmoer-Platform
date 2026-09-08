@@ -106,6 +106,47 @@ def _find_header_row(raw: pd.DataFrame) -> tuple[int, dict[str, str]]:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# WEIGHT PARSING
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _parse_weight_kg(raw) -> float:
+    """Parses a weight cell into KG, handling two real issues seen on this
+    sheet:
+
+    1. A cell can be stored as literal TEXT with a European decimal comma
+       (e.g. "0,782" typed directly, not a real Excel number) — doc_common's
+       num() only recognizes "." as a decimal marker, so a raw comma value
+       fell through its int() fallback, raised, and silently returned 0
+       (looked like the weight vanished entirely). Fixed here by
+       normalizing comma-as-decimal to a period BEFORE calling num() — but
+       only when there's no "." already present (a value with both, e.g.
+       "1.234,56", is thousands-dot + decimal-comma and the dot is stripped
+       instead).
+
+    2. Once parsed, a value under 1 (e.g. 0.782) is a metric-ton figure on
+       this sheet, not KG — a bundle can never genuinely weigh under 1 KG —
+       so it's converted to KG by ×1000, the same "small decimal = MT"
+       convention already used for the MBL and NNRC Packing List. A value
+       >= 1 (e.g. 7502) is trusted as already being KG, unchanged — this
+       matches the confirmed-correct earlier samples on this same column
+       and is NOT touched by this conversion.
+    """
+    text = s(raw).strip()
+    if not text:
+        return 0
+
+    if "," in text:
+        if "." in text:
+            text = text.replace(".", "")  # thousands-dot, e.g. "1.234,56"
+        text = text.replace(",", ".")
+
+    value = num(text, 0)
+    if 0 < value < 1:
+        value = value * 1000
+    return value
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # EXTRACTION
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -140,7 +181,7 @@ def extract_packing_list_excel(path: str) -> dict:
         # This sheet gives only one weight column ("TOT GROSS weight") — no
         # separate net figure exists anywhere on it, so Net Weight mirrors
         # Gross Weight (per client instruction) rather than being left at 0.
-        gross_weight_kg = num(row.get(field_to_column["tot_gross_weight"]), 0)
+        gross_weight_kg = _parse_weight_kg(row.get(field_to_column["tot_gross_weight"]))
         containers.setdefault(cid, []).append({
             "product":          s(row.get(field_to_column["specification"])).strip(),
             "batch_no":         s(row.get(field_to_column["size_thickness"])).strip(),

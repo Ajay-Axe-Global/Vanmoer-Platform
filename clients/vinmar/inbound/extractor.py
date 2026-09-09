@@ -1071,24 +1071,40 @@ PKG_LIST_PROMPT = PKG_LIST_PROMPT.replace("@@REF_NOS_GUIDANCE@@", REF_NOS_GUIDAN
 INVOICE_PROMPT = """You are a shipping-document data extractor. Extract fields from this \
 Commercial Invoice PDF. Return ONLY JSON, no markdown.
 
-- "invoice_no": Invoice Number.
-- "consignee": the CONSIGNEE company name.
-- "product": the value after "PRODUCT:" (e.g. "HDPE").
-- "grade": the value after "GRADE :" (e.g. "XP9000").
-@@REF_NOS_GUIDANCE@@
-- "qty_mt": the total Quantity, in MT (number).
-- "unit_price": the Unit Price (number).
-- "amount": the total Amount (number).
+⚠️ This PDF may contain MORE THAN ONE invoice bundled together (e.g. a separate "Invoice No." / "Sales Order
+No." / "Customer P.O. No." block, each its own few pages, repeated back to back for different shipments/
+trailers/containers) — this is common and NOT an error. Always return a JSON ARRAY under the "invoices" key,
+with one object per invoice found. If there is genuinely only one invoice in the PDF, still return it as a
+single-element array — never return a bare object, and never return multiple top-level JSON objects one after
+another (that breaks the parser).
 
+For EACH invoice, extract:
+- "invoice_no": Invoice Number.
+- "consignee": the CONSIGNEE / "Ship To" company name.
+- "product": the value after "PRODUCT:" (e.g. "HDPE"), or the product description if that's how this
+  document labels it (e.g. "SBR 1009/P51//BALE").
+- "grade": the value after "GRADE :" (e.g. "XP9000"), if printed under a separate label from product — leave
+  empty "" if the product identification is a single string with no separate grade label.
+@@REF_NOS_GUIDANCE@@
+- "qty_mt": the total Quantity for THIS invoice, in MT (number) — convert from KG if stated in KG (divide by
+  1000).
+- "unit_price": the Unit Price for THIS invoice (number).
+- "amount": the total Amount for THIS invoice (number).
+
+Return:
 {
-  "invoice_no": "string",
-  "consignee": "string",
-  "product": "string",
-  "grade": "string",
-  "ref_nos": ["string"],
-  "qty_mt": 0,
-  "unit_price": 0,
-  "amount": 0
+  "invoices": [
+    {
+      "invoice_no": "string",
+      "consignee": "string",
+      "product": "string",
+      "grade": "string",
+      "ref_nos": ["string"],
+      "qty_mt": 0,
+      "unit_price": 0,
+      "amount": 0
+    }
+  ]
 }"""
 
 INVOICE_PROMPT = INVOICE_PROMPT.replace("@@REF_NOS_GUIDANCE@@", REF_NOS_GUIDANCE)
@@ -1236,7 +1252,13 @@ def extract_mbl(pdf_path: str) -> dict:
 # one container's own pages, making cross-container confusion structurally
 # impossible rather than something a prompt has to prevent.
 
-_TRAILER_RE = re.compile(r'Trailer\s*:\s*([A-Za-z]{4}\s?\d{7})')
+# Allows an optional space OR hyphen between the 4 letters and 7 digits —
+# some shippers print trailer/container numbers hyphenated (e.g.
+# "MSNU-5701261"), which is never part of the real ISO 6346 ID, just
+# formatting. The captured group still carries that separator; callers
+# strip it (see page_id below, and fix_container_id() elsewhere) before
+# comparing IDs across documents.
+_TRAILER_RE = re.compile(r'Trailer\s*:\s*([A-Za-z]{4}[\s\-]?\d{7})')
 
 
 def _find_trailer_page_groups(pdf_path: str) -> list[tuple[str, int, int]]:
@@ -1256,7 +1278,11 @@ def _find_trailer_page_groups(pdf_path: str) -> list[tuple[str, int, int]]:
         for i, page in enumerate(pdf.pages):
             text = page.extract_text() or ""
             m = _TRAILER_RE.search(text)
-            page_id = m.group(1).replace(" ", "").upper() if m else None
+            # Strip both space and hyphen — same normalization as
+            # fix_container_id(), so the container_id this produces already
+            # matches whatever the MBL extraction returns for the same
+            # physical container, no separate reconciliation step needed.
+            page_id = re.sub(r'[\s\-]', '', m.group(1)).upper() if m else None
             if page_id and page_id != current_id:
                 if current_id is not None:
                     groups.append((current_id, current_start, i - 1))
@@ -1429,7 +1455,38 @@ def extract_packing_list(pdf_path: str) -> dict:
 
 
 def extract_invoice(pdf_path: str) -> dict:
-    data = call_gemini(INVOICE_PROMPT, pdf_path=pdf_path)
+    # A single PDF can bundle several invoices (one per shipment/trailer) —
+    # INVOICE_PROMPT always returns them as an array now, one element even
+    # when there's genuinely only one, so this never has to guess whether
+    # to parse a bare object or a list.
+    raw = call_gemini(INVOICE_PROMPT, pdf_path=pdf_path, max_output_tokens=16384)
+    dump_json(pdf_path, "invoice_raw.json", raw)
+
+    invoices = raw.get("invoices", []) if isinstance(raw, dict) else (raw if isinstance(raw, list) else [])
+
+    # Reduce the (possibly multiple) invoices into the single flat shape
+    # validate()/build_rows() expect: ref_nos is the union across every
+    # invoice found (build_ref() already collapses same-prefix refs), the
+    # rest fall back to the first invoice that actually has a value —
+    # invoice data is only ever a cross-check/fallback here, never the
+    # primary source, so combining this way is enough for that purpose.
+    ref_nos: list = []
+    data = {"invoice_no": "", "consignee": "", "product": "", "grade": "",
+            "ref_nos": ref_nos, "qty_mt": 0, "unit_price": 0, "amount": 0}
+    for inv in invoices:
+        if not isinstance(inv, dict):
+            continue
+        for r in inv.get("ref_nos", []) or []:
+            if r and r not in ref_nos:
+                ref_nos.append(r)
+        for key in ("invoice_no", "consignee", "product", "grade"):
+            if not data[key] and s(inv.get(key)).strip():
+                data[key] = s(inv.get(key)).strip()
+        data["qty_mt"] += num(inv.get("qty_mt"), 0)
+        data["amount"] += num(inv.get("amount"), 0)
+        if not data["unit_price"]:
+            data["unit_price"] = num(inv.get("unit_price"), 0)
+
     dump_json(pdf_path, "invoice.json", data)
     return data
 
@@ -1556,13 +1613,13 @@ def validate(mbl: dict, pkl: dict, inv: dict) -> list[str]:
 # CUSTOMER LOOKUP
 # ═══════════════════════════════════════════════════════════════════════════
 
-# Only two customers ship through this Vinmar platform. The documents' own
+# Customers shipping through this Vinmar platform. The documents' own
 # Consignee ("SHIP TO" on data-sheet-style packing lists) field reliably
-# names one of the two across every carrier seen so far — including
-# carriers that print a "VINMAR SO #" / "SID" reference instead of a
-# "<BUYER> PO:" reference, where the PO-prefix rule below doesn't apply (a
-# 757xxxxxxx-style Vinmar SO# has been seen on shipments for BOTH
-# customers, so it cannot be used to tell them apart). Name matching is
+# names one of them across every carrier seen so far — including carriers
+# that print a "VINMAR SO #" / "SID" reference instead of a "<BUYER> PO:"
+# reference, where the PO-prefix rule below doesn't apply (a
+# 757xxxxxxx-style Vinmar SO# has been seen on shipments for BOTH Axia and
+# Tegral, so it cannot be used to tell them apart). Name matching is
 # therefore tried first; the PO-reference-prefix rule is kept only as a
 # last-resort fallback for the rare case a document's consignee field is
 # missing or unrecognizable.
@@ -1570,6 +1627,7 @@ def validate(mbl: dict, pkl: dict, inv: dict) -> list[str]:
 CUSTOMER_NAME_ALIASES = {
     "AXIA":   "Axia Plastics Europe LLC",
     "TEGRAL": "Tegral",
+    "PRIME":  "Prime Plastics Ltd",
 }
 
 # Fallback only — the leading digit of a "<BUYER> PO:" / "VINMAR REF#:"

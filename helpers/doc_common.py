@@ -67,7 +67,13 @@ CONTAINER_RE = re.compile(r'^([A-Z]{4})(\d{7})')
 
 
 def fix_container_id(raw: str, existing_seal: str = "") -> tuple[str, str]:
-    cleaned = (raw or "").replace(" ", "").strip().upper()
+    # Real ISO 6346 container IDs are always exactly 4 letters + 7 digits,
+    # no separators — a hyphen (e.g. "MSNU-5701261", seen on some shippers'
+    # packing lists/trailer labels) or a stray space is always formatting
+    # noise, never part of the real ID, so both are stripped before
+    # matching. Without this, "MSNU-5701261" (packing list) and
+    # "MSNU5701261" (MBL) fail to match as the same container.
+    cleaned = re.sub(r'[\s\-]', '', (raw or "")).strip().upper()
     m = CONTAINER_RE.match(cleaned)
     if not m:
         return cleaned, existing_seal

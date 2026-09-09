@@ -472,10 +472,10 @@ e.g. "6 X40(H.C) CNTR SAID TO CONTAIN ..."). The LARGER figure (matching
 the "G.W." value in the header box near the top) is the shipment-wide
 grand total — a cross-check value only, never any one container's own
 weight; do not use it as a per-container figure.
+
 @@UNIT_RULE@@
 @@PACKAGE_TYPE_RULE@@
 @@RETURN_SCHEMA@@"""
-
 
 # Fallback for any carrier not yet onboarded (each will get its own tuned
 # prompt as new samples come in) — same field shape as every
@@ -526,11 +526,11 @@ CARRIER_MBL_PROMPTS = {
     "BORCHARD LINES":  BORCHARD_LINES_MBL_PROMPT,
 }
 
+# ═══════════════════════════════════════════════════════════════════════════|
+# PACKING LIST PROMPT — WAREHOUSE 1147 — VE Staal B.V. "Packing List         |
+# Enclosure" (bundle table)                                                  |
+# ═══════════════════════════════════════════════════════════════════════════|
 
-# ═══════════════════════════════════════════════════════════════════════════
-# PACKING LIST PROMPT — WAREHOUSE 1147 — VE Staal B.V. "Packing List
-# Enclosure" (bundle table)
-# ═══════════════════════════════════════════════════════════════════════════
 PKG_LIST_PROMPT = """You are a shipping-document data extractor. Extract all data from this VE \
 Staal B.V. Packing List PDF — it is a cover page followed by one or more \
 "Packing List Enclosure" pages, read every page — and return ONLY a JSON \
@@ -762,7 +762,7 @@ THE MOST COMMON WRONG OUTPUT for the above (DO NOT produce this):
   paired with the SIZE TOTAL's identical numbers. This always doubles the
   real bundle's contribution — the row count, pieces total, and net weight
   total all end up higher than the document's own GRAND TOTAL.
-  
+
 ⚠️ This document is a photocopy/scan — digits can look similar to each other
 (e.g. 2 vs 6, 8 vs 6, 3 vs 8), which is a common cause of misreading one
 digit in an otherwise-correct number. Read each digit of the batch number
@@ -841,31 +841,53 @@ Return:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PACKING LIST PROMPT — WAREHOUSE NNRC 660 — Chevron Phillips-style "Export
-# Packing List" (resin in bags, on pallets)
+# PACKING LIST PROMPT — WAREHOUSE NNRC 660 (resin in bags, on pallets)
 # ═══════════════════════════════════════════════════════════════════════════
-# Structurally simpler than warehouse 1147's document (no page-break-split
-# rows, no repeated near-identical rows) — one line-item table with columns
-# Inv Line# | Material# | Description | Lot/Batch | Packages | Pallets |
-# Net Wt. | Gross Wt. | Wt. Unit, grouped under a "Marks & Numbers" cell
-# that names the container each block of line items belongs to. Unlike
-# 1147, this layout states its own Pallet count directly per line item —
-# that's the one real difference build_rows() needs to honor (see there).
+# This warehouse has TWO known Packing List layouts from different shippers
+# — the prompt self-detects which one it's looking at first, the same way
+# Vinmar's/Sabic's own PKG_LIST_PROMPT self-detects multiple layouts.
+#
+# LAYOUT A — Chevron Phillips "Export Packing List": one line-item table
+# with columns Inv Line# | Material# | Description | Lot/Batch | Packages |
+# Pallets | Net Wt. | Gross Wt. | Wt. Unit, grouped under a "Marks &
+# Numbers" cell (CNT#:/Seal:) that names each block's container. States its
+# own Packages/Pallets per row directly.
+#
+# LAYOUT B — Saudi Polymers Company "Packing List": TWO pages. Page 1 is a
+# shipment-WIDE summary only (total bags, "N BAGS PER CONTAINER", "N
+# PALLETS PER CONTAINER", "N KG NET PER BAG") with NO real container
+# details on it at all — critically, its "Vessel's Name" field (e.g. "GSL
+# TRIPOLI 631W") is NOT a container marking, "631W" there is a VOYAGE
+# NUMBER, never treat it as one. The REAL per-container table is on page 2,
+# columns "Container No." | "Seal No." | "Product Type" | "Batch No." |
+# "Qty" — one row per batch, and a container can legitimately span TWO OR
+# MORE rows (same Container No. repeated) when more than one batch was
+# loaded into it. This layout never prints a Packages/Pallets count per
+# row — those are computed afterward in code from page 1's stated
+# kg-per-bag / bags-per-pallet ratios, not by you.
 
 PKG_LIST_NNRC_PROMPT = """You are a shipping-document data extractor. Extract all data from this \
-"Export Packing List" PDF (Chevron Phillips-style layout) and return ONLY \
-a JSON object, no markdown, no explanation.
+Packing List PDF and return ONLY a JSON object, no markdown, no explanation.
 
-HEADER FIELDS:
+This document uses ONE of two layouts. Identify which one FIRST, then apply
+ONLY that layout's rules below.
+
+══════════════════════════════════════════
+LAYOUT A — Chevron Phillips "Export Packing List"
+══════════════════════════════════════════
+How to detect: a single page (or a few pages) with ONE line-item table,
+columns Inv Line# | Material# | Description | Lot/Batch | Packages |
+Pallets | Net Wt. | Gross Wt. | Wt. Unit, and a "Marks & Numbers" column
+naming each container.
+
+HEADER FIELD:
 - "destination_country": the country on the "Ultimate Consignee" address
   block (its last address line, e.g. "BELGIUM"). If that block has no
   country, fall back to the "Buyer / Consignee" address block's country
   instead.
 
-LINE-ITEM TABLE — columns: Marks & Numbers | Inv Line# | Material# |
-Description | Lot / Batch | Packages | Pallets | Net Wt. | Gross Wt. | Wt.
-Unit. The "Marks & Numbers" column names the CONTAINER a block of one or
-more line-item rows belongs to, shaped like:
+LINE-ITEM TABLE: the "Marks & Numbers" column names the CONTAINER a block
+of one or more line-item rows belongs to, shaped like:
   <N> Sea-Container <SIZE>ft
   CNT#: <CONTAINER ID>
   Seal:<SEAL NUMBER>
@@ -899,15 +921,77 @@ For every line-item row under a container block, extract:
   "KGS") — read whichever is actually printed, the unit conversion happens
   afterward in code, not by you. ⚠️ MANDATORY — every row on this layout
   has one, most commonly "TON" for every row in the whole document; never
-  leave this field blank/null/omitted. If the column is genuinely
-  unreadable for one specific row, use the same unit printed on every other
-  row of this document rather than leaving it empty — a missing unit here
-  silently breaks the KG conversion downstream.
+  leave this field blank/null/omitted.
 
 Do NOT extract a "Total" row (the summary row at the bottom of a
-container's line items) as a line item itself — it has no Inv Line#,
-Material#, or Lot/Batch of its own.
+container's line items) as a line item itself.
 
+══════════════════════════════════════════
+LAYOUT B — Saudi Polymers Company "Packing List"
+══════════════════════════════════════════
+How to detect: "Saudi Polymers Company" letterhead; page 1 has NO
+container-level detail, only a shipment-wide summary paragraph (e.g. "8 FCL
+x 40' CONTAINER CONTAINING:- ... 7,920 BAGS/990 BAGS PER CONTAINER 18
+PALLETS PER CONTAINER 55 BAGS PER PALLET - 25 KG NET PER BAG ..."); page 2
+has a table headed "Container No." | "Seal No." | "Product Type" | "Batch
+No." | "Qty".
+
+HEADER FIELDS (from page 1):
+- "destination_country": the country on the "Ship-To customer" address
+  block's last line (e.g. "DIRECT SHIPMENT BELGIUM ANTWERPEN" -> "BELGIUM").
+- "kg_per_bag": the number in "<N> KG NET PER BAG" (e.g. from "25 KG NET
+  PER BAG" extract 25).
+- "bags_per_pallet": the number in "<N> BAGS PER PALLET" (e.g. from "55
+  BAGS PER PALLET" extract 55).
+These two are shipment-wide constants (same for every row) used afterward
+in code to COMPUTE each row's bag/pallet count from its own net weight —
+you do not need to compute pieces or pallets yourself on this layout, and
+there is no Packages/Pallets column printed per row to read one from.
+
+⚠️ CRITICAL — the "Vessel's Name" field on page 1 (e.g. "GSL TRIPOLI
+631W") is NOT a container reference of any kind — "631W" there is a VOYAGE
+NUMBER, part of the vessel/voyage identifier, completely unrelated to any
+container. NEVER extract it as a container_no, and never attribute any
+line-item row to it. The ONLY real container identifiers on this
+document are in the page-2 table's own "Container No." column.
+
+PAGE 2 TABLE — one row per batch, columns Container No. | Seal No. |
+Product Type | Batch No. | Qty:
+  Example: "TRHU4600234   0837466   HHM 5502BN BAG   SPG31215   1.375 MT"
+  then a SECOND row: "TRHU4600234   0837466   HHM 5502BN BAG   SPG31221
+  23.375 MT" -> this is the SAME container (TRHU4600234) split across TWO
+  batches — both rows are real, keep them separate, do NOT merge them or
+  treat the repeated container number as an error. Most containers on this
+  layout have only ONE row; a container appearing on 2+ consecutive rows
+  with a DIFFERENT Batch No. each time is normal and expected, not a
+  mistake — read every row exactly as printed, including every repeat of a
+  container number when its batch number differs.
+
+For every row, extract:
+- "container_no": the "Container No." column value.
+- "product": the "Product Type" column value's PRODUCT NAME ONLY (e.g.
+  from "HHM 5502BN BAG" extract "HHM 5502BN", dropping the trailing
+  generic packaging word "BAG" — same principle as Layout A's product
+  extraction, just applied to this layout's own column).
+- "batch_no": the "Batch No." column value (e.g. "SPG32222").
+- "net_weight": the "Qty" column value for this row, EXACTLY as printed
+  (e.g. 24.750) — this is a metric-ton figure, do not convert or rescale
+  it yourself.
+- "weight_unit": "MT" (this layout's Qty column is always in metric tons).
+- "gross_weight": leave 0 — this layout states only ONE weight figure
+  (labeled "Net Wt Delivered" on page 1 and "Qty" on page 2), there is no
+  separate gross weight anywhere on the document.
+- "pieces" / "pallet_count": leave both 0 — not printed per row on this
+  layout, computed afterward in code from "kg_per_bag"/"bags_per_pallet"
+  instead (see HEADER FIELDS above).
+
+Do NOT extract a subtotal/total row (if any) as a line item itself.
+
+══════════════════════════════════════════
+OUTPUT FORMAT (same shape regardless of which layout you detected — leave
+"kg_per_bag"/"bags_per_pallet" at 0 if you detected Layout A, which doesn't
+have them)
+══════════════════════════════════════════
 Group the rows under their container:
 "containers": [
   {"container_no": "string", "items": [
@@ -920,6 +1004,8 @@ Group the rows under their container:
 Return:
 {
   "destination_country": "string",
+  "kg_per_bag": 0,
+  "bags_per_pallet": 0,
   "containers": [
     {"container_no": "string", "items": [
       {"product": "string", "batch_no": "string", "pieces": 0,
@@ -1152,6 +1238,13 @@ def extract_packing_list_nnrc(pdf_path: str) -> dict:
     data = call_gemini(PKG_LIST_NNRC_PROMPT, pdf_path=pdf_path, max_output_tokens=16384)
     dump_json(pdf_path, "pkg_list_nnrc_raw.json", data)
 
+    # Layout B (Saudi Polymers) only — shipment-wide constants used to
+    # deterministically compute each row's own pieces/pallet_count in code
+    # below, rather than asking the model to do that division itself (it
+    # never has a printed Packages/Pallets figure to read on this layout).
+    kg_per_bag = num(data.get("kg_per_bag"), 0)
+    bags_per_pallet = num(data.get("bags_per_pallet"), 0)
+
     containers = []
     unrecognized_unit_count = 0
     for c in data.get("containers", []):
@@ -1161,13 +1254,34 @@ def extract_packing_list_nnrc(pdf_path: str) -> dict:
             unit, recognized = _normalize_weight_unit(item.get("weight_unit"))
             if not recognized:
                 unrecognized_unit_count += 1
+
+            net_weight_kg = to_kg(item.get("net_weight"), unit)
+            gross_weight_kg = to_kg(item.get("gross_weight"), unit)
+            # Layout B states only one weight figure at all (see prompt) —
+            # mirror net into gross when the model correctly left gross at 0,
+            # same "only one figure exists" convention as the Excel path.
+            if not gross_weight_kg:
+                gross_weight_kg = net_weight_kg
+
+            pieces = num(item.get("pieces"), 0)
+            pallet_count = num(item.get("pallet_count"), 0)
+            # Layout B fallback: derive from this row's own net weight using
+            # the shipment-wide kg-per-bag / bags-per-pallet ratios — exact
+            # for this layout since NetWt = pieces × kg_per_bag by
+            # construction (bags are a fixed-weight unit here, unlike
+            # warehouse 1147's steel bars).
+            if not pieces and kg_per_bag:
+                pieces = round(net_weight_kg / kg_per_bag)
+            if not pallet_count and bags_per_pallet and pieces:
+                pallet_count = round(pieces / bags_per_pallet)
+
             bundles.append({
                 "product":          s(item.get("product")).strip(),
                 "batch_no":         s(item.get("batch_no")).strip(),
-                "pieces":           num(item.get("pieces"), 0),
-                "pallet_count":     num(item.get("pallet_count"), 0),
-                "net_weight_kg":    to_kg(item.get("net_weight"), unit),
-                "gross_weight_kg":  to_kg(item.get("gross_weight"), unit),
+                "pieces":           pieces,
+                "pallet_count":     pallet_count,
+                "net_weight_kg":    net_weight_kg,
+                "gross_weight_kg":  gross_weight_kg,
             })
         containers.append({"container_no": cid, "bundles": bundles})
     data["containers"] = containers

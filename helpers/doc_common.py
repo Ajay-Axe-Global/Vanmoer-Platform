@@ -66,6 +66,25 @@ def get_country_code(port_of_loading: str) -> str:
 CONTAINER_RE = re.compile(r'^([A-Z]{4})(\d{7})')
 
 
+def _fix_ocr_digit_letter_confusion(cleaned: str) -> str:
+    """A container ID is ALWAYS exactly 4 LETTERS (owner code + category
+    identifier) then 7 DIGITS (serial + check digit) — a vision model
+    commonly misreads 'O' as the digit '0' within that leading letters
+    block (e.g. "OOCU7228009" -> "00CU7228009", which then fails to match
+    CONTAINER_RE at all since it starts with digits) and, less often, '0'
+    as the letter 'O' within the digits block. Both are corrected here
+    BEFORE matching — a '0' can never legitimately appear in the first 4
+    characters, and an 'O' can never legitimately appear in the following
+    7, so this is always safe to apply, never just a guess."""
+    if len(cleaned) < 4:
+        return cleaned
+    prefix = cleaned[:4].replace('0', 'O')
+    rest = cleaned[4:]
+    digits_part, tail = rest[:7], rest[7:]
+    digits_part = digits_part.replace('O', '0')
+    return prefix + digits_part + tail
+
+
 def fix_container_id(raw: str, existing_seal: str = "") -> tuple[str, str]:
     # Real ISO 6346 container IDs are always exactly 4 letters + 7 digits,
     # no separators — a hyphen (e.g. "MSNU-5701261", seen on some shippers'
@@ -74,6 +93,7 @@ def fix_container_id(raw: str, existing_seal: str = "") -> tuple[str, str]:
     # matching. Without this, "MSNU-5701261" (packing list) and
     # "MSNU5701261" (MBL) fail to match as the same container.
     cleaned = re.sub(r'[\s\-]', '', (raw or "")).strip().upper()
+    cleaned = _fix_ocr_digit_letter_confusion(cleaned)
     m = CONTAINER_RE.match(cleaned)
     if not m:
         return cleaned, existing_seal

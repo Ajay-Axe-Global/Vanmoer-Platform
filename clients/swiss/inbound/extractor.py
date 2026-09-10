@@ -2125,18 +2125,18 @@ def validate(mbl: dict, pkl: dict) -> list[str]:
 # rather than the raw internal code — the raw code is an internal
 # normalization detail, never shown to the client.
 CARRIER_DISPLAY_MAP = {
-    "OOCL":            "Orient Overseas Container Line",
-    "MSC":             "Mediterrenean Shipping Company",
-    "HAPAG-LLOYD":     "Hapag Lloyd",
-    "BORCHARD LINES":  "BORCHARD LINES LTD.",
-    "MAERSK":          "Maersk",
-    "EVERGREEN":       "Evergreen",
-    "ZIM":             "ZIM lines",
-    "ONE":             "ONE",
-    "COSCO":           "Cosco Container Line",
-    "YANG MING":       "Yang Ming",
-    "HMM":             "Hyundai Merchant Marine",
-    "CMA CGM":         "CMA CGM",
+    "OOCL":            "Orient Overseas Container Line [OOCL]",
+    "MSC":             "Mediterrenean Shipping Company [MSC]",
+    "HAPAG-LLOYD":     "Hapag Lloyd [HPG]",
+    "BORCHARD LINES":  "BORCHARD LINES LTD. [BORCHARD]",
+    "MAERSK":          "Maersk [MSK]",
+    "EVERGREEN":       "Evergreen [EVG]",
+    "ZIM":             "ZIM lines [ZIM]",
+    "ONE":             "ONE [ONE]",
+    "COSCO":           "Cosco Container Line [COSCO]",
+    "YANG MING":       "Yang Ming [YML]",
+    "HMM":             "Hyundai Merchant Marine [HMM]",
+    "CMA CGM":         "CMA CGM [CMA]",
 }
 
 

@@ -11,7 +11,7 @@ from sqlalchemy import case, func, or_
 
 from database.backup import backup_now
 from database.db import SessionLocal
-from database.models import Client, JobHistory, Task, User, UserTaskAccess
+from database.models import Client, GeminiUsageLog, JobHistory, Task, User, UserTaskAccess
 from helpers.jwt_utils import hash_password
 
 
@@ -557,5 +557,249 @@ def productivity_by_user(since: datetime.datetime, until: datetime.datetime,
         )
         return [{"user_id": uid, "user_name": uname, "username": uusername, "count": count or 0}
                 for uid, uname, uusername, count in rows]
+    finally:
+        session.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# BILLING & USAGE (Gemini token cost) — same filter/query conventions as the
+# jobs_*/dashboard_* functions above, applied to GeminiUsageLog instead of
+# JobHistory. See database/models.GeminiUsageLog and helpers/billing.py for
+# how rows get here (one per Gemini API call, cost snapshotted at write
+# time) and database/seed.py for the placeholder pricing/rate seeded on a
+# fresh install.
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _billing_base_query(session, *entities, since=None, until=None,
+                         client_slug=None, task_slug=None, user_id=None, model_name=None):
+    q = session.query(*entities).select_from(GeminiUsageLog)
+    if client_slug:
+        q = q.join(Client, GeminiUsageLog.client_id == Client.id).filter(Client.slug == client_slug)
+    if task_slug:
+        q = q.join(Task, GeminiUsageLog.task_id == Task.id).filter(Task.slug == task_slug)
+    if user_id is not None:
+        q = q.filter(GeminiUsageLog.user_id == user_id)
+    if model_name:
+        q = q.filter(GeminiUsageLog.model_name == model_name)
+    if since is not None:
+        q = q.filter(GeminiUsageLog.timestamp >= since)
+    if until is not None:
+        q = q.filter(GeminiUsageLog.timestamp < until)
+    return q
+
+
+def billing_summary(since: datetime.datetime, until: datetime.datetime,
+                     client_slug: str | None = None, task_slug: str | None = None,
+                     user_id: int | None = None, model_name: str | None = None) -> dict:
+    """Headline stat-tile numbers for the Billing page's selected filters."""
+    session = SessionLocal()
+    try:
+        row = _billing_base_query(
+            session,
+            func.coalesce(func.sum(GeminiUsageLog.total_cost_inr), 0),
+            func.coalesce(func.sum(GeminiUsageLog.total_cost_usd), 0),
+            func.coalesce(func.sum(GeminiUsageLog.prompt_tokens), 0),
+            func.coalesce(func.sum(GeminiUsageLog.completion_tokens), 0),
+            func.coalesce(func.sum(GeminiUsageLog.total_tokens), 0),
+            func.count(GeminiUsageLog.id),
+            func.count(func.distinct(GeminiUsageLog.job_id)),
+            since=since, until=until, client_slug=client_slug, task_slug=task_slug,
+            user_id=user_id, model_name=model_name,
+        ).one()
+        cost_inr, cost_usd, prompt_tok, completion_tok, total_tok, calls, jobs = row
+        cost_inr, cost_usd = float(cost_inr), float(cost_usd)
+        return {
+            "total_cost_inr": round(cost_inr, 2),
+            "total_cost_usd": round(cost_usd, 4),
+            "total_prompt_tokens": int(prompt_tok),
+            "total_completion_tokens": int(completion_tok),
+            "total_tokens": int(total_tok),
+            "total_calls": int(calls),
+            "total_jobs": int(jobs),
+            "avg_cost_per_job_inr": round(cost_inr / jobs, 2) if jobs else 0,
+        }
+    finally:
+        session.close()
+
+
+def usage_by_day(since: datetime.datetime, until: datetime.datetime,
+                  client_slug: str | None = None, task_slug: str | None = None,
+                  user_id: int | None = None, model_name: str | None = None,
+                  tz_name: str | None = None) -> list[dict]:
+    """Daily cost/token/call series for the line & bar charts — day buckets
+    are calendar days in the viewer's timezone, same reasoning and same
+    UTC-timestamp-bucketed-in-Python approach as dashboard_stats()'s
+    files-per-day series (grouping by func.date() in SQL would bucket by
+    the stored UTC day instead, shifting late-night jobs onto the wrong
+    local day)."""
+    session = SessionLocal()
+    try:
+        tz = _resolve_tz(tz_name)
+        rows = _billing_base_query(
+            session, GeminiUsageLog.timestamp, GeminiUsageLog.total_cost_inr,
+            GeminiUsageLog.total_cost_usd, GeminiUsageLog.total_tokens,
+            since=since, until=until, client_slug=client_slug, task_slug=task_slug,
+            user_id=user_id, model_name=model_name,
+        ).all()
+
+        by_day: dict[str, dict] = {}
+        for ts, cost_inr, cost_usd, tokens in rows:
+            local_date = ts.replace(tzinfo=datetime.timezone.utc).astimezone(tz).date().isoformat()
+            bucket = by_day.setdefault(local_date, {"cost_inr": 0.0, "cost_usd": 0.0, "tokens": 0, "calls": 0})
+            bucket["cost_inr"] += float(cost_inr)
+            bucket["cost_usd"] += float(cost_usd)
+            bucket["tokens"] += int(tokens)
+            bucket["calls"] += 1
+
+        # Zero-filled across every day in [since, until) — a day with no
+        # calls at all is still a real point on the line chart, not a gap.
+        series = []
+        d = since.date()
+        end = until.date()
+        while d < end:
+            iso = d.isoformat()
+            bucket = by_day.get(iso, {"cost_inr": 0.0, "cost_usd": 0.0, "tokens": 0, "calls": 0})
+            series.append({
+                "date": iso,
+                "cost_inr": round(bucket["cost_inr"], 2),
+                "cost_usd": round(bucket["cost_usd"], 4),
+                "tokens": bucket["tokens"],
+                "calls": bucket["calls"],
+            })
+            d += datetime.timedelta(days=1)
+        return series
+    finally:
+        session.close()
+
+
+def high_demand_days(since: datetime.datetime, until: datetime.datetime,
+                      client_slug: str | None = None, task_slug: str | None = None,
+                      user_id: int | None = None, model_name: str | None = None,
+                      tz_name: str | None = None, top_n: int = 5) -> list[dict]:
+    """Top-N days by cost in the selected window — the "high demand day"
+    callout (Google Cloud Console-style peak-usage highlight). Days with
+    zero calls are excluded (a 0-cost day is never "high demand")."""
+    series = usage_by_day(since, until, client_slug, task_slug, user_id, model_name, tz_name)
+    non_zero = [d for d in series if d["calls"] > 0]
+    return sorted(non_zero, key=lambda d: d["cost_inr"], reverse=True)[:top_n]
+
+
+def usage_by_model(since: datetime.datetime, until: datetime.datetime,
+                    client_slug: str | None = None, task_slug: str | None = None,
+                    user_id: int | None = None) -> list[dict]:
+    """Cost/token share per Gemini model — pie/bar chart. Only models that
+    actually have usage in the window appear (no catalog to zero-fill
+    against, unlike clients/tasks)."""
+    session = SessionLocal()
+    try:
+        rows = (
+            _billing_base_query(
+                session, GeminiUsageLog.model_name,
+                func.sum(GeminiUsageLog.total_cost_inr), func.sum(GeminiUsageLog.total_cost_usd),
+                func.sum(GeminiUsageLog.total_tokens), func.count(GeminiUsageLog.id),
+                since=since, until=until, client_slug=client_slug, task_slug=task_slug, user_id=user_id,
+            )
+            .group_by(GeminiUsageLog.model_name)
+            .order_by(func.sum(GeminiUsageLog.total_cost_inr).desc())
+            .all()
+        )
+        return [{
+            "model_name": model, "cost_inr": round(float(cost_inr), 2),
+            "cost_usd": round(float(cost_usd), 4), "tokens": int(tokens), "calls": int(calls),
+        } for model, cost_inr, cost_usd, tokens, calls in rows]
+    finally:
+        session.close()
+
+
+def usage_by_client(since: datetime.datetime, until: datetime.datetime,
+                     task_slug: str | None = None, user_id: int | None = None,
+                     model_name: str | None = None) -> list[dict]:
+    """Cost per client, zero-filled across the full client catalog — same
+    "every client appears even at 0" reasoning as files_by_client(), so a
+    client/color's position in the chart doesn't shift between periods."""
+    session = SessionLocal()
+    try:
+        q = (
+            session.query(Client.id, func.sum(GeminiUsageLog.total_cost_inr), func.count(GeminiUsageLog.id))
+            .join(GeminiUsageLog, GeminiUsageLog.client_id == Client.id)
+            .filter(GeminiUsageLog.timestamp >= since, GeminiUsageLog.timestamp < until)
+        )
+        if task_slug:
+            q = q.join(Task, GeminiUsageLog.task_id == Task.id).filter(Task.slug == task_slug)
+        if user_id is not None:
+            q = q.filter(GeminiUsageLog.user_id == user_id)
+        if model_name:
+            q = q.filter(GeminiUsageLog.model_name == model_name)
+        by_client = {cid: (cost, calls) for cid, cost, calls in q.group_by(Client.id).all()}
+
+        clients = session.query(Client).order_by(Client.name).all()
+        return [{
+            "client_name": c.name, "client_slug": c.slug,
+            "cost_inr": round(float(by_client.get(c.id, (0, 0))[0] or 0), 2),
+            "calls": int(by_client.get(c.id, (0, 0))[1] or 0),
+        } for c in clients]
+    finally:
+        session.close()
+
+
+def usage_by_task(since: datetime.datetime, until: datetime.datetime,
+                   client_slug: str | None = None, user_id: int | None = None,
+                   model_name: str | None = None) -> list[dict]:
+    """Cost per task, zero-filled across the full task catalog — same
+    reasoning as usage_by_client()."""
+    session = SessionLocal()
+    try:
+        q = (
+            session.query(Task.id, func.sum(GeminiUsageLog.total_cost_inr), func.count(GeminiUsageLog.id))
+            .join(GeminiUsageLog, GeminiUsageLog.task_id == Task.id)
+            .filter(GeminiUsageLog.timestamp >= since, GeminiUsageLog.timestamp < until)
+        )
+        if client_slug:
+            q = q.join(Client, GeminiUsageLog.client_id == Client.id).filter(Client.slug == client_slug)
+        if user_id is not None:
+            q = q.filter(GeminiUsageLog.user_id == user_id)
+        if model_name:
+            q = q.filter(GeminiUsageLog.model_name == model_name)
+        by_task = {tid: (cost, calls) for tid, cost, calls in q.group_by(Task.id).all()}
+
+        tasks = session.query(Task).order_by(Task.name).all()
+        return [{
+            "task_name": t.name, "task_slug": t.slug,
+            "cost_inr": round(float(by_task.get(t.id, (0, 0))[0] or 0), 2),
+            "calls": int(by_task.get(t.id, (0, 0))[1] or 0),
+        } for t in tasks]
+    finally:
+        session.close()
+
+
+def usage_by_user(since: datetime.datetime, until: datetime.datetime,
+                   client_slug: str | None = None, task_slug: str | None = None,
+                   model_name: str | None = None) -> list[dict]:
+    """Cost per user in [since, until) — powers the Billing page's
+    per-user pie/bar chart. Users with zero usage in the window are simply
+    absent, same as productivity_by_user()."""
+    session = SessionLocal()
+    try:
+        q = (
+            session.query(User.id, User.name, User.username,
+                          func.sum(GeminiUsageLog.total_cost_inr), func.count(GeminiUsageLog.id))
+            .join(GeminiUsageLog, GeminiUsageLog.user_id == User.id)
+            .filter(GeminiUsageLog.timestamp >= since, GeminiUsageLog.timestamp < until)
+        )
+        if client_slug:
+            q = q.join(Client, GeminiUsageLog.client_id == Client.id).filter(Client.slug == client_slug)
+        if task_slug:
+            q = q.join(Task, GeminiUsageLog.task_id == Task.id).filter(Task.slug == task_slug)
+        if model_name:
+            q = q.filter(GeminiUsageLog.model_name == model_name)
+        rows = (
+            q.group_by(User.id)
+            .order_by(func.sum(GeminiUsageLog.total_cost_inr).desc())
+            .all()
+        )
+        return [{
+            "user_id": uid, "user_name": uname, "username": uusername,
+            "cost_inr": round(float(cost or 0), 2), "calls": int(calls or 0),
+        } for uid, uname, uusername, cost, calls in rows]
     finally:
         session.close()

@@ -12,6 +12,12 @@ from helpers.jwt_utils import hash_password
 DEFAULT_ADMIN_USERNAME = "admin"
 DEFAULT_ADMIN_PASSWORD = "admin123"  # "CHANGE THIS" after first login
 
+# No placeholder ModelPricing/ExchangeRate is seeded here — a fresh install's
+# Billing page shows ₹0 until an admin enters the real numbers via the
+# Billing tab's "Rates" panel. A seeded placeholder value was tried and
+# removed: it risked being mistaken for a real price if the admin didn't
+# immediately replace it.
+
 
 def seed():
     init_db()

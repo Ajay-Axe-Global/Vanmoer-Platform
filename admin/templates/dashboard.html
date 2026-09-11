@@ -653,6 +653,82 @@
       color: #ff6b6b;
     }
 
+    /* ── Billing & Usage tab ──────────────────────────────── */
+    .stat-tile .subvalue {
+      font-size: 12px;
+      color: var(--text-muted);
+      font-family: 'JetBrains Mono', monospace;
+      margin-top: 3px;
+    }
+
+    .high-demand-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .high-demand-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: var(--panel-2);
+      border: 1px solid var(--border-2);
+      border-radius: 10px;
+      padding: 10px 14px;
+      font-size: 12.5px;
+    }
+
+    .high-demand-row .rank {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 20px;
+      height: 20px;
+      border-radius: 6px;
+      background: var(--accent-dim);
+      color: var(--accent);
+      font-weight: 700;
+      font-size: 11px;
+      margin-right: 10px;
+    }
+
+    .high-demand-row .date {
+      font-family: 'JetBrains Mono', monospace;
+      color: var(--text-secondary);
+    }
+
+    .high-demand-row .cost {
+      font-weight: 700;
+    }
+
+    .high-demand-empty {
+      color: var(--text-muted);
+      font-size: 12.5px;
+    }
+
+    .pricing-form-row {
+      display: flex;
+      gap: 10px;
+      align-items: flex-end;
+      flex-wrap: wrap;
+      margin-bottom: 16px;
+    }
+
+    .pricing-form-row .field {
+      min-width: 140px;
+    }
+
+    .pricing-form-row .field label {
+      margin: 0 0 4px;
+    }
+
+    .pricing-form-row button.primary {
+      margin-top: 0;
+      width: auto;
+      padding: 9px 20px;
+    }
+
+
     .row-actions {
       display: flex;
       gap: 8px;
@@ -949,6 +1025,7 @@
       <div class="tabs">
         <button class="tab-btn active" data-tab="dashboard">Dashboard</button>
         <button class="tab-btn" data-tab="users">Users</button>
+        <button class="tab-btn" data-tab="billing">Billing &amp; Usage</button>
       </div>
       <button class="plain" id="backup-btn">Backup DB</button>
       <button class="plain" id="logout-btn">Log out</button>
@@ -1181,6 +1258,286 @@
             </thead>
             <tbody></tbody>
           </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════ BILLING & USAGE TAB ═══════════════════ -->
+    <div class="tab-panel" id="tab-billing">
+
+      <!-- ── Overview: stat tiles, own filter row, Rates toggle top-right ── -->
+      <div class="panel full" style="margin-bottom:20px">
+        <h2>Overview</h2>
+        <p class="panel-sub">headline Gemini cost figures for the selected filters</p>
+        <div class="filter-row">
+          <select id="billing-ov-period">
+            <option value="today">Today</option>
+            <option value="week">This week</option>
+            <option value="month">This month</option>
+            <option value="custom">Custom</option>
+          </select>
+          <div class="custom-range" id="billing-ov-custom-range" style="display:none">
+            <input type="date" id="billing-ov-since" />
+            <span class="range-sep">to</span>
+            <input type="date" id="billing-ov-until" />
+            <button type="button" class="period-apply" id="billing-ov-apply-btn">Apply</button>
+          </div>
+          <select id="billing-filter-client">
+            <option value="">All clients</option>
+          </select>
+          <select id="billing-filter-task">
+            <option value="">All tasks</option>
+          </select>
+          <select id="billing-filter-user">
+            <option value="">All users</option>
+          </select>
+          <select id="billing-filter-model">
+            <option value="">All models</option>
+          </select>
+          <button type="button" class="period-seg" id="billing-rates-toggle" style="margin-left:auto">⚙ Rates</button>
+        </div>
+
+        <div class="stat-row" style="margin-top:4px">
+          <div class="stat-tile">
+            <div class="label">Total cost</div>
+            <div class="value" id="billing-stat-cost-inr">—</div>
+            <div class="subvalue" id="billing-stat-cost-usd">—</div>
+          </div>
+          <div class="stat-tile">
+            <div class="label">Total tokens</div>
+            <div class="value" id="billing-stat-tokens">—</div>
+            <div class="subvalue" id="billing-stat-tokens-split">—</div>
+          </div>
+          <div class="stat-tile">
+            <div class="label">Gemini calls</div>
+            <div class="value" id="billing-stat-calls">—</div>
+          </div>
+          <div class="stat-tile">
+            <div class="label">Jobs billed</div>
+            <div class="value" id="billing-stat-jobs">—</div>
+          </div>
+          <div class="stat-tile">
+            <div class="label">Avg cost / job</div>
+            <div class="value" id="billing-stat-avg">—</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Rates: two separate panels, hidden until "⚙ Rates" is clicked ── -->
+      <div id="billing-rates-section" style="display:none">
+        <div class="panel full" style="margin-bottom:20px">
+          <h2>Model pricing ($ / 1M tokens)</h2>
+          <p class="panel-sub">every cost figure on this page is computed from whichever row below is active at
+            call time — add a new row when Google changes a price; the old row stays so past costs never
+            silently change</p>
+          <div class="pricing-form-row">
+            <div class="field">
+              <label for="pricing-model-name">Model</label>
+              <input id="pricing-model-name" placeholder="gemini-2.5-flash-lite" />
+            </div>
+            <div class="field">
+              <label for="pricing-input-price">Input $/1M</label>
+              <input id="pricing-input-price" type="number" step="0.000001" min="0" placeholder="0.10" />
+            </div>
+            <div class="field">
+              <label for="pricing-output-price">Output $/1M</label>
+              <input id="pricing-output-price" type="number" step="0.000001" min="0" placeholder="0.40" />
+            </div>
+            <div class="field">
+              <label for="pricing-effective-from">Effective from</label>
+              <input id="pricing-effective-from" type="date" />
+            </div>
+            <button type="button" class="primary" id="add-pricing-btn">+ Add price</button>
+          </div>
+          <div class="msg" id="pricing-msg"></div>
+          <div class="table-scroll">
+            <table id="pricing-table">
+              <thead>
+                <tr>
+                  <th>Model</th>
+                  <th>Input $/1M</th>
+                  <th>Output $/1M</th>
+                  <th>Effective from</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel full" style="margin-bottom:20px">
+          <h2>USD → INR exchange rate</h2>
+          <p class="panel-sub">used to convert every $ cost figure on this page into ₹ — same "add, never edit"
+            history as model pricing above</p>
+          <div class="pricing-form-row">
+            <div class="field">
+              <label for="rate-value">₹ per $1</label>
+              <input id="rate-value" type="number" step="0.000001" min="0" placeholder="88.00" />
+            </div>
+            <div class="field">
+              <label for="rate-effective-from">Effective from</label>
+              <input id="rate-effective-from" type="date" />
+            </div>
+            <button type="button" class="primary" id="add-rate-btn">+ Add rate</button>
+          </div>
+          <div class="msg" id="rate-msg"></div>
+          <div class="table-scroll">
+            <table id="rate-table">
+              <thead>
+                <tr>
+                  <th>₹ per $1</th>
+                  <th>Effective from</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Cost per day ── -->
+      <div class="panel full" style="margin-bottom:20px">
+        <div style="display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:8px">
+          <h2>Cost per day</h2>
+          <div id="billing-day-peak-label" style="font-size:12.5px;color:var(--text-secondary)">—</div>
+        </div>
+        <p class="panel-sub">₹ spent on Gemini extraction per day · amber bar = the period's highest-cost day · hover a bar for its full breakdown</p>
+        <div class="filter-row">
+          <select id="billing-day-period">
+            <option value="today">Today</option>
+            <option value="week">This week</option>
+            <option value="month" selected>This month</option>
+            <option value="custom">Custom</option>
+          </select>
+        </div>
+        <div class="custom-range" id="billing-day-custom-range" style="display:none">
+          <input type="date" id="billing-day-since" />
+          <span class="range-sep">to</span>
+          <input type="date" id="billing-day-until" />
+          <button type="button" class="period-apply" id="billing-day-apply-btn">Apply</button>
+        </div>
+        <div id="billing-chart-wrap" style="position:relative">
+          <svg id="billing-chart-svg" width="100%" height="220" viewBox="0 0 1080 220" preserveAspectRatio="none"></svg>
+          <div id="billing-chart-tooltip" style="position:absolute;pointer-events:none;background:#0b0d12;border:1px solid var(--border-2);border-radius:8px;padding:8px 11px;font-size:12px;line-height:1.5;opacity:0;transition:opacity .1s;transform:translate(-50%,-100%);white-space:nowrap;z-index:5;box-shadow:0 8px 24px rgba(0,0,0,.4)"></div>
+        </div>
+      </div>
+
+      <!-- ── High demand days ── -->
+      <div class="panel full" style="margin-bottom:20px">
+        <h2>High demand days</h2>
+        <p class="panel-sub">the selected period's highest-cost days — same idea as a cloud console's peak-usage callout</p>
+        <div class="filter-row">
+          <select id="billing-hd-period">
+            <option value="today">Today</option>
+            <option value="week">This week</option>
+            <option value="month" selected>This month</option>
+            <option value="custom">Custom</option>
+          </select>
+        </div>
+        <div class="custom-range" id="billing-hd-custom-range" style="display:none">
+          <input type="date" id="billing-hd-since" />
+          <span class="range-sep">to</span>
+          <input type="date" id="billing-hd-until" />
+          <button type="button" class="period-apply" id="billing-hd-apply-btn">Apply</button>
+        </div>
+        <div class="high-demand-list" id="billing-high-demand-list">
+          <div class="high-demand-empty">No usage in this period.</div>
+        </div>
+      </div>
+
+      <!-- ── Cost by client / model ── -->
+      <div class="grid-2">
+        <div class="panel">
+          <h2>Cost by client</h2>
+          <p class="panel-sub">total ₹ per client for the selected period</p>
+          <div class="filter-row">
+            <select id="billing-cbc-period">
+              <option value="today">Today</option>
+              <option value="week">This week</option>
+              <option value="month" selected>This month</option>
+              <option value="custom">Custom</option>
+            </select>
+          </div>
+          <div class="custom-range" id="billing-cbc-custom-range" style="display:none">
+            <input type="date" id="billing-cbc-since" />
+            <span class="range-sep">to</span>
+            <input type="date" id="billing-cbc-until" />
+            <button type="button" class="period-apply" id="billing-cbc-apply-btn">Apply</button>
+          </div>
+          <div id="billing-client-bar-wrap">
+            <svg id="billing-client-bar-svg" width="100%" height="220" viewBox="0 0 520 220" preserveAspectRatio="none"></svg>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>Cost by model</h2>
+          <p class="panel-sub">Gemini model cost share for the selected period</p>
+          <div class="filter-row">
+            <select id="billing-cbm-period">
+              <option value="today">Today</option>
+              <option value="week">This week</option>
+              <option value="month" selected>This month</option>
+              <option value="custom">Custom</option>
+            </select>
+          </div>
+          <div class="custom-range" id="billing-cbm-custom-range" style="display:none">
+            <input type="date" id="billing-cbm-since" />
+            <span class="range-sep">to</span>
+            <input type="date" id="billing-cbm-until" />
+            <button type="button" class="period-apply" id="billing-cbm-apply-btn">Apply</button>
+          </div>
+          <div class="pie-row">
+            <svg id="billing-model-pie-svg" width="180" height="180" viewBox="0 0 180 180"></svg>
+            <div class="pie-legend" id="billing-model-pie-legend"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Cost by task / user ── -->
+      <div class="grid-2">
+        <div class="panel">
+          <h2>Cost by task</h2>
+          <p class="panel-sub">total ₹ per task for the selected period</p>
+          <div class="filter-row">
+            <select id="billing-cbt-period">
+              <option value="today">Today</option>
+              <option value="week">This week</option>
+              <option value="month" selected>This month</option>
+              <option value="custom">Custom</option>
+            </select>
+          </div>
+          <div class="custom-range" id="billing-cbt-custom-range" style="display:none">
+            <input type="date" id="billing-cbt-since" />
+            <span class="range-sep">to</span>
+            <input type="date" id="billing-cbt-until" />
+            <button type="button" class="period-apply" id="billing-cbt-apply-btn">Apply</button>
+          </div>
+          <div id="billing-task-bar-wrap">
+            <svg id="billing-task-bar-svg" width="100%" height="220" viewBox="0 0 520 220" preserveAspectRatio="none"></svg>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>Cost by user</h2>
+          <p class="panel-sub">who's driving Gemini spend, for the selected period</p>
+          <div class="filter-row">
+            <select id="billing-cbu-period">
+              <option value="today">Today</option>
+              <option value="week">This week</option>
+              <option value="month" selected>This month</option>
+              <option value="custom">Custom</option>
+            </select>
+          </div>
+          <div class="custom-range" id="billing-cbu-custom-range" style="display:none">
+            <input type="date" id="billing-cbu-since" />
+            <span class="range-sep">to</span>
+            <input type="date" id="billing-cbu-until" />
+            <button type="button" class="period-apply" id="billing-cbu-apply-btn">Apply</button>
+          </div>
+          <div class="pie-row">
+            <svg id="billing-user-pie-svg" width="180" height="180" viewBox="0 0 180 180"></svg>
+            <div class="pie-legend" id="billing-user-pie-legend"></div>
+          </div>
         </div>
       </div>
     </div>

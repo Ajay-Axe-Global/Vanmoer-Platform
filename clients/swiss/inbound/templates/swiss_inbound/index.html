@@ -425,6 +425,14 @@
                 </div>
             </div>
 
+            <div class="upload-card" id="inboundCard" onclick="this.querySelector('input').click()" style="margin-bottom: 28px;">
+                <span class="icon">📥</span>
+                <div class="label">Inbound Files (optional, up to 15)</div>
+                <div class="filename" id="inboundNames">Click to upload one PDF per product — used to fill the Product Reference column</div>
+                <input type="file" id="inboundFiles" accept=".pdf" multiple onchange="onInboundFilesSelect(this)">
+                <button class="remove-btn" onclick="event.stopPropagation(); clearInboundFiles()">&times;</button>
+            </div>
+
             <div class="field-group">
                 <label for="referenceInput">Reference <span class="required">*</span></label>
                 <input type="text" id="referenceInput" placeholder="e.g. shipment/PO reference" oninput="checkReady()">
@@ -478,6 +486,39 @@
         VanmoerAuth.requireAuth();
 
         const OUTPUT_FILENAME = 'Swiss_Inbound_Outcome.xlsx';
+        const MAX_INBOUND_FILES = 15;
+
+        /* ── Inbound files (multi-file, optional) ─────────── */
+
+        function onInboundFilesSelect(input) {
+            const nameEl = document.getElementById('inboundNames');
+            const card = document.getElementById('inboundCard');
+            const n = input.files.length;
+
+            if (n > MAX_INBOUND_FILES) {
+                alert(`Maximum ${MAX_INBOUND_FILES} Inbound files allowed (${n} selected). Please select fewer files.`);
+                input.value = '';
+                onInboundFilesSelect(input);
+                return;
+            }
+
+            if (n) {
+                const names = Array.from(input.files).map(f => f.name).join(', ');
+                nameEl.textContent = `${n} file(s): ${names}`;
+                nameEl.classList.add('active');
+                card.classList.add('has-file');
+            } else {
+                nameEl.textContent = 'Click to upload one PDF per product — used to fill the Product Reference column';
+                nameEl.classList.remove('active');
+                card.classList.remove('has-file');
+            }
+        }
+
+        function clearInboundFiles() {
+            const input = document.getElementById('inboundFiles');
+            input.value = '';
+            onInboundFilesSelect(input);
+        }
 
         /* ── File selection ───────────────────────────────── */
 
@@ -546,6 +587,9 @@
             fd.append('packing_list', document.getElementById('pklFile').files[0]);
             fd.append('reference', document.getElementById('referenceInput').value.trim());
             fd.append('ship_name', document.getElementById('shipNameInput').value.trim());
+            for (const f of document.getElementById('inboundFiles').files) {
+                fd.append('inbound_files', f);
+            }
             // Native <input type="date"> always yields "YYYY-MM-DD" regardless
             // of browser locale — the backend formats it into the OP's
             // "YYYYMMDD 00:00:00" column format.
@@ -602,6 +646,7 @@
                 { value: (s.total_pallets || 0).toLocaleString(), label: 'Total Pallets' },
                 { value: (s.total_net_weight || 0) + ' KG', label: 'Net Weight' },
                 { value: s.packing_list_source === 'excel' ? 'Excel' : 'PDF', label: 'Pkg List Source' },
+                { value: s.inbound_files_count || 0, label: 'Inbound Files' },
             ];
             chips.forEach(c => {
                 const el = document.createElement('div');
@@ -642,6 +687,7 @@
             document.getElementById('errorMsg').classList.remove('visible');
             clearFile('mblFile', 'mblName');
             clearFile('pklFile', 'pklName');
+            clearInboundFiles();
             document.getElementById('referenceInput').value = '';
             document.getElementById('shipNameInput').value = '';
             document.getElementById('etaDate').value = '';

@@ -13,12 +13,24 @@ Inbound's routing:
   - .pdf       -> extract_packing_list_pdf() (extractor.py, Gemini-based,
     self-detects the SIDPEC vs ETHYDCO layout).
 
-Only two source documents (MBL + Packing List — no Invoice). Reference,
-Ship Name, and ETA Date are all REQUIRED manual UI fields (like Continental
-Inbound's Reference/ETA Date) — neither document carries a usable shipment
-reference to fall back to. Shipping Line is NOT a UI field — extractor.
-build_rows() derives it from the MBL's already-identified carrier (see
-extractor.carrier_display()), so it can never disagree with the MBL.
+Only two source documents are REQUIRED (MBL + Packing List — no Invoice),
+plus a third, OPTIONAL, batch upload: up to MAX_INBOUND_FILES "Inbound"
+advice PDFs (one per product in the shipment, e.g. "EB101046.10_INBOUND.pdf"
+— see extractor.extract_inbound_advice()). Each one states its own
+per-product Reference (e.g. "EB101046.10") for one Material — matched
+against the Packing List's Grade/product column to populate the "Product
+Reference" output column and, in turn, the "Container/Ref" column (which
+uses Product Reference in place of the global Reference wherever a match
+was found — see extractor.build_rows()). If no Inbound files are uploaded
+at all, Product Reference is blank on every row and Container/Ref falls
+back to the global Reference, same as before this feature existed.
+
+Reference, Ship Name, and ETA Date are all REQUIRED manual UI fields (like
+Continental Inbound's Reference/ETA Date) — neither document carries a
+usable shipment reference to fall back to. Shipping Line is NOT a UI field
+— extractor.build_rows() derives it from the MBL's already-identified
+carrier (see extractor.carrier_display()), so it can never disagree with
+the MBL.
 """
 
 import traceback
@@ -42,12 +54,23 @@ from helpers.excel_writer import write_excel
 from helpers.jobs import build_reference, job_output_path, log_job, new_job_dir
 
 from .excel_extractor import extract_packing_list_excel
-from .extractor import build_rows, carrier_display, extract_mbl, extract_packing_list_pdf, validate
+from .extractor import (
+    build_product_reference_map,
+    build_rows,
+    carrier_display,
+    extract_inbound_advice,
+    extract_mbl,
+    extract_packing_list_pdf,
+    validate,
+    validate_product_references,
+)
 
 EXCEL_EXTENSIONS = {".xlsx", ".xls"}
 
 CLIENT_SLUG = "swiss"
 TASK_SLUG = "inbound"
+
+MAX_INBOUND_FILES = 15
 
 # ═══════════════════════════════════════════════════════════════════════════
 # COLUMN CONFIG
@@ -63,6 +86,7 @@ COLUMN_CONFIG = [
     {"header": "Container Type",   "field_key": "container_type", "width": 14},
     {"header": "Country Code",     "field_key": "country_code",   "width": 10},
     {"header": "Product",          "field_key": "product",        "width": 18},
+    {"header": "Product Reference", "field_key": "product_reference", "width": 20},
     {"header": "Lot No",           "field_key": "lot_no",         "width": 16},
     {"header": "Bags",             "field_key": "bags",           "width": 10, "num_format": "#,##0"},
     {"header": "Net Weight (KG)",  "field_key": "net_weight",     "width": 16, "num_format": "#,##0"},
@@ -104,7 +128,7 @@ class SwissInboundTask(BaseTask):
     writes_own_output = False
 
     def process(self, files: dict, output_path: str | None = None, reference: str = "",
-                eta_date: str = "", ship_name: str = "") -> dict:
+                eta_date: str = "", ship_name: str = "", inbound_files: list[str] = None) -> dict:
         # ── Step 1: extraction ──────────────────────────────────────
         # MBL extraction is a two-call pipeline internally (identify the
         # carrier, then dispatch to that carrier's own tuned prompt) — see
@@ -118,14 +142,23 @@ class SwissInboundTask(BaseTask):
             mbl_container_ids = [c["id"] for c in mbl_data.get("containers", []) if c.get("id")]
             pkl_data = extract_packing_list_pdf(pkl_path, mbl_container_ids=mbl_container_ids)
 
+        # Optional per-product Inbound advice PDFs — one Gemini call each,
+        # {reference, material} extracted independently, then collapsed
+        # into a {product code: reference} map (see extractor.
+        # build_product_reference_map() for the code-matching rule).
+        inbound_advices = [extract_inbound_advice(p) for p in (inbound_files or [])]
+        product_reference_map = build_product_reference_map(inbound_advices)
+
         # ── Step 3: Build outcome rows ──────────────────────────────
         # reference/eta_date/ship_name are UI-entered (not extracted from
         # the documents) and apply uniformly to every row in this shipment.
         # Shipping Line is derived inside build_rows() from the MBL's own
-        # already-identified carrier — not a UI input.
+        # already-identified carrier — not a UI input. Product Reference
+        # (per row) comes from product_reference_map, built above.
 
         validation = validate(mbl_data, pkl_data)
-        rows = build_rows(mbl_data, pkl_data, reference, eta_date, ship_name)
+        rows = build_rows(mbl_data, pkl_data, reference, eta_date, ship_name, product_reference_map)
+        validation += validate_product_references(rows, len(inbound_advices))
 
         # ── Summary stats ───────────────────────────────────────────
         containers = set(r["container_no"] for r in rows)
@@ -141,6 +174,7 @@ class SwissInboundTask(BaseTask):
             "carrier":          mbl_data.get("carrier", ""),
             "reference":        reference,
             "packing_list_source": pkl_data.get("packing_list_source", ""),
+            "inbound_files_count": len(inbound_advices),
             "total_rows":       len(rows),
             "total_containers": len(containers),
             "total_bags":       total_bags,
@@ -187,6 +221,13 @@ def process():
     if not ship_name:
         return jsonify({"error": "Ship Name is required."}), 400
 
+    # Optional — a shipment with no Inbound files uploaded just gets a
+    # blank Product Reference column (see extractor.build_rows()).
+    inbound_uploads = [f for f in request.files.getlist("inbound_files") if f and f.filename]
+    if len(inbound_uploads) > MAX_INBOUND_FILES:
+        return jsonify({"error": f"Maximum {MAX_INBOUND_FILES} Inbound files allowed "
+                                  f"({len(inbound_uploads)} uploaded)."}), 400
+
     eta_date_raw = (request.form.get("eta_date") or "").strip()
     if not eta_date_raw:
         return jsonify({"error": "ETA Date is required."}), 400
@@ -206,10 +247,20 @@ def process():
             f.save(path)
             saved[doc["key"]] = path
 
+        inbound_paths = []
+        for i, f in enumerate(inbound_uploads):
+            # secure_filename() alone can collide if two Inbound files
+            # share a name (unlikely, but each is a distinct Reference so a
+            # silent overwrite would be a real data-loss bug) — prefixed
+            # with its position to guarantee uniqueness.
+            path = str(job_dir / f"inbound_{i}_{secure_filename(f.filename)}")
+            f.save(path)
+            inbound_paths.append(path)
+
         # ── Run the task ────────────────────────────────────────────
         output_path = str(job_output_path(job_id))
         result = _task.process(saved, output_path, reference=reference, eta_date=eta_date,
-                                ship_name=ship_name)
+                                ship_name=ship_name, inbound_files=inbound_paths)
 
         rows = result["rows"]
         summary = result["summary"]

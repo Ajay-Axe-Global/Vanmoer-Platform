@@ -54,6 +54,8 @@ and MT/KG conversion are shared with Sabic/Vinmar/Emvia/Continental Inbound
 via helpers/doc_common.py.
 """
 
+import re
+
 from helpers.doc_common import (
     dump_json,
     fix_container_id,
@@ -1154,8 +1156,106 @@ def carrier_display(carrier: str) -> str:
     return CARRIER_DISPLAY_MAP.get(s(carrier).strip().upper(), "Other")
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# INBOUND ADVICE PDFs — PER-PRODUCT REFERENCE
+# ═══════════════════════════════════════════════════════════════════════════
+# Optional 3rd document type, uploaded as a batch (up to 15 files — one
+# "IMPORT CONTAINERS" advice PDF per product/material in this shipment, e.g.
+# "EB101046.10_INBOUND.pdf"). Each one states its OWN "Our reference" (e.g.
+# "EB101046.10") for ONE "Material" (e.g. "LLDPE EE-1801-AAB") — unlike the
+# single global Reference UI field (one value for the whole shipment), this
+# gives a PER-PRODUCT reference, matched against the Packing List's own
+# Grade/product column for each row.
+#
+# The two documents spell the same product differently: the advice's
+# "Material" carries the polymer family name and a 2-letter grade-family
+# prefix ("LLDPE EE-1801-AAB"), while the Packing List's Grade column
+# states only the trailing "<4-digit>-<letters>" code ("1801-AAB") — the
+# family name and prefix are dropped. Rather than trying to strip a fixed
+# set of known prefixes (fragile — a new polymer family or prefix breaks
+# it silently), both strings are matched by extracting that same
+# "<3-4 digits>-<2-4 letters>" code out of each with one regex and
+# comparing the extracted codes — format-agnostic on either side.
+_PRODUCT_CODE_RE = re.compile(r'(\d{3,4}-[A-Z]{2,4})')
+
+
+def extract_product_code(text: str) -> str:
+    """Pulls the "<digits>-<letters>" grade code out of a product/material
+    string (e.g. "LLDPE EE-1801-AAB" or "1801-AAB" -> "1801-AAB"). Falls
+    back to the whole trimmed/uppercased string when no such code is found
+    (e.g. a SIDPEC-style grade like "HD 6070 UA") — still comparable, just
+    less likely to match anything on the other side."""
+    text = s(text).strip().upper()
+    m = _PRODUCT_CODE_RE.search(text)
+    return m.group(1) if m else text
+
+
+IB_ADVICE_PROMPT = """You are a shipping-document data extractor. Extract data from this "IMPORT \
+CONTAINERS" shipping-instruction PDF (Swiss Polymers AG letterhead) and \
+return ONLY a JSON object, no markdown, no explanation.
+
+- "reference": the "Our reference" value (e.g. "EB101046.10") — bold text
+  right under the "IMPORT CONTAINERS" heading, may include a decimal suffix
+  like ".10"/".20"/".30" for a sub-shipment of a larger batch.
+- "material": the "Material" value EXACTLY as printed (e.g. "LLDPE EE-1801-
+  AAB", "HDPE EM-4810-AAH") — do not reformat, abbreviate, reorder, or drop
+  any part of it.
+
+Return:
+{"reference": "string", "material": "string"}"""
+
+
+def extract_inbound_advice(pdf_path: str) -> dict:
+    """One "IMPORT CONTAINERS" advice PDF -> its own {reference, material}."""
+    data = call_gemini(IB_ADVICE_PROMPT, pdf_path=pdf_path, max_output_tokens=512)
+    dump_json(pdf_path, "inbound_advice.json", data)
+    return {
+        "reference": s(data.get("reference")).strip(),
+        "material":  s(data.get("material")).strip(),
+    }
+
+
+def build_product_reference_map(inbound_advices: list[dict]) -> dict[str, str]:
+    """[{reference, material}, ...] (one per uploaded Inbound file) -> {product
+    code: reference}, keyed by extract_product_code(material). If two
+    Inbound files somehow resolve to the same product code, the LAST one
+    processed wins and a warning is printed — this shouldn't happen for a
+    real shipment (one advice per distinct product), so it's surfaced
+    rather than silently picking one."""
+    product_reference_map: dict[str, str] = {}
+    for advice in inbound_advices:
+        reference = advice.get("reference", "")
+        material = advice.get("material", "")
+        if not reference or not material:
+            continue
+        code = extract_product_code(material)
+        if code in product_reference_map and product_reference_map[code] != reference:
+            print(f"  [IB] Product code {code!r} already mapped to "
+                  f"{product_reference_map[code]!r} — overwriting with {reference!r} "
+                  f"(material {material!r})")
+        product_reference_map[code] = reference
+    return product_reference_map
+
+
+def validate_product_references(rows: list[dict], inbound_advice_count: int) -> list[str]:
+    """Called after build_rows() — reports which output rows' products had
+    no matching Inbound file, so a blank Product Reference is never a silent
+    surprise in the Excel. Skipped entirely when no Inbound files were
+    uploaded at all (Product Reference is an optional feature)."""
+    if not inbound_advice_count:
+        return []
+    results = []
+    unmatched_products = sorted({r["product"] for r in rows if r["product"] and not r["product_reference"]})
+    if unmatched_products:
+        results.append(f"[!]  PRODUCT REFERENCE — no Inbound file matched product(s): "
+                        f"{', '.join(unmatched_products)} — Product Reference left blank on those rows")
+    elif rows:
+        results.append("[OK] PRODUCT REFERENCE — every output row matched an uploaded Inbound file")
+    return results
+
+
 def build_rows(mbl: dict, pkl: dict, reference: str = "", eta_date: str = "",
-                ship_name: str = "") -> list[dict]:
+                ship_name: str = "", product_reference_map: dict[str, str] = None) -> list[dict]:
     reference = s(reference).strip()
     # Ship Name is UI-picked (not extracted from either document) — same
     # convention as reference/eta_date — applied uniformly to every row in
@@ -1164,6 +1264,7 @@ def build_rows(mbl: dict, pkl: dict, reference: str = "", eta_date: str = "",
     # separate UI field, so it can never disagree with the MBL.
     ship_name = s(ship_name).strip()
     shipping_line = carrier_display(mbl.get("carrier", ""))
+    product_reference_map = product_reference_map or {}
 
     country_code = get_country_code(s(mbl.get("port_of_loading")).strip())
 
@@ -1208,10 +1309,21 @@ def build_rows(mbl: dict, pkl: dict, reference: str = "", eta_date: str = "",
         raw_type = mbl_entry.get("type", "")
         container_type = normalize_container_type(raw_type) if raw_type else shipment_container_type
 
+        # Product Reference: looked up from the uploaded Inbound advice
+        # files by this row's own product/Grade code (see
+        # build_product_reference_map()) — "" when no Inbound file was
+        # uploaded, or none matched this row's product. Container/Ref uses
+        # it in place of the global Reference whenever it's known, falling
+        # back to the global Reference only when it isn't (never left with
+        # a dangling "/" for an unmatched product).
+        row_product = s(row.get("product")).strip()
+        product_reference = product_reference_map.get(extract_product_code(row_product), "") if row_product else ""
+
         rows.append({
-            "reference":      reference,
-            "container_no":   cid,
-            "container_ref":  f"{cid}/{reference}",
+            "reference":         reference,
+            "container_no":      cid,
+            "container_ref":     f"{cid}/{product_reference or reference}",
+            "product_reference": product_reference,
             "shipping_line":  shipping_line,
             "mbl_no":         mbl_no,
             "seal_no":        seal_no,

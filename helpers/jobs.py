@@ -6,7 +6,10 @@ Shared job-folder + JobHistory logging helpers used by every client task's
 import uuid
 from pathlib import Path
 
+from flask import g, has_app_context
+
 from database.models import Client, JobHistory, Task
+from helpers.billing import record_usage_for_job
 
 UPLOADS_DIR = Path(__file__).parent.parent / "uploads"
 UPLOADS_DIR.mkdir(exist_ok=True)
@@ -64,5 +67,21 @@ def log_job(session, user_id: int, client_slug: str, task_slug: str, output_file
         reference_count=reference_count,
     )
     session.add(job)
+    session.flush()  # assign job.id before attaching GeminiUsageLog rows
+
+    # Every Gemini call made during this request (carrier-id, MBL, packing
+    # list, ...) landed in g.gemini_usage — see helpers/gemini_client.
+    # call_gemini(). Logged here (not per-call) so it's tied to a real
+    # job.id and commits atomically with the JobHistory row itself: a
+    # billing-write failure can never leave a job logged with silently
+    # missing cost, and a job that never reaches log_job() (e.g. an
+    # exception mid-extraction) never gets billed for partial work.
+    if has_app_context() and getattr(g, "gemini_usage", None):
+        record_usage_for_job(
+            session, g.gemini_usage, job.id,
+            user_id=user_id, client_id=client.id, task_id=task.id,
+        )
+        g.gemini_usage = []  # avoid double-logging if log_job() is somehow called twice in one request
+
     session.commit()
     return job

@@ -18,12 +18,16 @@
   // ═══════════════════════════════════════════════════════════════════
   // Tabs
   // ═══════════════════════════════════════════════════════════════════
+  // The Billing tab's data isn't part of loadAllDashboardData()/auto-refresh
+  // (it's a heavier, less time-critical view than job stats) — loaded
+  // lazily every time the tab is opened instead.
   document.querySelectorAll(".tab-btn").forEach(btn => {
     btn.addEventListener("click", () => {
       document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
       document.querySelectorAll(".tab-panel").forEach(p => p.classList.remove("active"));
       btn.classList.add("active");
       document.getElementById(`tab-${btn.dataset.tab}`).classList.add("active");
+      if (btn.dataset.tab === "billing") loadBillingTab();
     });
   });
 
@@ -846,10 +850,437 @@
 
   setInterval(autoRefreshDashboard, AUTO_REFRESH_INTERVAL_MS);
 
+  // ═══════════════════════════════════════════════════════════════════
+  // Billing & Usage tab — Gemini token cost, computed server-side (see
+  // admin/service.py's usage_* functions and helpers/billing.py) from
+  // GeminiUsageLog rows written by helpers/jobs.log_job(). Every chart on
+  // this tab owns its OWN period filter (via wireDropdownPeriodFilter(),
+  // the same generic helper the Dashboard tab's client-bar/client-pie
+  // charts already use) rather than one shared filter row — so changing
+  // one chart's period never moves any other chart's data.
+  // ═══════════════════════════════════════════════════════════════════
+
+  const billingOverviewState = { period: "today", since: null, until: null };
+  const billingDayState = { period: "month", since: null, until: null };
+  const billingHdState = { period: "month", since: null, until: null };
+  const billingClientBarState = { period: "month", since: null, until: null };
+  const billingModelPieState = { period: "month", since: null, until: null };
+  const billingTaskBarState = { period: "month", since: null, until: null };
+  const billingUserPieState = { period: "month", since: null, until: null };
+
+  let modelsCache = []; // distinct model_name values that have a pricing row — populated by loadPricingTable()
+
+  function fmtInr(n) {
+    return "₹" + Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 2 });
+  }
+
+  function fmtUsd(n) {
+    return "$" + Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+  }
+
+  // Filter OPTIONS are the full catalog (same reasoning as
+  // populateSummaryFilters() on the Dashboard tab) — a period with no
+  // matching rows for a given client/task/user/model shouldn't make that
+  // option disappear from the dropdown. Only the Overview panel has these
+  // four selects — the per-chart breakdowns below (by client/task/model/
+  // user) don't need them, since each chart's whole job IS that breakdown.
+  function populateBillingFilters() {
+    const clientSel = document.getElementById("billing-filter-client");
+    const taskSel = document.getElementById("billing-filter-task");
+    const userSel = document.getElementById("billing-filter-user");
+    const modelSel = document.getElementById("billing-filter-model");
+    const prev = { client: clientSel.value, task: taskSel.value, user: userSel.value, model: modelSel.value };
+
+    clientSel.innerHTML = `<option value="">All clients</option>` +
+      clientsCache.map(c => `<option value="${c.slug}">${c.name}</option>`).join("");
+    taskSel.innerHTML = `<option value="">All tasks</option>` +
+      tasksCache.map(t => `<option value="${t.slug}">${t.name}</option>`).join("");
+    userSel.innerHTML = `<option value="">All users</option>` +
+      usersCache.map(u => `<option value="${u.id}">${u.name}</option>`).join("");
+    modelSel.innerHTML = `<option value="">All models</option>` +
+      modelsCache.map(m => `<option value="${m}">${m}</option>`).join("");
+
+    clientSel.value = prev.client;
+    taskSel.value = prev.task;
+    userSel.value = prev.user;
+    modelSel.value = prev.model;
+  }
+
+  function buildOverviewParams() {
+    const params = periodParams(billingOverviewState);
+    if (!params) return null;
+    const clientFilter = document.getElementById("billing-filter-client").value;
+    const taskFilter = document.getElementById("billing-filter-task").value;
+    const userFilter = document.getElementById("billing-filter-user").value;
+    const modelFilter = document.getElementById("billing-filter-model").value;
+    if (clientFilter) params.set("client_slug", clientFilter);
+    if (taskFilter) params.set("task_slug", taskFilter);
+    if (userFilter) params.set("user_id", userFilter);
+    if (modelFilter) params.set("model_name", modelFilter);
+    return params;
+  }
+
+  ["billing-filter-client", "billing-filter-task", "billing-filter-user", "billing-filter-model"].forEach(id => {
+    document.getElementById(id).addEventListener("change", loadBillingSummary);
+  });
+
+  async function loadBillingSummary() {
+    const params = buildOverviewParams();
+    if (!params) return;
+    const res = await VanmoerAuth.authFetch(`/api/admin/billing/summary?${params}`);
+    const s = await res.json();
+    document.getElementById("billing-stat-cost-inr").textContent = fmtInr(s.total_cost_inr);
+    document.getElementById("billing-stat-cost-usd").textContent = fmtUsd(s.total_cost_usd);
+    document.getElementById("billing-stat-tokens").textContent = s.total_tokens.toLocaleString();
+    document.getElementById("billing-stat-tokens-split").textContent =
+      `${s.total_prompt_tokens.toLocaleString()} in · ${s.total_completion_tokens.toLocaleString()} out`;
+    document.getElementById("billing-stat-calls").textContent = s.total_calls.toLocaleString();
+    document.getElementById("billing-stat-jobs").textContent = s.total_jobs.toLocaleString();
+    document.getElementById("billing-stat-avg").textContent = fmtInr(s.avg_cost_per_job_inr);
+  }
+
+  // Cost-per-day bars, same layout math as drawChart() (Dashboard tab) but
+  // an independent copy — this one's values are ₹ floats (not integer file
+  // counts) and highlights the period's single highest-cost day in a
+  // brighter color, the "high demand day" visual cue.
+  function drawBillingDayChart(days) {
+    const svg = document.getElementById("billing-chart-svg");
+    const tooltip = document.getElementById("billing-chart-tooltip");
+    const W = 1080, H = 220, padL = 44, padB = 26, padT = 22;
+    const plotW = W - padL - 10, plotH = H - padT - padB;
+    const maxVal = Math.max(1, ...days.map(d => d.cost_inr));
+    const niceMax = maxVal * 1.15 || 5;
+    const peakCost = Math.max(0, ...days.map(d => d.cost_inr));
+
+    // Persistent label (top-right of the panel, next to the "Cost per day"
+    // title) — the peak day's amount, visible at all times without needing
+    // to hover; the tooltip below still gives the full per-bar breakdown on
+    // hover, this is just the headline number for the busiest day.
+    const peakLabel = document.getElementById("billing-day-peak-label");
+    const peakDay = days.find(d => peakCost > 0 && d.cost_inr === peakCost);
+    if (peakDay) {
+      const label = new Date(peakDay.date + "T00:00:00").toLocaleDateString(undefined, { day: "numeric", month: "short" });
+      peakLabel.innerHTML = `Peak: <strong style="color:var(--text)">${fmtInr(peakDay.cost_inr)}</strong> on ${label}`;
+    } else {
+      peakLabel.textContent = "No spend in this period";
+    }
+
+    const n = days.length;
+    const bandW = plotW / n;
+    const barW = Math.min(24, bandW * 0.55);
+    const baseY = padT + plotH;
+
+    let grid = "";
+    for (let i = 0; i <= 4; i++) {
+      const y = padT + plotH - (plotH * i) / 4;
+      const val = (niceMax * i) / 4;
+      grid += `<line x1="${padL}" y1="${y}" x2="${W - 10}" y2="${y}" stroke="#2c2c2a" stroke-width="1" />`;
+      grid += `<text x="${padL - 8}" y="${y + 3}" text-anchor="end" font-size="10" fill="#6b7280" font-family="JetBrains Mono, monospace">₹${val.toFixed(0)}</text>`;
+    }
+
+    let bars = "", valueLabels = "", axisLabels = "", hitRects = "";
+    days.forEach((d, i) => {
+      const cx = padL + bandW * i + bandW / 2;
+      const x = cx - barW / 2;
+      const h = Math.max((d.cost_inr / niceMax) * plotH, d.cost_inr > 0 ? 1 : 0);
+      const isPeak = peakCost > 0 && d.cost_inr === peakCost;
+      if (h > 0) bars += rectPath(x, baseY - h, barW, h, 4, isPeak ? "#f59e0b" : CHART_COLOR);
+
+      // ₹ amount on top of every non-zero bar — visible without hovering
+      // (the tooltip on hover still adds tokens/calls on top of this).
+      if (d.cost_inr > 0) {
+        const labelY = Math.max(baseY - h - 6, padT - 8);
+        const amount = d.cost_inr >= 100 ? d.cost_inr.toFixed(0) : d.cost_inr.toFixed(1);
+        valueLabels += `<text x="${cx}" y="${labelY}" text-anchor="middle" font-size="9.5" fill="${isPeak ? "#f59e0b" : "#9299a8"}" font-family="JetBrains Mono, monospace">₹${amount}</text>`;
+      }
+
+      hitRects += `<rect class="hit" data-idx="${i}" x="${padL + bandW * i}" y="${padT}" width="${bandW}" height="${plotH}" fill="transparent" style="cursor:pointer" />`;
+
+      if (i % 2 === 0 || n <= 10) {
+        const label = new Date(d.date + "T00:00:00").toLocaleDateString(undefined, { day: "numeric", month: "short" });
+        axisLabels += `<text x="${cx}" y="${H - 6}" text-anchor="middle" font-size="10" fill="#6b7280" font-family="JetBrains Mono, monospace">${label}</text>`;
+      }
+    });
+
+    svg.innerHTML = grid + bars + valueLabels + axisLabels + hitRects;
+
+    svg.querySelectorAll(".hit").forEach(hit => {
+      const idx = parseInt(hit.dataset.idx, 10);
+      const d = days[idx];
+      hit.addEventListener("mousemove", (e) => {
+        const wrapRect = document.getElementById("billing-chart-wrap").getBoundingClientRect();
+        tooltip.style.left = `${e.clientX - wrapRect.left}px`;
+        tooltip.style.top = `${e.clientY - wrapRect.top - 10}px`;
+        tooltip.style.opacity = "1";
+        const label = new Date(d.date + "T00:00:00").toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+        tooltip.innerHTML = `
+          <div class="t-date">${label}${d.cost_inr === peakCost && peakCost > 0 ? " · peak day" : ""}</div>
+          <div class="t-row"><span class="t-dot" style="background:${CHART_COLOR}"></span>${fmtInr(d.cost_inr)} (${fmtUsd(d.cost_usd)})</div>
+          <div class="t-row">${d.tokens.toLocaleString()} tokens · ${d.calls} call(s)</div>
+        `;
+      });
+      hit.addEventListener("mouseleave", () => { tooltip.style.opacity = "0"; });
+    });
+  }
+
+  // Generic ₹-cost bar chart, same layout as drawClientBarChart() (Dashboard
+  // tab) but not tied to the "client_name" field — reused for both
+  // Cost-by-client and Cost-by-task.
+  function drawCostBarChart(svg, data, labelKey) {
+    const W = 520, H = 220, padL = 40, padB = 30, padT = 22;
+    const plotW = W - padL - 10, plotH = H - padT - padB;
+    const maxVal = Math.max(1, ...data.map(d => d.cost_inr));
+    const niceMax = maxVal * 1.15 || 5;
+    const n = Math.max(data.length, 1);
+    const bandW = plotW / n;
+    const barW = Math.min(48, bandW * 0.5);
+    const baseY = padT + plotH;
+
+    let grid = "";
+    for (let i = 0; i <= 4; i++) {
+      const y = padT + plotH - (plotH * i) / 4;
+      const val = (niceMax * i) / 4;
+      grid += `<line x1="${padL}" y1="${y}" x2="${W - 10}" y2="${y}" stroke="#2c2c2a" stroke-width="1" />`;
+      grid += `<text x="${padL - 8}" y="${y + 3}" text-anchor="end" font-size="10" fill="#6b7280" font-family="JetBrains Mono, monospace">₹${val.toFixed(0)}</text>`;
+    }
+
+    let bars = "", valueLabels = "", axisLabels = "";
+    data.forEach((d, i) => {
+      const cx = padL + bandW * i + bandW / 2;
+      const x = cx - barW / 2;
+      const h = Math.max((d.cost_inr / niceMax) * plotH, d.cost_inr > 0 ? 1 : 0);
+      if (h > 0) bars += rectPath(x, baseY - h, barW, h, 4, d.color);
+      if (d.cost_inr > 0) {
+        const labelY = Math.max(baseY - h - 6, padT - 8);
+        valueLabels += `<text x="${cx}" y="${labelY}" text-anchor="middle" font-size="10" fill="#9299a8" font-family="JetBrains Mono, monospace">₹${d.cost_inr.toFixed(0)}</text>`;
+      }
+      axisLabels += `<text x="${cx}" y="${H - 10}" text-anchor="middle" font-size="10" fill="#9299a8" font-family="JetBrains Mono, monospace">${truncate(d[labelKey], 10)}</text>`;
+    });
+
+    svg.innerHTML = grid + bars + valueLabels + axisLabels;
+  }
+
+  function taskColor(slug) {
+    const idx = tasksCache.findIndex(t => t.slug === slug);
+    return PALETTE[(idx < 0 ? 0 : idx) % PALETTE.length];
+  }
+
+  async function loadBillingDayChart() {
+    const params = periodParams(billingDayState);
+    if (!params) return;
+    const res = await VanmoerAuth.authFetch(`/api/admin/billing/usage-by-day?${params}`);
+    const days = await res.json();
+    drawBillingDayChart(days);
+  }
+
+  async function loadHighDemandDays() {
+    const params = periodParams(billingHdState);
+    if (!params) return;
+    const res = await VanmoerAuth.authFetch(`/api/admin/billing/high-demand-days?${params}`);
+    const rows = await res.json();
+    const el = document.getElementById("billing-high-demand-list");
+    if (!rows.length) {
+      el.innerHTML = `<div class="high-demand-empty">No usage in this period.</div>`;
+      return;
+    }
+    el.innerHTML = rows.map((d, i) => {
+      const label = new Date(d.date + "T00:00:00").toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+      return `
+        <div class="high-demand-row">
+          <div><span class="rank">${i + 1}</span><span class="date">${label}</span></div>
+          <div class="cost">${fmtInr(d.cost_inr)} <span style="color:var(--text-muted);font-weight:400">· ${d.calls} call(s), ${d.tokens.toLocaleString()} tokens</span></div>
+        </div>
+      `;
+    }).join("");
+  }
+
+  async function loadBillingClientBar() {
+    const params = periodParams(billingClientBarState);
+    if (!params) return;
+    const res = await VanmoerAuth.authFetch(`/api/admin/billing/usage-by-client?${params}`);
+    const rows = await res.json();
+    drawCostBarChart(
+      document.getElementById("billing-client-bar-svg"),
+      rows.map(r => ({ ...r, color: clientColor(r.client_slug) })),
+      "client_name"
+    );
+  }
+
+  async function loadBillingTaskBar() {
+    const params = periodParams(billingTaskBarState);
+    if (!params) return;
+    const res = await VanmoerAuth.authFetch(`/api/admin/billing/usage-by-task?${params}`);
+    const rows = await res.json();
+    drawCostBarChart(
+      document.getElementById("billing-task-bar-svg"),
+      rows.map(r => ({ ...r, color: taskColor(r.task_slug) })),
+      "task_name"
+    );
+  }
+
+  async function loadBillingModelPie() {
+    const params = periodParams(billingModelPieState);
+    if (!params) return;
+    const res = await VanmoerAuth.authFetch(`/api/admin/billing/usage-by-model?${params}`);
+    const rows = await res.json();
+    drawPieChart(
+      document.getElementById("billing-model-pie-svg"),
+      document.getElementById("billing-model-pie-legend"),
+      rows.map((r, i) => ({ label: r.model_name, value: r.cost_inr, color: PALETTE[i % PALETTE.length] }))
+    );
+  }
+
+  async function loadBillingUserPie() {
+    const params = periodParams(billingUserPieState);
+    if (!params) return;
+    const res = await VanmoerAuth.authFetch(`/api/admin/billing/usage-by-user?${params}`);
+    const rows = await res.json();
+    drawPieChart(
+      document.getElementById("billing-user-pie-svg"),
+      document.getElementById("billing-user-pie-legend"),
+      rows.map((r, i) => ({ label: `${r.user_name} (${r.username})`, value: r.cost_inr, color: PALETTE[i % PALETTE.length] }))
+    );
+  }
+
+  async function refreshBillingViews() {
+    await Promise.all([
+      loadBillingSummary(), loadBillingDayChart(), loadHighDemandDays(),
+      loadBillingClientBar(), loadBillingTaskBar(), loadBillingModelPie(), loadBillingUserPie(),
+    ]);
+  }
+
+  // ── Rates: pricing & exchange-rate management (hidden until the "⚙
+  // Rates" toggle in the Overview panel is clicked) ───────────────────
+
+  function fmtDateOnly(iso) {
+    return new Date(iso).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+  }
+
+  async function loadPricingTable() {
+    const res = await VanmoerAuth.authFetch("/api/admin/billing/pricing");
+    const rows = await res.json();
+    modelsCache = [...new Set(rows.map(r => r.model_name))];
+    document.querySelector("#pricing-table tbody").innerHTML = rows.map(p => `
+      <tr>
+        <td>${p.model_name}</td>
+        <td>$${p.input_price_usd_per_million}</td>
+        <td>$${p.output_price_usd_per_million}</td>
+        <td>${fmtDateOnly(p.effective_from)}</td>
+      </tr>
+    `).join("") || `<tr><td colspan="4" style="color:var(--text-muted)">No pricing entered yet.</td></tr>`;
+    return rows;
+  }
+
+  async function loadRateTable() {
+    const res = await VanmoerAuth.authFetch("/api/admin/billing/exchange-rate");
+    const rows = await res.json();
+    document.querySelector("#rate-table tbody").innerHTML = rows.map(r => `
+      <tr>
+        <td>₹${r.usd_to_inr}</td>
+        <td>${fmtDateOnly(r.effective_from)}</td>
+      </tr>
+    `).join("") || `<tr><td colspan="2" style="color:var(--text-muted)">No exchange rate entered yet.</td></tr>`;
+    return rows;
+  }
+
+  async function loadPricingAndRateTables() {
+    await Promise.all([loadPricingTable(), loadRateTable()]);
+    populateBillingFilters(); // modelsCache just changed
+  }
+
+  document.getElementById("billing-rates-toggle").addEventListener("click", async () => {
+    const section = document.getElementById("billing-rates-section");
+    const toggle = document.getElementById("billing-rates-toggle");
+    const opening = section.style.display === "none";
+    section.style.display = opening ? "block" : "none";
+    toggle.classList.toggle("active", opening);
+    if (opening) await loadPricingAndRateTables();
+  });
+
+  document.getElementById("add-pricing-btn").addEventListener("click", async () => {
+    const msg = document.getElementById("pricing-msg");
+    const modelName = document.getElementById("pricing-model-name").value.trim();
+    const inputPrice = document.getElementById("pricing-input-price").value;
+    const outputPrice = document.getElementById("pricing-output-price").value;
+    const effectiveFrom = document.getElementById("pricing-effective-from").value;
+    if (!modelName || inputPrice === "" || outputPrice === "") {
+      showMsg(msg, "Model, input price, and output price are all required.", false);
+      return;
+    }
+    try {
+      const res = await VanmoerAuth.authFetch("/api/admin/billing/pricing", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model_name: modelName,
+          input_price_usd_per_million: parseFloat(inputPrice),
+          output_price_usd_per_million: parseFloat(outputPrice),
+          effective_from: effectiveFrom ? new Date(effectiveFrom).toISOString() : null,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to add pricing");
+      showMsg(msg, "Pricing added.", true);
+      document.getElementById("pricing-model-name").value = "";
+      document.getElementById("pricing-input-price").value = "";
+      document.getElementById("pricing-output-price").value = "";
+      document.getElementById("pricing-effective-from").value = "";
+      await loadPricingAndRateTables();
+      refreshBillingViews();
+    } catch (e) {
+      showMsg(msg, e.message, false);
+    }
+  });
+
+  document.getElementById("add-rate-btn").addEventListener("click", async () => {
+    const msg = document.getElementById("rate-msg");
+    const rateValue = document.getElementById("rate-value").value;
+    const effectiveFrom = document.getElementById("rate-effective-from").value;
+    if (rateValue === "") {
+      showMsg(msg, "Rate is required.", false);
+      return;
+    }
+    try {
+      const res = await VanmoerAuth.authFetch("/api/admin/billing/exchange-rate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          usd_to_inr: parseFloat(rateValue),
+          effective_from: effectiveFrom ? new Date(effectiveFrom).toISOString() : null,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to add exchange rate");
+      showMsg(msg, "Exchange rate added.", true);
+      document.getElementById("rate-value").value = "";
+      document.getElementById("rate-effective-from").value = "";
+      await loadPricingAndRateTables();
+      refreshBillingViews();
+    } catch (e) {
+      showMsg(msg, e.message, false);
+    }
+  });
+
+  async function loadBillingTab() {
+    populateBillingFilters();
+    await loadPricingTable(); // populates modelsCache for the Overview "All models" filter — table itself stays hidden until Rates is opened
+    await refreshBillingViews();
+  }
+
   (async function init() {
     initPeriodFilter();
     wireDropdownPeriodFilter("client-bar-period", "client-bar-custom-range", "client-bar-since", "client-bar-until", "client-bar-apply-btn", clientBarState, loadClientBarChart);
     wireDropdownPeriodFilter("client-pie-period", "client-pie-custom-range", "client-pie-since", "client-pie-until", "client-pie-apply-btn", clientPieState, loadClientPieChart);
+
+    // Billing tab — one independent period picker per chart (see the
+    // "Billing & Usage tab" section above for why).
+    wireDropdownPeriodFilter("billing-ov-period", "billing-ov-custom-range", "billing-ov-since", "billing-ov-until", "billing-ov-apply-btn", billingOverviewState, loadBillingSummary);
+    wireDropdownPeriodFilter("billing-day-period", "billing-day-custom-range", "billing-day-since", "billing-day-until", "billing-day-apply-btn", billingDayState, loadBillingDayChart);
+    wireDropdownPeriodFilter("billing-hd-period", "billing-hd-custom-range", "billing-hd-since", "billing-hd-until", "billing-hd-apply-btn", billingHdState, loadHighDemandDays);
+    wireDropdownPeriodFilter("billing-cbc-period", "billing-cbc-custom-range", "billing-cbc-since", "billing-cbc-until", "billing-cbc-apply-btn", billingClientBarState, loadBillingClientBar);
+    wireDropdownPeriodFilter("billing-cbm-period", "billing-cbm-custom-range", "billing-cbm-since", "billing-cbm-until", "billing-cbm-apply-btn", billingModelPieState, loadBillingModelPie);
+    wireDropdownPeriodFilter("billing-cbt-period", "billing-cbt-custom-range", "billing-cbt-since", "billing-cbt-until", "billing-cbt-apply-btn", billingTaskBarState, loadBillingTaskBar);
+    wireDropdownPeriodFilter("billing-cbu-period", "billing-cbu-custom-range", "billing-cbu-since", "billing-cbu-until", "billing-cbu-apply-btn", billingUserPieState, loadBillingUserPie);
 
     // The full-page loader (visible from first paint, see #page-loader in
     // the CSS) covers this stretch instead of a blank dashboard, and the

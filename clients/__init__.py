@@ -14,6 +14,7 @@ from clients.vinmar.inbound.task import bp as vinmar_inbound_bp
 from clients.emvia.inbound.task import bp as emvia_inbound_bp
 from clients.continental.inbound.task import bp as continental_inbound_bp
 from clients.swiss.inbound.task import bp as swiss_inbound_bp
+from clients.hanwha.inbound.task import bp as hanwha_inbound_bp
 
 TASK_REGISTRY = [
     sabic_outbound_bp,
@@ -24,4 +25,5 @@ TASK_REGISTRY = [
     emvia_inbound_bp,
     continental_inbound_bp,
     swiss_inbound_bp,
+    hanwha_inbound_bp,
 ]

@@ -115,16 +115,16 @@ class SwissInboundTask(BaseTask):
         if Path(pkl_path).suffix.lower() in EXCEL_EXTENSIONS:
             pkl_data = extract_packing_list_excel(pkl_path)
         else:
-            pkl_data = extract_packing_list_pdf(pkl_path)
-
-        # ── Step 2: Cross-document validation ───────────────────────
-        validation = validate(mbl_data, pkl_data)
+            mbl_container_ids = [c["id"] for c in mbl_data.get("containers", []) if c.get("id")]
+            pkl_data = extract_packing_list_pdf(pkl_path, mbl_container_ids=mbl_container_ids)
 
         # ── Step 3: Build outcome rows ──────────────────────────────
         # reference/eta_date/ship_name are UI-entered (not extracted from
         # the documents) and apply uniformly to every row in this shipment.
         # Shipping Line is derived inside build_rows() from the MBL's own
         # already-identified carrier — not a UI input.
+
+        validation = validate(mbl_data, pkl_data)
         rows = build_rows(mbl_data, pkl_data, reference, eta_date, ship_name)
 
         # ── Summary stats ───────────────────────────────────────────

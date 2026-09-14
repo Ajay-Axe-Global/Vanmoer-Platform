@@ -29,11 +29,15 @@ schema below (not needed by Swiss/Continental, since their Packing Lists
 already state bags directly). Carrier prompts inherited from Swiss's already
 -proven library state a per-container bag count in their own row text for
 most carriers (CMA CGM, YANG MING, ONE, OOCL, MAERSK, LX PANTOS) — those
-just needed a "bags" field added to their existing schema. A few carriers'
-proven layouts (HMM, GRIMALDI, HAPAG-LLOYD, MSC, BORCHARD LINES) don't state
-a bag count anywhere on the document at all, per prior tuning on other
-clients — those are left to report 0 rather than invent a figure, flagged
-in validate().
+just needed a "bags" field added to their existing schema. HMM instead
+states only ONE shipment-wide bag total (e.g. "9,600 BAGS" next to "10 X
+40'H DC CONTAINERS") rather than a count per container — captured as a
+separate "total_bags" field and split evenly across that shipment's
+containers in extract_mbl() (largest-remainder, so it always sums back to
+the printed total). A few carriers' proven layouts (GRIMALDI, HAPAG-LLOYD,
+MSC, BORCHARD LINES) don't state a bag count anywhere on the document at
+all, per prior tuning on other clients — those are left to report 0 rather
+than invent a figure, flagged in validate().
 
 A container CAN legitimately appear on more than one Container Report line
 (e.g. HASU4649463 split across two Batch Nos in the same shipment) — kept as
@@ -53,6 +57,7 @@ normalization, and MT/KG conversion are shared with every other client via
 helpers/doc_common.py.
 """
 
+import math
 import re
 
 from helpers.doc_common import (
@@ -129,8 +134,16 @@ BAGS_RULE = """
 ⚠️ BAGS — if this document states a bag count for a container (most
 carriers print it directly in the container's own row/block, e.g. "960
 BAGS" — see that carrier's row pattern above), capture it as "bags"
-(integer). If no bag count is printed anywhere for that container on this
-document, leave "bags": 0 — never guess or compute one."""
+(integer) and leave "total_bags" at 0. If no PER-CONTAINER bag count is
+printed anywhere, but the document instead states a single SHIPMENT-WIDE bag
+count next to a container-count line (e.g. "9,600 BAGS" together with "10 X
+40'H DC CONTAINERS" elsewhere in the same shipment-wide description block —
+NOT printed inside any individual container's own row), capture that total
+as "total_bags" (integer) and leave every container's own "bags": 0 — do
+NOT divide it yourself, that split is done in code afterwards. If NEITHER a
+per-container nor a shipment-wide bag count is printed anywhere on this
+document, leave both "bags": 0 and "total_bags": 0 — never guess or compute
+either figure yourself."""
 
 RETURN_SCHEMA = """
 @@OCR_DISAMBIGUATION_RULE@@
@@ -139,7 +152,7 @@ RETURN_SCHEMA = """
 Return:
 {
   "mbl_no": "string", "port_of_loading": "string",
-  "container_type": "string",
+  "container_type": "string", "total_bags": 0,
   "containers": [
     {"id": "string", "seal": "string", "type": "string", "bags": 0}
   ]
@@ -260,9 +273,15 @@ usually stated somewhere as "ELEVEN (11) CONTAINERS ONLY" or similar; make
 sure the number of rows you return matches that stated total.
 
 ⚠️ BAGS — this document's container rows do NOT normally state a bag count
-per container. If you find one printed anywhere for a container (e.g. in a
-goods-description block tied to that specific container), capture it;
-otherwise leave "bags": 0 for every container.
+per container. Instead, the shipment-wide goods-description block (the same
+block that has the "11 X 40'H DC CONTAINERS" line used for container_type
+above) usually also has a single line like "9,600 BAGS" — that is the TOTAL
+bag count for the WHOLE shipment (all containers combined), not any one
+container's own count. If you find that shipment-wide total, capture it as
+"total_bags" and leave every container's own "bags": 0. If you instead find
+a bag count tied to one specific container individually, capture it as that
+container's own "bags" and leave "total_bags": 0. If neither is printed
+anywhere, leave both at 0.
 @@RETURN_SCHEMA@@"""
 
 
@@ -656,6 +675,26 @@ def extract_mbl(pdf_path: str) -> dict:
         c["id"] = cid
         c["seal"] = seal
 
+    # Some carriers (e.g. HMM) state only ONE shipment-wide bag total (e.g.
+    # "9,600 BAGS" alongside "10 X 40'H DC CONTAINERS") instead of a count
+    # per container — split it evenly across whichever containers came back
+    # with no bag count of their own, largest-remainder style so the split
+    # always sums back to the printed total exactly (e.g. 9600 / 10 -> 960
+    # each).
+    total_bags = num(data.get("total_bags"), 0)
+    containers = data.get("containers", [])
+    zero_bag_containers = [c for c in containers if not num(c.get("bags"), 0)]
+    if total_bags and zero_bag_containers:
+        known_bags = sum(num(c.get("bags"), 0) for c in containers)
+        remaining = total_bags - known_bags
+        if remaining > 0:
+            n = len(zero_bag_containers)
+            base, extra = divmod(remaining, n)
+            for i, c in enumerate(zero_bag_containers):
+                c["bags"] = base + (1 if i < extra else 0)
+            print(f"  [MBL] Split shipment-wide total_bags={total_bags} across {n} container(s) with no "
+                  f"stated bags: {base} each" + (f" (+1 for {extra} of them)" if extra else ""))
+
     data["carrier"] = carrier
     dump_json(pdf_path, "mbl.json", data)
     print(f"  [MBL] Carrier identified as {carrier} — "
@@ -766,6 +805,24 @@ def validate(mbl: dict, report: dict) -> list[str]:
 # ROW BUILDER
 # ═══════════════════════════════════════════════════════════════════════════
 
+# The Container Report only ever states ONE "Pallet Q'ty" for a container as
+# a whole, even when that container's cargo splits across two (or more) Lot
+# Nos onto separate output rows (same split-lot case "bags" already handles
+# via proportional weight split above) — it is never itself split per lot.
+# So Pallet Qty per OUTPUT row is CALCULATED instead of copied straight from
+# the document:
+#   1. Bags Per Pallet is derived per container from that container's own
+#      totals (NOT a fixed number — varies by product/bag size): the
+#      document's own container-wide "Pallet Q'ty" divided into the
+#      container's total Bags from the MBL, e.g. 960 bags / 24 pallets = 40
+#      bags per pallet for that container.
+#   2. Pallet Count for a given (row's) lot = CEILING(that lot's own Bags /
+#      that container's Bags Per Pallet from step 1).
+# Falls back to the document's own extracted per-row Pallet Q'ty when a
+# container's Bags-Per-Pallet can't be derived (no Pallet Q'ty on the
+# document, or no MBL bag count for that container).
+HANWHA_FALLBACK_BAGS_PER_PALLET = 40
+
 # Shipping Line display value — NOT a UI field, same convention as Swiss
 # Inbound: derived from the MBL's own already-identified carrier so it can
 # never disagree with the MBL. Any carrier NOT in this map displays "Other".
@@ -837,8 +894,76 @@ def build_rows(mbl: dict, report: dict, reference: str = "", eta_date: str = "",
     for cid, row in matched_rows:
         container_weight_totals[cid] = container_weight_totals.get(cid, 0) + num(row.get("net_weight_kg"), 0)
 
-    rows = []
+    # Document states ONE Pallet Q'ty per container, not per lot — take the
+    # max across that container's row(s) (covers both "stated once, 0 on the
+    # other split row" and "repeated identically on every split row").
+    container_pallet_totals: dict[str, float] = {}
     for cid, row in matched_rows:
+        container_pallet_totals[cid] = max(container_pallet_totals.get(cid, 0), num(row.get("pallet_qty"), 0))
+
+    bags_per_pallet_by_container: dict[str, float] = {}
+    for cid in container_pallet_totals:
+        container_bags = mbl_map[cid].get("bags", 0)
+        container_pallets = container_pallet_totals[cid]
+        if container_bags and container_pallets:
+            bags_per_pallet_by_container[cid] = container_bags / container_pallets
+
+    # ── Bags per row, first (pallet allocation below needs every row's bags
+    # within a container at once, not one row at a time) ───────────────────
+    row_bags: list[int] = []
+    for cid, row in matched_rows:
+        mbl_entry = mbl_map[cid]
+        row_net_weight = num(row.get("net_weight_kg"), 0)
+        mbl_bags = mbl_entry.get("bags", 0)
+        total_wt = container_weight_totals.get(cid, 0)
+        if mbl_bags and total_wt:
+            row_bags.append(round(mbl_bags * (row_net_weight / total_wt)))
+        else:
+            row_bags.append(mbl_bags)
+
+    # ── Pallet Qty per row — largest-remainder allocation ──────────────────
+    # CEILING-ing every lot's own bags/bags_per_pallet independently can
+    # overshoot the container's actual stated Pallet Q'ty total (e.g. a
+    # container documented as 24 pallets split into a 21.2-pallet lot and a
+    # 2.8-pallet lot must come out 21 + 3 = 24, NOT ceil(21.2) + ceil(2.8) =
+    # 22 + 3 = 25). So within each container: floor every lot's fractional
+    # pallet count, then hand the container's leftover pallets (stated total
+    # minus the sum of floors) one each to the lot(s) with the largest
+    # fractional remainder — standard largest-remainder rounding, guarantees
+    # the rows always sum to the container's own documented Pallet Q'ty.
+    row_pallets: list[int] = [0] * len(matched_rows)
+    rows_by_container: dict[str, list[int]] = {}
+    for idx, (cid, _row) in enumerate(matched_rows):
+        rows_by_container.setdefault(cid, []).append(idx)
+
+    for cid, idxs in rows_by_container.items():
+        bags_per_pallet = bags_per_pallet_by_container.get(cid)
+        total_pallets = container_pallet_totals.get(cid, 0)
+
+        if not bags_per_pallet or not total_pallets:
+            # No document Pallet Q'ty / MBL bags to derive a ratio from —
+            # fall back to independent ceiling per row (or the document's
+            # own raw per-row value if that row has no bags at all).
+            for idx in idxs:
+                bags = row_bags[idx]
+                if bags:
+                    row_pallets[idx] = math.ceil(bags / (bags_per_pallet or HANWHA_FALLBACK_BAGS_PER_PALLET))
+                else:
+                    row_pallets[idx] = num(matched_rows[idx][1].get("pallet_qty"), 0)
+            continue
+
+        fractions = {idx: row_bags[idx] / bags_per_pallet for idx in idxs}
+        floors = {idx: math.floor(fractions[idx]) for idx in idxs}
+        remainder = int(round(total_pallets - sum(floors.values())))
+        remainder = max(0, min(remainder, len(idxs)))
+
+        for idx in idxs:
+            row_pallets[idx] = floors[idx]
+        for idx in sorted(idxs, key=lambda i: fractions[i] - floors[i], reverse=True)[:remainder]:
+            row_pallets[idx] += 1
+
+    rows = []
+    for i, (cid, row) in enumerate(matched_rows):
         mbl_entry = mbl_map[cid]
         seal_no = s(row.get("seal_no")).strip() or mbl_entry.get("seal", "")
 
@@ -846,12 +971,8 @@ def build_rows(mbl: dict, report: dict, reference: str = "", eta_date: str = "",
         container_type = normalize_container_type(raw_type) if raw_type else shipment_container_type
 
         row_net_weight = num(row.get("net_weight_kg"), 0)
-        mbl_bags = mbl_entry.get("bags", 0)
-        total_wt = container_weight_totals.get(cid, 0)
-        if mbl_bags and total_wt:
-            bags = round(mbl_bags * (row_net_weight / total_wt))
-        else:
-            bags = mbl_bags
+        bags = row_bags[i]
+        pallet_qty = row_pallets[i]
 
         # Container/Ref is "reference/container" here — reversed from Swiss
         # Inbound's "container/reference" — per client convention, and there
@@ -871,7 +992,7 @@ def build_rows(mbl: dict, report: dict, reference: str = "", eta_date: str = "",
             "bags":           bags,
             "net_weight":     row_net_weight,
             "gross_weight":   num(row.get("gross_weight_kg"), 0),
-            "pallet_qty":     num(row.get("pallet_qty"), 0),
+            "pallet_qty":     pallet_qty,
             "ship_name":      ship_name,
             "eta_date":       eta_date,
         })

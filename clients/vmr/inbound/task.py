@@ -5,11 +5,11 @@ ONE Client ("VMR Clients" / slug "vmr") + ONE task ("inbound"), covering
 THREE underlying customers picked from a UI dropdown (see CUSTOMERS below)
 rather than three separate clients — confirmed with the user: Dashbach and
 Hakotrans share identical extraction/output logic, only Karl Gross differs
-(no Packing List, fewer output columns). The dropdown value drives:
+(no Packing List, Product/Qty/Net/Gross left empty). The dropdown value drives:
 
   - which documents are required (packing_list only for Dashbach/Hakotrans)
-  - which output columns are written (COLUMN_CONFIG_KARL_GROSS vs
-    COLUMN_CONFIG_FULL)
+  - whether Product/Qty/Net/Gross are filled (every customer gets the same
+    columns, but they stay empty for Karl Gross)
 
 See clients/vmr/inbound/extractor.py for the full extraction-logic writeup
 (carrier-specific MBL prompts, Packing List's per-container TOTAL-row-only
@@ -57,14 +57,15 @@ CUSTOMERS = {
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
-# COLUMN CONFIG — two variants, picked per request by CUSTOMERS[..]["needs_packing_list"]
+# COLUMN CONFIG — one column set for every customer
 # ═══════════════════════════════════════════════════════════════════════════
 
 COLUMN_CONFIG_BASE = [
     {"header": "Reference",     "field_key": "reference",     "width": 22},
     {"header": "Container No",  "field_key": "container_no",  "width": 16},
     {"header": "Container/Ref", "field_key": "container_ref", "width": 30},
-    {"header": "Public ID",     "field_key": "public_id",     "width": 20},
+    {"header": "Public ID",      "field_key": "public_id",      "width": 20},
+    {"header": "Container Type", "field_key": "container_type", "width": 14},
     {"header": "Seal No",       "field_key": "seal_no",       "width": 14},
     {"header": "Shipping Line", "field_key": "shipping_line", "width": 16},
     {"header": "Ship Name",     "field_key": "ship_name",     "width": 20},
@@ -72,9 +73,9 @@ COLUMN_CONFIG_BASE = [
     {"header": "ETD/Date",      "field_key": "etd_date",      "width": 20},
 ]
 
-COLUMN_CONFIG_KARL_GROSS = COLUMN_CONFIG_BASE
-
-COLUMN_CONFIG_FULL = COLUMN_CONFIG_BASE + [
+# Every customer gets the same columns; for Karl Gross the last four are
+# always empty (see extractor.build_rows()).
+COLUMN_CONFIG = COLUMN_CONFIG_BASE + [
     {"header": "Product",              "field_key": "product",       "width": 22},
     {"header": "Product Qty",          "field_key": "product_qty",   "width": 12, "num_format": "#,##0"},
     {"header": "Net Weight (KG)",      "field_key": "net_weight",    "width": 16, "num_format": "#,##0"},
@@ -104,8 +105,8 @@ class VmrInboundTask(BaseTask):
     label = "VMR Clients Inbound"
 
     # Packing List is NEVER hard-required — for Karl Gross it's simply
-    # unused (no product/qty/net/gross columns exist for that customer at
-    # all), and for Dashbach/Hakotrans it's an OPTIONAL upload: Product
+    # unused (its product/qty/net/gross columns are always left empty),
+    # and for Dashbach/Hakotrans it's an OPTIONAL upload: Product
     # still comes from the MBL either way, but Product Qty/Net/Gross are
     # left blank on every row when it's skipped (see extractor.build_rows()).
     required_documents = [
@@ -113,7 +114,7 @@ class VmrInboundTask(BaseTask):
         {"key": "packing_list", "label": "Packing List (optional for Dashbach/Hakotrans)", "accept": ".pdf", "multiple": False},
     ]
 
-    column_config = COLUMN_CONFIG_FULL
+    column_config = COLUMN_CONFIG
     writes_own_output = False
 
     def process(self, files: dict, output_path: str | None = None, customer: str = "",
@@ -236,8 +237,7 @@ def process():
         summary = result["summary"]
 
         # ── Write Excel ─────────────────────────────────────────────
-        column_config = COLUMN_CONFIG_FULL if needs_packing_list else COLUMN_CONFIG_KARL_GROSS
-        write_excel(rows, column_config, output_path)
+        write_excel(rows, COLUMN_CONFIG, output_path)
 
         # ── Log the job ─────────────────────────────────────────────
         reference_val, reference_count = build_reference([summary.get("reference") or ""])

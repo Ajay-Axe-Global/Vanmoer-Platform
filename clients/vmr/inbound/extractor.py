@@ -6,8 +6,9 @@ UI dropdown (see task.py's CUSTOMERS): Karl Gross, Dashbach, Hakotrans. The
 dropdown changes which documents are required and which columns the output
 Excel gets — not three separate clients/tasks, one form that branches:
 
-  - Karl Gross:            MBL only. No Packing List, no Product/Qty/Net/
-                            Gross columns — Public ID/Seal/Shipping Line/etc.
+  - Karl Gross:            MBL only. No Packing List. It still gets the
+                            Product/Qty/Net/Gross columns, but they are always
+                            left empty — Public ID/Seal/Shipping Line/etc.
                             all come from the MBL + UI-picked fields.
   - Dashbach / Hakotrans:  MBL + Packing List. Same base columns as Karl
                             Gross, PLUS Product, Product Qty, Net Weight,
@@ -499,12 +500,18 @@ def validate(mbl: dict, pkl: dict | None, needs_packing_list: bool) -> list[str]
 # output row (never a per-row value).
 # ═══════════════════════════════════════════════════════════════════════════
 
-def compute_public_id(mbl_containers: list[dict]) -> str:
+def container_type_of(container: dict, shipment_type: str = "") -> str:
+    # Some carrier prompts (HMM, Grimaldi, LX Pantos) state the type once for
+    # the whole shipment and leave each container's own "type" blank.
+    raw_type = s(container.get("type")).strip() or s(shipment_type).strip()
+    return normalize_container_type(raw_type) if raw_type else "??"
+
+
+def compute_public_id(mbl_containers: list[dict], shipment_type: str = "") -> str:
     counts: dict[str, int] = {}
     order: list[str] = []
     for c in mbl_containers:
-        raw_type = s(c.get("type")).strip()
-        norm_type = normalize_container_type(raw_type) if raw_type else "??"
+        norm_type = container_type_of(c, shipment_type)
         if norm_type not in counts:
             counts[norm_type] = 0
             order.append(norm_type)
@@ -521,7 +528,8 @@ def build_rows(mbl: dict, pkl: dict | None, needs_packing_list: bool, reference:
     reference = s(reference).strip()
     ship_name = s(ship_name).strip()
     shipping_line = carrier_display(mbl.get("carrier", ""))
-    public_id = compute_public_id(mbl.get("containers", []))
+    shipment_type = s(mbl.get("container_type")).strip()
+    public_id = compute_public_id(mbl.get("containers", []), shipment_type)
 
     pkl_map = {}
     if needs_packing_list and pkl:
@@ -541,7 +549,8 @@ def build_rows(mbl: dict, pkl: dict | None, needs_packing_list: bool, reference:
             "reference":     reference,
             "container_no":  cid,
             "container_ref": f"{cid}/{reference}",
-            "public_id":     public_id,
+            "public_id":      public_id,
+            "container_type": container_type_of(c, shipment_type),
             "seal_no":       seal,
             "shipping_line": shipping_line,
             "ship_name":     ship_name,
@@ -549,7 +558,16 @@ def build_rows(mbl: dict, pkl: dict | None, needs_packing_list: bool, reference:
             "etd_date":      etd_date,
         }
 
-        if needs_packing_list:
+        if not needs_packing_list:
+            # Karl Gross gets the same columns as the other customers, but
+            # these four are always left empty for it.
+            row.update({
+                "product":       "",
+                "product_qty":   "",
+                "net_weight":    "",
+                "gross_weight":  "",
+            })
+        else:
             if pkl is None:
                 # Packing List is OPTIONAL for Dashbach/Hakotrans — when not
                 # uploaded, Product still comes from the MBL (always

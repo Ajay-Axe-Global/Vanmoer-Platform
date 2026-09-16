@@ -95,24 +95,24 @@ class SabicInboundTask(BaseTask):
     def process(self, files: dict, output_path: str | None = None, eta_date: str = "") -> dict:
         # ── Step 1: LLM extraction ──────────────────────────────────
         mbl_data = extract_mbl(files["mbl"])
-        pkl_data = extract_packing_list(files["packing_list"])
-        pkl_data = repair_container_ids_via_mbl(mbl_data, pkl_data)
-        pkl_data = cross_check_containers(mbl_data, pkl_data)
+        pkl_data = extract_packing_list(files["packing_list"], mbl=mbl_data)  # ← MBL passed in
+        pkl_data = repair_container_ids_via_mbl(mbl_data, pkl_data)           # keep as safety net
+        pkl_data = cross_check_containers(mbl_data, pkl_data)                 # keep as safety net
         inv_data = extract_invoice(files["invoice"])
-
+    
         # ── Step 2: Cross-document validation ───────────────────────
         validation = validate(mbl_data, pkl_data, inv_data)
-
+    
         # ── Step 3: Build outcome rows ──────────────────────────────
         # eta_date is UI-selected (not extracted from the documents) and
         # applies uniformly to every row in this shipment.
         rows = build_rows(mbl_data, pkl_data, inv_data, eta_date)
-
+    
         # ── Summary stats ───────────────────────────────────────────
         containers = set(r["container_no"] for r in rows)
         total_bags = sum(r["pkg_qty"] for r in rows)
         total_net = sum(r["net_weight"] for r in rows)
-
+    
         summary = {
             "eta_date":         eta_date,
             "mbl_no":           mbl_data.get("mbl_no", ""),
@@ -124,8 +124,9 @@ class SabicInboundTask(BaseTask):
             "total_net_weight": round(total_net, 4),
             "validation":       validation,
         }
-
+    
         return {"rows": rows, "summary": summary}
+    
 
 
 # ═══════════════════════════════════════════════════════════════════════════

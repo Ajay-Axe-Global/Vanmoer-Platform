@@ -380,10 +380,71 @@ TABLE STRUCTURE
 ══════════════════════════════════════════
 Columns: Container ID / Seal No. | Material | PKG CODE | Batch | Unit | Bags | Gross Weight | Verified Gross Mass | Net Weight
 
-The first column has TWO values stacked:
-  Line 1 → Container ID (4 uppercase letters + 7 digits = 11 chars, e.g. BEAU5848007)
-  Line 2 → Seal No. (6-7 digits, e.g. 1072481)
+The first column has TWO values stacked, and their EXACT physical placement
+is the single most important thing to get right in this whole document:
+  Line N   → Container ID (4 uppercase letters + 7 digits = 11 chars, e.g.
+             BEAU5848007) — printed on the SAME physical line as that
+             container's OWN FIRST data row (same line as that row's Batch /
+             Unit / Bags / weights).
+  Line N+1 → Seal No. (6-7 digits, e.g. 1072481) — alone on the next line
+             down, with no data of its own.
 
+⚠️⚠️ THE ONE RULE THAT MATTERS — classify each data line by READING ITS
+LEFTMOST CELL, never by inferring from spacing or rhythm:
+  - Data line WITH text in the leftmost cell → that text IS this row's
+    container_id, and a new container starts HERE, on this very line.
+  - Data line with an EMPTY leftmost cell   → continuation row of the most
+    recent container (container_id = "").
+That is the whole decision. It is a READING task, one line at a time — not
+a judgment call about where containers "should" begin.
+
+⚠️⚠️ Do NOT use blank/spacer lines, vertical gaps, or the visual "rhythm" of
+the table to decide where a container starts. Those cues are NOT reliable
+in this document and they are the #1 cause of wrong answers:
+  - A container with TWO lots occupies 3 lines (ID+data, seal, continuation)
+    and is usually followed by a blank spacer line.
+  - A container with ONE lot occupies only 2 lines (ID+data, seal) and has
+    NO blank line after it — the very next line is already the NEXT
+    container's own ID+data line.
+So TWO container IDs printed only one line apart, with no gap between them,
+is NORMAL and EXPECTED. It does not mean you misread anything. The second
+ID is a real, separate container — it is NEVER a seal, NEVER a continuation
+row, and NEVER something to fold into the container above it.
+
+══════════════════════════════════════════
+STEP 1 (MANDATORY, DO THIS FIRST) — INVENTORY THE CONTAINER ID COLUMN
+══════════════════════════════════════════
+Before transcribing ANY data rows, scan ONLY the leftmost column, top to
+bottom, across every page, and list every Container ID printed there, in
+printed order. Do it as its own separate pass, reading nothing else.
+
+Why this pass exists: the ID column advances at a DIFFERENT pace than the
+data columns (a container takes 2 or 3 lines depending on its lot count,
+while every data row is exactly 1 line). Reading both at once makes it easy
+to let the data rows' pace drag your eye off the ID column and bind an ID to
+the wrong row — or skip one entirely. Reading the ID column alone first
+removes that failure completely.
+
+Return this list as "container_ids_seen" (see OUTPUT FORMAT). Then, and only
+then, transcribe the data rows (STEP 2 below).
+
+⚠️ COUNT CHECK — these three numbers are ALWAYS equal to each other:
+  (a) how many IDs are in your "container_ids_seen" list
+  (b) how many values are printed in the "Verified Gross Mass" column
+  (c) how many of your output rows have has_vgm = true
+Every container prints exactly ONE Verified Gross Mass value, on its own
+ID line. So if (c) comes out LESS than (a), you have folded some
+container's row into the container above it and left that container out of
+your rows entirely — go back, find which ID from your Step 1 list never
+became a row of its own, and give it its row back.
+
+⚠️ Every single ID in "container_ids_seen" MUST also appear as the
+"container_id" of exactly one output row. An ID that you listed in Step 1
+but never emitted as a row is a guaranteed error, not an acceptable outcome.
+
+══════════════════════════════════════════
+STEP 2 — TRANSCRIBE THE ROWS
+══════════════════════════════════════════
 Return a FLAT array of rows, ONE entry per table row, in EXACT top-to-bottom
 physical order as printed — across all pages, ignoring page breaks entirely.
 Do NOT group rows into containers. Do NOT decide which container an orphan
@@ -395,6 +456,18 @@ For each row:
 - "seal": the Seal No. printed on THIS row. Empty string "" if not printed here.
 - "has_vgm": true if this row has a value in the Verified Gross Mass column,
   false if that column is blank on this row.
+  ⚠️ INVARIANT — "has_vgm" and "container_id" ALWAYS agree: a row has a
+  Verified Gross Mass value IF AND ONLY IF it also has its own Container ID
+  printed on it (VGM prints exactly once per container, on that container's
+  OWN opening row, in the SAME row as its ID — never on a continuation row).
+  So has_vgm=true with container_id="" is IMPOSSIBLE, and has_vgm=false with
+  a non-empty container_id is also IMPOSSIBLE. If you are about to emit a
+  row where these two disagree, you have misread that row — almost always
+  because a container ID sitting directly against the row above it (zero
+  blank-line gap, see WORKED EXAMPLE 3/5) got skipped and wrongly treated
+  as if it belonged to the row above. Go back and re-read that row's
+  leftmost cell before finalizing — do not output a has_vgm/container_id
+  mismatch.
 - "product": Material name (e.g. "LLDPE 318BJ 149"). Preserve special
   characters EXACTLY as printed — a trademark symbol (™) must stay as the
   actual ™ character, NEVER spelled out as "TM"/"(TM)". Same for ® and ©.
@@ -654,6 +727,80 @@ example warns against — merged or dropped a continuation row instead of
 emitting it separately. Re-read the table and fix it before responding.
 
 ══════════════════════════════════════════
+WORKED EXAMPLE 5 — TWO CONTAINER IDs ONE LINE APART (the exact shape that
+has caused real, repeated extraction failures — if you learn only one
+example, learn this one)
+══════════════════════════════════════════
+VISUAL SIGNATURE TO WATCH FOR: an ID line, then a seal line, then ANOTHER
+ID line immediately — two container IDs separated by just the first one's
+seal, with no blank line anywhere between them. This is what a single-lot
+container followed by the next container looks like. It is common, it is
+correct, and it is NOT a misprint:
+
+    HAMU5140859  ...  0061850305  17 PAL  1020  ...  29.7550 MT  ...  25.5000 MT
+      1039376
+    FANU3717244  ...  0061785467   2 PAL   120  ...  29.7550 MT  ...   3.0000 MT
+      1029646
+                 ...  0061837188  15 PAL   900  ...                  22.5000 MT
+
+STEP 1 for this fragment — scan the leftmost column ALONE, ignoring all
+data: you see "HAMU5140859", then "1039376" (7 digits = a seal, not an ID),
+then "FANU3717244", then "1029646" (seal), then nothing. So
+container_ids_seen gets BOTH: ["HAMU5140859", "FANU3717244"]. Two IDs, so
+there must be TWO VGM values below (29.7550 and 29.7550 — there are), so
+exactly TWO of your rows must have has_vgm = true.
+
+STEP 2 — three data lines → exactly three row entries:
+  Line 1: leftmost cell = "HAMU5140859" → new container, 1020 bags, its
+          only row.
+  Line 2: leftmost cell = "FANU3717244" → NEW CONTAINER, 120 bags. Read
+          the cell: there IS text in it, so this is an opening row, full
+          stop. Do NOT let the fact that HAMU5140859 sits directly above
+          with no gap make you treat this as HAMU5140859's continuation.
+  Line 3: leftmost cell EMPTY → continuation of FANU3717244 (the container
+          opened on Line 2 — NOT Line 1), 900 bags, container_id = "".
+
+Expected JSON for these three physical rows:
+[
+  {"container_id": "HAMU5140859", "seal": "1039376", "has_vgm": true,  "lot": "0061850305", "pallet_qty": 17, "bags": 1020, ...},
+  {"container_id": "FANU3717244", "seal": "1029646", "has_vgm": true,  "lot": "0061785467", "pallet_qty": 2,  "bags": 120,  ...},
+  {"container_id": "",            "seal": "",        "has_vgm": false, "lot": "0061837188", "pallet_qty": 15, "bags": 900,  ...}
+]
+
+❌ THE ACTUAL OBSERVED FAILURE — do not reproduce this:
+[
+  {"container_id": "HAMU5140859", "seal": "1039376", "has_vgm": true,  "bags": 1020, ...},
+  {"container_id": "",            "seal": "",        "has_vgm": false, "bags": 120,  ...},   ← WRONG
+  {"container_id": "",            "seal": "",        "has_vgm": false, "bags": 900,  ...}    ← WRONG
+]
+Here FANU3717244's ID was read as blank, so its 120 + 900 = 1020 bags all
+got absorbed into HAMU5140859 (giving it 2040) and FANU3717244 vanished
+from the output entirely, even though its ID is plainly printed. Symptom to
+self-check for: one container ending up with roughly DOUBLE the bags of
+every other container in the same document, while an ID from your Step 1
+list has no row of its own.
+
+⚠️ THE SAME FAILURE ALSO HAPPENS ACROSS A PAGE BREAK. When a container's
+continuation row is the FIRST data line on a new page, that line has an
+empty leftmost cell and belongs to the container from the PREVIOUS page —
+it does NOT belong to the next ID printed below it on the new page:
+
+    ── page 1 ends ──
+    HAMU3592000  ...  0061785467   4 PAL   240  ...  29.7550 MT  ...   6.0000 MT
+      1029720
+    ── page 2 begins ──
+                 ...  0061850305  13 PAL   780  ...                  19.5000 MT
+    TRHU4959944  ...  0061837188  17 PAL  1020  ...  29.7550 MT  ...  25.5000 MT
+      1065753
+
+  Correct: the 780-bag line is HAMU3592000's continuation (240 + 780 =
+  1020), and TRHU4959944 keeps its OWN 1020-bag row.
+  Observed failure: the 780-bag line was labeled TRHU4959944, which then
+  pushed TRHU4959944's real 1020-bag row into a blank-ID row — corrupting
+  BOTH containers at once. Carry the open container across the page break;
+  a new page never resets which container is currently open.
+
+══════════════════════════════════════════
 OUTPUT FORMAT
 ══════════════════════════════════════════
 {
@@ -663,6 +810,7 @@ OUTPUT FORMAT
   "sabic_delivery": "string",
   "total_pallets": 0,
   "total_bags": 0,
+  "container_ids_seen": ["AAAA1111111", "BBBB2222222"],
   "rows": [
     {
       "container_id": "string or empty",
@@ -776,12 +924,83 @@ def _num(value, default=0):
     except (TypeError, ValueError):
         return default
 
-def extract_packing_list(pdf_path: str) -> dict:
+def _missing_container_ids(data: dict) -> list[str]:
+    """Container IDs the model listed in its own STEP 1 inventory of the ID
+    column ("container_ids_seen", see PKG_LIST_PROMPT) that never turned up
+    as the container_id of any row.
+
+    That gap IS the failure mode this document family keeps hitting: an ID
+    is plainly printed, the model sees it (it lists it here), but when it
+    then walks the data rows it binds that container's row to the container
+    printed above instead — so the bags still total correctly and the
+    bag-sum gate notices nothing, while one container silently disappears.
+
+    Returns [] when the model didn't return the inventory at all (older
+    responses, and layouts where it isn't meaningful) so this can never
+    manufacture a false failure out of a missing field.
+    """
+    seen = data.get("container_ids_seen")
+    if not isinstance(seen, list):
+        return []
+
+    in_rows = set()
+    for row in data.get("rows", []):
+        raw = (row.get("container_id") or "").strip()
+        if raw:
+            in_rows.add(_fix_container_id(raw)[0])
+
+    missing = []
+    for raw in seen:
+        cid = _fix_container_id(_s(raw).strip())[0]
+        if cid and cid not in in_rows and cid not in missing:
+            missing.append(cid)
+    return missing
+
+ 
+MBL_CONTAINER_HINT_BLOCK = """
+══════════════════════════════════════════
+KNOWN CONTAINER IDS (from the Master Bill of Lading)
+══════════════════════════════════════════
+The following container IDs are confirmed to be in this shipment. Use
+this as your reference — every one of these MUST appear in your output,
+each with its own row(s). If you finish transcribing and any of these
+IDs is missing from your output, you missed a container boundary
+somewhere — go back and re-scan.
+ 
+{container_id_list}
+ 
+Total containers expected: {container_count}
+ 
+⚠️ CRITICAL: Do NOT skip any of these. If a container ID in this list
+does not appear to have its own row with a VGM value, look again — it
+is there, likely at a boundary where one container's single row sits
+directly against the next container's row with no blank line between
+them (see WORKED EXAMPLE 3). Every ID listed here HAS its own row
+with its own container_id and VGM printed on it — if you're about to
+output container_id="" for a row, check this list first: the ID is
+probably printed on that line but was hard to read due to the layout.
+ 
+Also use this list to validate container IDs you extract — if what you
+read doesn't match any ID in this list, you likely misread a character.
+Find the closest match from the list and use that instead.
+"""
+ 
+ 
+# ═══════════════════════════════════════════════════════════════════════════
+# UPDATED extract_packing_list — now accepts mbl dict
+# ═══════════════════════════════════════════════════════════════════════════
+ 
+def extract_packing_list(pdf_path: str, mbl: dict = None) -> dict:
     """
     Gemini returns FLAT, order-preserved rows[] (one row = one table line,
     transcribed as-is, no grouping decisions). Python groups them into
     containers deterministically using has_vgm.
-
+ 
+    If mbl is provided, injects the known container ID list into the
+    prompt so Gemini knows exactly which containers to expect — this
+    prevents missed container boundaries (e.g. FANU3717244-type failures
+    at single-lot junctions with no blank-line gap).
+ 
     Occasionally the model drops or misattributes a physical row — most
     often at a junction where a single-lot container's row sits directly
     against the next container's row with no blank-line gap between them
@@ -796,45 +1015,65 @@ def extract_packing_list(pdf_path: str) -> dict:
     temperature to give the model a different sampling path, keeping
     whichever attempt reconciles first (or the closest miss if none do).
     """
+    # ── Build prompt — base + optional MBL container hint ─────────────
+    prompt = PKG_LIST_PROMPT
+ 
+    if mbl and mbl.get("containers"):
+        container_ids = [c["id"] for c in mbl["containers"] if c.get("id")]
+        if container_ids:
+            hint = MBL_CONTAINER_HINT_BLOCK.format(
+                container_id_list="\n".join(f"  - {cid}" for cid in container_ids),
+                container_count=len(container_ids),
+            )
+            # Insert before the OUTPUT FORMAT section
+            if "══════════════════════════════════════════\nOUTPUT FORMAT" in prompt:
+                prompt = prompt.replace(
+                    "══════════════════════════════════════════\nOUTPUT FORMAT",
+                    hint + "\n══════════════════════════════════════════\nOUTPUT FORMAT",
+                )
+            else:
+                prompt = prompt + "\n" + hint
+            print(f"  [EXTRACT] Injected {len(container_ids)} known container IDs from MBL into prompt")
+ 
     MAX_ATTEMPTS = 3
     best_data, best_diff = None, None
-
+ 
     for attempt in range(MAX_ATTEMPTS):
         temperature = 0.0 if attempt == 0 else 0.4
-        data = call_gemini(PKG_LIST_PROMPT, pdf_path=pdf_path,
+        data = call_gemini(prompt, pdf_path=pdf_path,
                             max_output_tokens=16384, temperature=temperature)
         suffix = "" if attempt == 0 else f"_retry{attempt}"
         _dump_json(pdf_path, f"pkg_list_raw{suffix}.json", data)
-
+ 
         rows = data.get("rows", [])
         row_bag_sum = sum(_num(r.get("bags"), 0) for r in rows)
         doc_total_bags = _num(data.get("total_bags"), 0)
         diff = abs(row_bag_sum - doc_total_bags) if doc_total_bags else 0
-
+ 
         print(f"  [EXTRACT] Attempt {attempt + 1} (temp={temperature}): "
               f"row-sum bags={row_bag_sum} vs document total={doc_total_bags} "
               f"(diff={diff})")
-
+ 
         if best_diff is None or diff < best_diff:
             best_data, best_diff = data, diff
         if diff == 0:
             break
-
+ 
     if best_diff:
         print(f"  [EXTRACT WARNING] Packing list bag count never reconciled "
               f"after {MAX_ATTEMPTS} attempts — off by {best_diff} bags from "
               f"the document's own total. A row is likely missing or "
               f"misattributed; this shipment needs manual verification.")
-
+ 
     data = best_data
     _dump_json(pdf_path, "pkg_list_raw.json", data)
-
+ 
     data["rows"] = _repair_split_container_ids(data.get("rows", []))
     _dump_json(pdf_path, "pkg_list_repaired.json", data)
-
+ 
     flat_lines = []
     current_cid, current_seal = None, None
-
+ 
     for row in data.get("rows", []):
         has_vgm = row.get("has_vgm")
         if isinstance(has_vgm, str):
@@ -867,7 +1106,7 @@ def extract_packing_list(pdf_path: str) -> dict:
             "weight_unit":  (row.get("weight_unit") or "MT").strip().upper(),
             "delivery_number": _s(row.get("delivery_number")).strip(),
         })
-
+ 
     document_delivery_no = _s(data.get("delivery_no", "")).strip()
     if not document_delivery_no:
         # Layout C's table carries "delivery_number" per row instead of a
@@ -879,7 +1118,7 @@ def extract_packing_list(pdf_path: str) -> dict:
             if ln["delivery_number"]:
                 document_delivery_no = ln["delivery_number"]
                 break
-
+ 
     result = {
         "delivery_no":    document_delivery_no,
         "sto":            _fix_sales_order_no(data.get("sto", "")),
@@ -895,12 +1134,12 @@ def extract_packing_list(pdf_path: str) -> dict:
         # Surfaced in validate() so this isn't a console-only warning.
         "bag_reconciliation_diff": best_diff or 0,
     }
-
+ 
     _dump_json(pdf_path, "pkg_list.json", result)
     n_containers = len({ln["container_id"] for ln in flat_lines})
     print(f"  [PKG LIST] Grouped {len(flat_lines)} rows into {n_containers} containers")
     return result
-
+ 
 
 def extract_invoice(pdf_path: str) -> dict:
     data = call_gemini(INVOICE_PROMPT, pdf_path=pdf_path)

@@ -5,11 +5,24 @@ only clients/__init__.py's TASK_REGISTRY (see routes/__init__.py).
 """
 import os
 import socket
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Windows' console defaults sys.stdout/stderr to the system codepage (often
+# cp1252), which has no mapping for many characters client extractors' own
+# debug print()s use freely (→, ✓, etc. — e.g. Sabic Inbound's cross-check
+# fix logging). A print() hitting one of those crashes with
+# UnicodeEncodeError mid-request, which the route's generic exception
+# handler then surfaces to the user as a raw Python error instead of any
+# real processing failure. Reconfiguring both streams to UTF-8 at startup
+# fixes this for every client's prints at once, not just one call site.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from flask import Flask, send_from_directory 

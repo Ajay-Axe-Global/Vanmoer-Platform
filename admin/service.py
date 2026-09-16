@@ -562,7 +562,7 @@ def productivity_by_user(since: datetime.datetime, until: datetime.datetime,
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# BILLING & USAGE (Gemini token cost) — same filter/query conventions as the
+# BILLING & USAGE (Gemini Token Cost) — same filter/query conventions as the
 # jobs_*/dashboard_* functions above, applied to GeminiUsageLog instead of
 # JobHistory. See database/models.GeminiUsageLog and helpers/billing.py for
 # how rows get here (one per Gemini API call, cost snapshotted at write
@@ -593,6 +593,7 @@ def billing_summary(since: datetime.datetime, until: datetime.datetime,
                      user_id: int | None = None, model_name: str | None = None) -> dict:
     """Headline stat-tile numbers for the Billing page's selected filters."""
     session = SessionLocal()
+    
     try:
         row = _billing_base_query(
             session,
@@ -797,6 +798,7 @@ def usage_by_user(since: datetime.datetime, until: datetime.datetime,
             .order_by(func.sum(GeminiUsageLog.total_cost_inr).desc())
             .all()
         )
+
         return [{
             "user_id": uid, "user_name": uname, "username": uusername,
             "cost_inr": round(float(cost or 0), 2), "calls": int(calls or 0),

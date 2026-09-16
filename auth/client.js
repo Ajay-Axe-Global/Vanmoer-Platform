@@ -35,9 +35,17 @@ const VanmoerAuth = {
     // the multi-grant task picker) have a #logout-btn — skip those so this
     // doesn't add a second, redundant logout affordance. Every plain task
     // page (no header of its own) gets the floating menu for free.
+    // The floating user menu is skipped on pages that already render their
+    // own logout button (the dashboard picker, admin panel, and a few older
+    // task pages like Carpenter/Sabic Outbound with a bespoke header) so
+    // there's never a duplicate logout affordance. The task-switcher drawer
+    // is a SEPARATE concern from that — it's gated on its own, by URL
+    // (any /app/... task page, see mountTaskDrawer()), so those same older
+    // task pages still get it even though they keep their own logout button.
     if (!document.getElementById("logout-btn")) {
       this.mountUserMenu(auth);
     }
+    this.mountTaskDrawer(auth);
     return auth;
   },
 
@@ -169,6 +177,110 @@ const VanmoerAuth = {
       if (!wrap.contains(e.target)) dropdown.classList.remove("open");
     });
     document.getElementById("vma-logout-btn").addEventListener("click", () => this.logout());
+  },
+
+  /**
+   * Left-side slide-in drawer listing every client/task this account is
+   * granted, so a user with several tasks can switch between them from
+   * WITHIN a task page instead of having to navigate back to /dashboard
+   * every time. Starts closed. Only mounted when there's actually more
+   * than one grant to switch between — a single-grant account never sees
+   * the picker at /dashboard either (auth/dashboard.js redirects it
+   * straight through), so a switcher with nothing else to switch to would
+   * just be a dead button here. `auth.grants` here is the LOGIN RESPONSE's
+   * grants list (client_name/task_name included), not the JWT payload's
+   * own embedded grants (slugs only) — see routes/auth_routes.py.
+   */
+  mountTaskDrawer(auth) {
+    if (document.getElementById("vma-task-drawer")) return;
+    const currentPath = window.location.pathname;
+    // Only real task pages (/app/<client_slug>/<task_slug>/...) get the
+    // switcher — never /dashboard (it already IS the switcher) or /admin
+    // (its own nav covers this).
+    if (!currentPath.startsWith("/app/")) return;
+    const grants = auth.grants || [];
+    if (grants.length < 2) return;
+
+    const style = document.createElement("style");
+    style.textContent = `
+      #vma-drawer-toggle { position: fixed; top: 16px; left: 16px; z-index: 1000;
+        width: 36px; height: 36px; border-radius: 8px; background: #171a21;
+        border: 1px solid #262a33; color: #8b93a1; display: flex; align-items: center;
+        justify-content: center; cursor: pointer; padding: 0;
+        transition: border-color .15s, color .15s;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+      #vma-drawer-toggle:hover { border-color: #4f7cff; color: #e8eaed; }
+      #vma-drawer-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.5);
+        z-index: 998; opacity: 0; pointer-events: none; transition: opacity .15s; }
+      #vma-drawer-overlay.open { opacity: 1; pointer-events: auto; }
+      #vma-task-drawer { position: fixed; top: 0; left: 0; bottom: 0; width: 280px;
+        max-width: 82vw; background: #12141a; border-right: 1px solid #262a33;
+        z-index: 999; transform: translateX(-100%); transition: transform .2s ease;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        display: flex; flex-direction: column; padding: 64px 0 16px; overflow-y: auto; }
+      #vma-task-drawer.open { transform: translateX(0); }
+      #vma-task-drawer h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .6px;
+        color: #8b93a1; padding: 0 20px 12px; margin: 0; }
+      #vma-task-drawer a { display: block; text-decoration: none; color: inherit;
+        padding: 12px 20px; border-left: 3px solid transparent; }
+      #vma-task-drawer a:hover { background: #171a21; }
+      #vma-task-drawer a.active { border-left-color: #4f7cff; background: #171a21; }
+      #vma-task-drawer .vma-client { font-size: 14px; font-weight: 600; color: #e8eaed; }
+      #vma-task-drawer .vma-task { font-family: 'Consolas', 'DM Mono', monospace;
+        font-size: 11px; color: #8b93a1; margin-top: 2px; }
+    `;
+    document.head.appendChild(style);
+
+    const overlay = document.createElement("div");
+    overlay.id = "vma-drawer-overlay";
+    document.body.appendChild(overlay);
+
+    const toggle = document.createElement("button");
+    toggle.id = "vma-drawer-toggle";
+    toggle.type = "button";
+    toggle.setAttribute("aria-label", "Switch task");
+    toggle.innerHTML = `
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+        stroke-linecap="round" stroke-linejoin="round" width="18" height="18">
+        <line x1="3" y1="6" x2="21" y2="6"></line>
+        <line x1="3" y1="12" x2="21" y2="12"></line>
+        <line x1="3" y1="18" x2="21" y2="18"></line>
+      </svg>`;
+    document.body.appendChild(toggle);
+
+    const drawer = document.createElement("div");
+    drawer.id = "vma-task-drawer";
+    drawer.innerHTML = `
+      <h2>Switch task</h2>
+      ${grants.map((g) => {
+        const href = `/app/${g.client_slug}/${g.task_slug}/`;
+        const isActive = currentPath.startsWith(`/app/${g.client_slug}/${g.task_slug}`);
+        return `<a href="${href}" class="${isActive ? "active" : ""}">
+          <div class="vma-client">${g.client_name}</div>
+          <div class="vma-task">${g.task_name}</div>
+        </a>`;
+      }).join("")}
+    `;
+    document.body.appendChild(drawer);
+
+    const closeDrawer = () => {
+      drawer.classList.remove("open");
+      overlay.classList.remove("open");
+    };
+    const openDrawer = () => {
+      drawer.classList.add("open");
+      overlay.classList.add("open");
+    };
+
+    toggle.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (drawer.classList.contains("open")) closeDrawer();
+      else openDrawer();
+    });
+    overlay.addEventListener("click", closeDrawer);
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") closeDrawer();
+    });
   },
 
   /** fetch() wrapper that attaches the Authorization header and handles 401s. */

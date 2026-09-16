@@ -22,6 +22,7 @@ helpers/doc_common.py rather than re-implemented here.
 """
 
 import io
+import math
 import re
 from collections import Counter
 
@@ -872,7 +873,12 @@ unlike Layout A.
   digits), "bags" (the BAGS column value for this row, as printed — this
   is the reliable, most granular bag count), "net_weight_mt" (the NW (KGS)
   column value CONVERTED TO MT — divide by 1000, e.g. "24000" -> 24.0,
-  "3000" -> 3.0), and "lot_no" (the LOT NO. column). Leave "seal_no" and
+  "3000" -> 3.0, "22,575" -> 22.575, "1,175" -> 1.175. ⚠️ Divide by 1000
+  ONLY — moving the decimal point exactly 3 places left. Do NOT also divide
+  by 100 on top of that (a common mistake that silently shrinks every row
+  by 100x): "22,575" is 22.575, never 0.22575. Apply this identically to
+  EVERY row in the table — do not let an early row's arithmetic drift as
+  you continue down the list), and "lot_no" (the LOT NO. column). Leave "seal_no" and
   "container_type" empty for every row — this layout doesn't print either
   in the packing list (they come from the MBL instead).
 
@@ -1423,6 +1429,47 @@ def _extract_packing_list_layout_d(pdf_path: str, groups: list) -> dict:
     }
 
 
+def _fix_scale_error(containers: list, key: str, doc_total: float) -> str:
+    """
+    Self-heal a specific, recurring Gemini extraction failure mode: for a
+    per-row "convert NW(KGS) to MT, divide by 1000" instruction, the model
+    sometimes locks onto a wrong power-of-ten scale factor for the whole
+    table (e.g. divides by 100,000 instead of 1,000 on every row alike —
+    seen on Layout C packing lists). The result is uniformly off by a clean
+    power of ten, not randomly noisy, which is exactly what makes it safe to
+    detect and correct here: a genuine data problem (wrong figure on one
+    row, a row missing) produces a mismatch that is NOT a clean power of
+    ten, and is deliberately left alone for a human to check instead of
+    "corrected" — only ratios extremely close to 10/100/1000/... (or their
+    reciprocals) are ever auto-applied.
+
+    Mutates `containers` in place when a correction is applied. Returns a
+    human-readable note describing the fix, or "" if nothing was changed.
+    """
+    row_sum = sum(num(c.get(key), 0) for c in containers)
+    if not row_sum or not doc_total:
+        return ""
+
+    ratio = doc_total / row_sum
+    if abs(ratio - 1) < 0.01:
+        return ""  # already consistent, nothing to do
+
+    power = round(math.log10(ratio))
+    if power == 0:
+        return ""  # mismatch isn't a clean power-of-ten scale error — leave for a human
+    expected_ratio = 10 ** power
+    if abs(ratio - expected_ratio) > 0.03 * expected_ratio:
+        return ""  # not clean enough to trust as this specific failure mode
+
+    for c in containers:
+        c[key] = round(num(c.get(key), 0) * expected_ratio, 6)
+
+    factor_desc = f"×{expected_ratio}" if power > 0 else f"÷{10 ** -power}"
+    return (f"row-level '{key}' values were off by a factor of {expected_ratio} "
+            f"from the document's own stated total ({doc_total}) — auto-corrected "
+            f"every row {factor_desc} to match")
+
+
 def extract_packing_list(pdf_path: str) -> dict:
     trailer_groups = _find_trailer_page_groups(pdf_path)
     if trailer_groups:
@@ -1448,6 +1495,11 @@ def extract_packing_list(pdf_path: str) -> dict:
             "product":            s(row.get("product")).strip(),
             "container_pallets":  num(row.get("container_pallets"), 0),
         })
+    fix_note = _fix_scale_error(containers, "net_weight_mt", num(data.get("total_net_weight_mt"), 0))
+    if fix_note:
+        print(f"  [!] Packing List — {fix_note}")
+        data["_net_weight_fix_note"] = fix_note
+
     data["containers"] = containers
 
     dump_json(pdf_path, "pkg_list.json", data)
@@ -1597,6 +1649,9 @@ def validate(mbl: dict, pkl: dict, inv: dict) -> list[str]:
             results.append(f"[OK] BAGS — MBL containers sum({mbl_bags_sum}) = Packing List total({pkl_total_bags})")
         else:
             results.append(f"[!]  BAGS — MBL containers sum({mbl_bags_sum}) vs Packing List total({pkl_total_bags})")
+
+    if pkl.get("_net_weight_fix_note"):
+        results.append(f"[FIXED] NET WEIGHT — {pkl['_net_weight_fix_note']}")
 
     pkl_net_sum_mt = sum(num(c.get("net_weight_mt"), 0) for c in pkl.get("containers", []))
     pkl_total_net_mt = num(pkl.get("total_net_weight_mt"), 0)

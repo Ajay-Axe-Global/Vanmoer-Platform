@@ -16,6 +16,7 @@ from clients.continental.inbound.task import bp as continental_inbound_bp
 from clients.swiss.inbound.task import bp as swiss_inbound_bp
 from clients.hanwha.inbound.task import bp as hanwha_inbound_bp
 from clients.vmr.inbound.task import bp as vmr_inbound_bp
+from clients.sunrise.inbound.task import bp as sunrise_inbound_bp
 
 TASK_REGISTRY = [
     sabic_outbound_bp,
@@ -28,4 +29,5 @@ TASK_REGISTRY = [
     swiss_inbound_bp,
     hanwha_inbound_bp,
     vmr_inbound_bp,
+    sunrise_inbound_bp,
 ]

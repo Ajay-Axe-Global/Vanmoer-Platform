@@ -943,6 +943,7 @@ HEADER FIELDS (from page 1):
   PER BAG" extract 25).
 - "bags_per_pallet": the number in "<N> BAGS PER PALLET" (e.g. from "55
   BAGS PER PALLET" extract 55).
+
 These two are shipment-wide constants (same for every row) used afterward
 in code to COMPUTE each row's bag/pallet count from its own net weight —
 you do not need to compute pieces or pallets yourself on this layout, and
@@ -1014,7 +1015,6 @@ Return:
     ]}
   ]
 }"""
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # DETERMINISTIC BATCH-NUMBER CROSS-CHECK (pdfplumber, no LLM involved)

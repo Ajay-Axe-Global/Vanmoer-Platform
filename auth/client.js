@@ -253,13 +253,13 @@ const VanmoerAuth = {
     drawer.innerHTML = `
       <h2>Switch task</h2>
       ${grants.map((g) => {
-        const href = `/app/${g.client_slug}/${g.task_slug}/`;
-        const isActive = currentPath.startsWith(`/app/${g.client_slug}/${g.task_slug}`);
-        return `<a href="${href}" class="${isActive ? "active" : ""}">
+      const href = `/app/${g.client_slug}/${g.task_slug}/`;
+      const isActive = currentPath.startsWith(`/app/${g.client_slug}/${g.task_slug}`);
+      return `<a href="${href}" class="${isActive ? "active" : ""}">
           <div class="vma-client">${g.client_name}</div>
           <div class="vma-task">${g.task_name}</div>
         </a>`;
-      }).join("")}
+    }).join("")}
     `;
     document.body.appendChild(drawer);
 
@@ -281,6 +281,45 @@ const VanmoerAuth = {
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape") closeDrawer();
     });
+  },
+
+  /**
+   * Renders a processing-failure message into `el`. Gemini running out of
+   * API credits/quota (backend tags this with a "[GEMINI_BILLING_ISSUE]"
+   * prefix — see helpers/gemini_client.py) gets a friendly "contact IT"
+   * card instead of the raw provider error text, since that text is
+   * meaningless to the client-side operators using these task pages. Every
+   * other error still shows as plain text, same as before.
+   */
+  renderError(el, err) {
+    const message = (err && err.message) || "An unexpected error occurred.";
+    if (message.includes("[GEMINI_BILLING_ISSUE]")) {
+      // Self-contained dark card (own background, not the host page's
+      // .error-msg styling) so it reads correctly whether this page is a
+      // dark-themed task UI or an older light-themed one like Carpenter.
+      el.innerHTML = `
+        <div style="display:flex; gap:14px; align-items:flex-start; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+          background:#2b1608; border:1px solid #7c4a12; border-radius:10px; padding:14px 18px;">
+          <div style="flex:0 0 auto; width:36px; height:36px; border-radius:50%; background:#452a0a;
+            display:flex; align-items:center; justify-content:center; font-size:18px;">⚠️</div>
+          <div style="flex:1 1 auto; min-width:0;">
+            <div style="font-weight:700; font-size:14px; color:#fcd34d; margin-bottom:4px;">
+              Document processing is temporarily unavailable - Contact IT Team - Tell them to Enable Gemini Billing
+            </div>
+            <div style="font-size:13px; color:#d1d5db; line-height:1.5; margin-bottom:8px;">
+              The AI extraction service has run out of API credits. This isn't something you can
+              fix from here — please contact your IT team and ask them to
+              <strong>enable/top up Gemini billing</strong> in Google AI Studio.
+            </div>
+            <div style="font-size:12px; color:#9ca3af;">
+              Once IT confirms billing is active, just try generating again — no other steps needed.
+            </div>
+          </div>
+        </div>`;
+    } else {
+      el.textContent = message;
+    }
+    el.classList.add("visible");
   },
 
   /** fetch() wrapper that attaches the Authorization header and handles 401s. */

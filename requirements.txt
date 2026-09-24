@@ -10,3 +10,9 @@ pypdf==6.6.0
 google-generativeai==0.8.3
 APScheduler==3.11.3
 waitress==3.0.2
+google-auth==2.56.0
+google-auth-oauthlib==1.4.1
+google-api-python-client==2.198.0
+pywinauto==0.6.9
+pyautogui==0.9.54
+pyperclip==1.11.0

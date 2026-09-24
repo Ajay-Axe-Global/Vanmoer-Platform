@@ -688,8 +688,7 @@
                 document.getElementById('loader').classList.remove('visible');
                 document.getElementById('uploadSection').style.display = 'block';
                 const errEl = document.getElementById('errorMsg');
-                errEl.textContent = err.message || 'An unexpected error occurred.';
-                errEl.classList.add('visible');
+                VanmoerAuth.renderError(errEl, err);
             }
         }
 

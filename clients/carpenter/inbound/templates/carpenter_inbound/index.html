@@ -320,7 +320,8 @@
       });
 
     } catch (err) {
-      content.innerHTML = `<div class="error-msg">⛔ Network error: ${err.message}</div>`;
+      content.innerHTML = `<div class="error-msg" id="errorMsg"></div>`;
+      VanmoerAuth.renderError(document.getElementById('errorMsg'), err);
     }
 
     updateBtn();

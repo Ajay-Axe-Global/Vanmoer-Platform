@@ -25,7 +25,10 @@ database/*.sqlite3
 
 # Uploads (user content)
 uploads/
-
+screenshots/
+credentials.json
+token.json
+database/drive_file_ids.json
 
 # Logs
 *.log

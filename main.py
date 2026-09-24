@@ -27,8 +27,9 @@ for _stream in (sys.stdout, sys.stderr):
 from apscheduler.schedulers.background import BackgroundScheduler
 from flask import Flask, send_from_directory 
 
-from database.backup import backup_now
+from database.scheduled_backup import backup_and_sync
 from database.seed import seed
+from helpers.screenshot_worker import start_worker
 from routes import register_all
 
 BASE_DIR = Path(__file__).parent
@@ -48,14 +49,18 @@ def _lan_ip() -> str:
         s.close()
 
 
-def _start_backup_scheduler():
+def _running_in_reloader_watcher() -> bool:
     # Flask's debug reloader forks a second process; only the actual worker
-    # process (not the reloader's watcher parent) should run the scheduler,
-    # or backups would fire twice as often as configured.
-    if os.getenv("FLASK_DEBUG", "1") == "1" and os.environ.get("WERKZEUG_RUN_MAIN") != "true":
+    # process (not the reloader's watcher parent) should run singleton
+    # background work, or it fires/starts twice.
+    return os.getenv("FLASK_DEBUG", "1") == "1" and os.environ.get("WERKZEUG_RUN_MAIN") != "true"
+
+
+def _start_backup_scheduler():
+    if _running_in_reloader_watcher():
         return
     scheduler = BackgroundScheduler(daemon=True)
-    scheduler.add_job(backup_now, "interval", hours=BACKUP_INTERVAL_HOURS, id="db_backup")
+    scheduler.add_job(backup_and_sync, "interval", hours=BACKUP_INTERVAL_HOURS, id="db_backup")
     scheduler.start()
 
 
@@ -69,6 +74,8 @@ def create_app() -> Flask:
     seed()
     register_all(app)
     _start_backup_scheduler()
+    if not _running_in_reloader_watcher():
+        start_worker()
 
     @app.route("/")
     @app.route("/login")

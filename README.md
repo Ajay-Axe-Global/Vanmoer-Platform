@@ -23,7 +23,11 @@ a formatted Excel outcome file. All activity is logged for admin reporting.
   JobHistory`) with the user, client, task, source filename, extracted
   business reference, row count, and success/failure status.
 - **Scheduled backups**: the running app periodically snapshots the SQLite
-  database (`database/backup.py`, interval set by `BACKUP_INTERVAL_HOURS`).
+  database (`database/backup.py`, interval set by `BACKUP_INTERVAL_HOURS`)
+  and uploads both `app.db` and `app_backup.db` to Google Drive
+  (`database/drive_sync.py`), overwriting the same two Drive files in
+  place each run rather than creating new ones. Requires a one-time
+  `python -m database.drive_auth` to authorize (see that file).
 
 ## Tech stack
 

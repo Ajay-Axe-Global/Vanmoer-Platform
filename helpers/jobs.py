@@ -8,7 +8,7 @@ from pathlib import Path
 
 from flask import g, has_app_context
 
-from database.models import Client, JobHistory, Task
+from database.models import Client, JobHistory, OrderTracking, Task
 from helpers.billing import record_usage_for_job
 
 UPLOADS_DIR = Path(__file__).parent.parent / "uploads"
@@ -85,3 +85,38 @@ def log_job(session, user_id: int, client_slug: str, task_slug: str, output_file
 
     session.commit()
     return job
+
+
+def upsert_order_tracking(session, client_slug: str, task_slug: str, references, job_id: int) -> None:
+    """One OrderTracking row per distinct reference for this client+task —
+    called right after a successful log_job() so the new Screenshot/order
+    tracking panel has something to show. `references` is any iterable of
+    raw reference strings (e.g. every row's external_id); deduped the same
+    way build_reference() does.
+
+    Reprocessing an already-tracked reference (e.g. a re-uploaded dispatch
+    advice) only moves job_id forward — status/itos_number are left exactly
+    as they are, so a re-run can never silently reset someone's already-saved
+    ITOS number back to "pending".
+    """
+    distinct = list(dict.fromkeys(v.strip() for v in references if v and str(v).strip()))
+    if not distinct:
+        return
+    client, task = get_client_and_task(session, client_slug, task_slug)
+
+    existing = {
+        row.reference: row
+        for row in session.query(OrderTracking).filter_by(client_id=client.id, task_id=task.id)
+        .filter(OrderTracking.reference.in_(distinct))
+        .all()
+    }
+    for ref in distinct:
+        row = existing.get(ref)
+        if row:
+            row.job_id = job_id
+        else:
+            session.add(OrderTracking(
+                client_id=client.id, task_id=task.id, reference=ref,
+                job_id=job_id, status="pending",
+            ))
+    session.commit()

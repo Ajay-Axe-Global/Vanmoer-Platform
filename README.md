@@ -116,6 +116,41 @@ Dev mode (`FLASK_DEBUG=1`, the default) runs Werkzeug's dev server on
 `FLASK_DEBUG=0` for anything beyond local testing — the app then serves
 through waitress instead.
 
+### ITOS screenshot automation setup (per-machine, one-time)
+
+The SABIC Outbound "Request Screenshot" feature (`helpers/itos_automation.py`)
+drives an actual on-screen Microsoft Edge window inside a Windows 365 remote
+session — it only works on a Windows PC where a user stays logged in with the
+screen unlocked (it cannot run as a background service or a "run whether
+user is logged on or not" scheduled task — there is no visible desktop for
+it to control in that case).
+
+Two `.env` values are specific to *this* PC and must be set correctly before
+the feature works:
+
+1. **`ITOS_APP_ID`** — the exact Windows App / Windows 365 launch ID
+   installed on this machine (it differs per install). Find it by opening
+   PowerShell on this PC and running:
+   ```powershell
+   Get-StartApps | Where-Object { $_.Name -like "*Windows*365*" -or $_.Name -like "*Windows App*" }
+   ```
+   This prints the app's `Name` and its `AppID` — copy the `AppID` value
+   exactly as shown into `.env` as `ITOS_APP_ID`.
+
+2. **`ITOS_APPS_TAB_X`/`Y` and `ITOS_CARD_X`/`Y`** — the pixel coordinates,
+   on this PC's screen, of the "Apps" tab and the Edge card/tile inside the
+   Windows App window (this is the one part of the automation that clicks by
+   raw screen position rather than by name — see the module docstring in
+   `helpers/itos_automation.py`). Open Windows App manually once, hover your
+   mouse over the Apps tab and note the coordinates (e.g. via a tool like
+   PowerToys Mouse Without Borders' coordinate display, or `Get-Position` in
+   a quick PowerShell/AutoHotkey snippet), then set them in `.env`.
+
+If a screenshot request stays stuck on "queued" then eventually shows
+"Failed", check the `main.py` console output for a line like
+`Screenshot job ... attempt .../3 failed, retrying in ...s: <reason>` — the
+`<reason>` says exactly which of the two steps above failed.
+
 ## Adding a new client or task
 
 **Important: the Admin Page's "Clients" tab is not where a new client gets

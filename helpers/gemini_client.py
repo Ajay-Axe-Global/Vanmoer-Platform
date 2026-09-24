@@ -114,7 +114,26 @@ def call_gemini(
             return json.loads(text)
         except Exception as e:
             last_err = e
+            # Out of quota/credits is never transient — retrying just burns
+            # time until the same 429 comes back, so stop immediately.
+            if _is_billing_error(e):
+                break
             if attempt < MAX_RETRIES:
                 time.sleep(2 ** attempt)
 
+    if _is_billing_error(last_err):
+        # Stable, machine-readable prefix every client page's JS looks for
+        # to swap the raw API error for a "contact IT" panel instead of
+        # dumping this text at the user (see auth/client.js renderError()).
+        raise RuntimeError(f"[GEMINI_BILLING_ISSUE] Gemini API credits/quota are exhausted: {last_err}")
     raise RuntimeError(f"Gemini call failed after {MAX_RETRIES + 1} attempts: {last_err}")
+
+
+def _is_billing_error(err: Exception) -> bool:
+    """True for Gemini's 429 'out of quota/prepayment credits' response —
+    distinct from a transient rate limit or network error, which ARE worth
+    retrying."""
+    text = str(err).lower()
+    if "429" not in text:
+        return False
+    return any(marker in text for marker in ("quota", "prepayment", "billing", "resource_exhausted"))

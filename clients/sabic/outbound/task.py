@@ -14,11 +14,14 @@ from flask import Blueprint, g, jsonify, render_template, request, send_file
 from werkzeug.utils import secure_filename
 
 from database.db import SessionLocal
+from database.models import Client, OrderTracking, Task as TaskModel
 from helpers.base_task import BaseTask
+from helpers.dates import period_range, utc_iso
 from helpers.decorators import task_access_required
 from helpers.excel_writer import write_excel
-from helpers.jobs import build_reference, job_output_path, log_job, new_job_dir
+from helpers.jobs import build_reference, job_output_path, log_job, new_job_dir, upsert_order_tracking
 from helpers.pdf_utils import extract_text
+from helpers.screenshot_queue import SCREENSHOTS_DIR, list_screenshot_files, request_screenshots, retry_failed
 
 CLIENT_SLUG = "sabic"
 TASK_SLUG = "outbound"
@@ -399,9 +402,11 @@ def process():
 
         reference, reference_count = build_reference(r.get("external_id") for r in result["rows"])
         source_filename = ", ".join(f.filename for f in files if f.filename.lower().endswith(".pdf"))
-        log_job(session, g.user["user_id"], CLIENT_SLUG, TASK_SLUG, f"{job_id}/output.xlsx", "success",
-                reference=reference, source_filename=source_filename, row_count=len(result["rows"]),
-                reference_count=reference_count)
+        job = log_job(session, g.user["user_id"], CLIENT_SLUG, TASK_SLUG, f"{job_id}/output.xlsx", "success",
+                      reference=reference, source_filename=source_filename, row_count=len(result["rows"]),
+                      reference_count=reference_count)
+        upsert_order_tracking(session, CLIENT_SLUG, TASK_SLUG,
+                               (r.get("external_id") for r in result["rows"]), job.id)
         return jsonify({
             "success": True,
             "summary": result["summary"],
@@ -433,3 +438,208 @@ def download(job_id):
     if not path.exists():
         return jsonify({"error": "Output file not found."}), 404
     return send_file(path, as_attachment=True, download_name="Sabic_Outbound_Output.xlsx")
+
+
+@bp.route("/orders")
+@task_access_required(CLIENT_SLUG, TASK_SLUG)
+def list_orders():
+    """Backs the 'Screenshot' tracking panel — one row per distinct
+    reference for this client+task, optionally scoped to a calendar period
+    (Today/This week/This month), newest first."""
+    period = request.args.get("period", "all")
+    tz_name = request.args.get("tz")
+
+    session = SessionLocal()
+    try:
+        client = session.query(Client).filter_by(slug=CLIENT_SLUG).first()
+        task = session.query(TaskModel).filter_by(slug=TASK_SLUG).first()
+        q = session.query(OrderTracking).filter_by(client_id=client.id, task_id=task.id)
+
+        if period != "all":
+            try:
+                since, until = period_range(period, tz_name=tz_name)
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
+            q = q.filter(OrderTracking.created_at >= since, OrderTracking.created_at < until)
+
+        rows = q.order_by(OrderTracking.created_at.desc()).all()
+        return jsonify({"orders": [{
+            "id": r.id,
+            "reference": r.reference,
+            "date": utc_iso(r.created_at),
+            "status": r.status,
+            "itos_number": r.itos_number,
+            "screenshot_status": r.screenshot_status,
+            "screenshot_error": r.screenshot_error,
+        } for r in rows]})
+    finally:
+        session.close()
+
+
+@bp.route("/orders", methods=["PATCH"])
+@task_access_required(CLIENT_SLUG, TASK_SLUG)
+def update_orders():
+    """Batch save — one request updates the ITOS number for any number of
+    rows (a single-row save is just a 1-item list), so the panel's Save
+    button always writes in one DB round trip regardless of how many rows
+    were in edit mode."""
+    data = request.get_json(silent=True) or {}
+    updates = data.get("updates")
+    if not isinstance(updates, list) or not updates:
+        return jsonify({"error": "updates must be a non-empty list"}), 400
+
+    session = SessionLocal()
+    try:
+        client = session.query(Client).filter_by(slug=CLIENT_SLUG).first()
+        task = session.query(TaskModel).filter_by(slug=TASK_SLUG).first()
+
+        ids = [u.get("id") for u in updates if u.get("id") is not None]
+        rows_by_id = {
+            r.id: r for r in
+            session.query(OrderTracking)
+            .filter_by(client_id=client.id, task_id=task.id)
+            .filter(OrderTracking.id.in_(ids))
+            .all()
+        }
+
+        updated = []
+        skipped = []
+        for u in updates:
+            row = rows_by_id.get(u.get("id"))
+            if not row:
+                continue
+            # A row with an in-flight screenshot job has already snapshotted
+            # its itos_number into a ScreenshotJob row — changing it here
+            # while that's queued/processing would desync the job from what
+            # the UI displays, so it's rejected until the run finishes.
+            if row.screenshot_status in ("queued", "processing"):
+                skipped.append({"id": row.id, "reason": "Screenshot request in progress for this row."})
+                continue
+
+            itos_number = (u.get("itos_number") or "").strip() or None
+            # Saving the ITOS number only records it — it no longer flips
+            # Status to "done" by itself (see helpers/screenshot_worker.py):
+            # only a successfully captured screenshot does that now. If the
+            # number actually changes on a row that was previously Done/
+            # Failed, the old screenshot result no longer applies to it, so
+            # its automation state resets to "never requested" for this
+            # (possibly new) order number.
+            if itos_number != row.itos_number:
+                row.itos_number = itos_number
+                row.status = "pending"
+                row.screenshot_status = None
+                row.screenshot_error = None
+            row.updated_by = g.user["user_id"]
+            updated.append(row)
+
+        if not updated and not skipped:
+            return jsonify({"error": "No matching orders for this client/task."}), 404
+
+        session.commit()
+        return jsonify({
+            "orders": [{
+                "id": r.id,
+                "reference": r.reference,
+                "date": utc_iso(r.created_at),
+                "status": r.status,
+                "itos_number": r.itos_number,
+                "screenshot_status": r.screenshot_status,
+                "screenshot_error": r.screenshot_error,
+            } for r in updated],
+            "skipped": skipped,
+        })
+    finally:
+        session.close()
+
+
+@bp.route("/screenshots/request", methods=["POST"])
+@task_access_required(CLIENT_SLUG, TASK_SLUG)
+def request_order_screenshots():
+    """Queues a screenshot automation run for the given rows (single or
+    batch, per the caller's checkbox selection). Returns immediately —
+    the actual automation runs later, one row at a time, on the single
+    background worker (helpers/screenshot_worker.py); this endpoint only
+    ever inserts queue rows."""
+    data = request.get_json(silent=True) or {}
+    ids = data.get("order_tracking_ids")
+    if not isinstance(ids, list) or not ids:
+        return jsonify({"error": "order_tracking_ids must be a non-empty list"}), 400
+
+    session = SessionLocal()
+    try:
+        result = request_screenshots(session, CLIENT_SLUG, TASK_SLUG, ids, g.user["user_id"])
+        return jsonify(result)
+    finally:
+        session.close()
+
+
+@bp.route("/screenshots/retry", methods=["POST"])
+@task_access_required(CLIENT_SLUG, TASK_SLUG)
+def retry_order_screenshots():
+    """Re-queues rows whose screenshot automation previously failed after
+    exhausting its automatic retries — a manual 'Retry' click."""
+    data = request.get_json(silent=True) or {}
+    ids = data.get("order_tracking_ids")
+    if not isinstance(ids, list) or not ids:
+        return jsonify({"error": "order_tracking_ids must be a non-empty list"}), 400
+
+    session = SessionLocal()
+    try:
+        result = retry_failed(session, CLIENT_SLUG, TASK_SLUG, ids, g.user["user_id"])
+        return jsonify(result)
+    finally:
+        session.close()
+
+
+def _order_tracking_row_or_404(session, order_tracking_id):
+    client = session.query(Client).filter_by(slug=CLIENT_SLUG).first()
+    task = session.query(TaskModel).filter_by(slug=TASK_SLUG).first()
+    return session.query(OrderTracking).filter_by(
+        id=order_tracking_id, client_id=client.id, task_id=task.id
+    ).first()
+
+
+@bp.route("/screenshots/<int:order_tracking_id>/files")
+@task_access_required(CLIENT_SLUG, TASK_SLUG)
+def list_order_screenshot_files(order_tracking_id):
+    """Backs the Source column's viewer — the filenames for one row's
+    captured screenshots (empty list if none exist yet, e.g. still queued
+    or never requested)."""
+    session = SessionLocal()
+    try:
+        row = _order_tracking_row_or_404(session, order_tracking_id)
+        if not row or not row.itos_number:
+            return jsonify({"error": "Not found"}), 404
+        filenames = list_screenshot_files(CLIENT_SLUG, row.itos_number)
+        return jsonify({
+            "itos_number": row.itos_number,
+            "files": [
+                {"filename": f,
+                 "url": f"/app/{CLIENT_SLUG}/{TASK_SLUG}/screenshots/{order_tracking_id}/image/{f}"}
+                for f in filenames
+            ],
+        })
+    finally:
+        session.close()
+
+
+@bp.route("/screenshots/<int:order_tracking_id>/image/<path:filename>")
+@task_access_required(CLIENT_SLUG, TASK_SLUG)
+def get_order_screenshot_image(order_tracking_id, filename):
+    """Serves one screenshot PNG. filename is re-sanitized and re-resolved
+    against this row's own itos_number folder (never trusted as a raw path)
+    so a crafted filename can't escape screenshots/<client>/<itos_number>/."""
+    session = SessionLocal()
+    try:
+        row = _order_tracking_row_or_404(session, order_tracking_id)
+        if not row or not row.itos_number:
+            return jsonify({"error": "Not found"}), 404
+        itos_number = row.itos_number
+    finally:
+        session.close()
+
+    directory = (SCREENSHOTS_DIR / CLIENT_SLUG / itos_number).resolve()
+    path = (directory / secure_filename(filename)).resolve()
+    if directory not in path.parents or not path.is_file():
+        return jsonify({"error": "Not found"}), 404
+    return send_file(path)

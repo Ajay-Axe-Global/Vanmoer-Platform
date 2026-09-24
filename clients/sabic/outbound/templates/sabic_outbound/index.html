@@ -145,6 +145,181 @@
     color: #64748b; cursor: pointer; text-decoration: underline; text-underline-offset: 2px;
   }
   .reset-link:hover { color: #94a3b8; }
+
+  /* ── Tracking panel ───────────────────────────────────── */
+  .tracking-container { width: 100%; margin: 0 auto; padding: 40px 40px 64px; }
+  @media (max-width: 480px) { .tracking-container { padding: 24px 16px 48px; } }
+
+  .back-link {
+    display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px;
+    color: #64748b; cursor: pointer; text-decoration: none; margin-bottom: 18px;
+    background: none; border: none; font-family: inherit; padding: 0;
+  }
+  .back-link:hover { color: #94a3b8; }
+
+  .filter-bar { display: flex; gap: 8px; margin-bottom: 18px; flex-wrap: wrap; }
+  .filter-pill {
+    background: #1e293b; border: 1px solid #334155; color: #94a3b8;
+    padding: 7px 14px; border-radius: 999px; font-size: 12.5px; font-weight: 600;
+    cursor: pointer; font-family: inherit; transition: all .15s;
+  }
+  .filter-pill:hover { border-color: #475569; color: #e2e8f0; }
+  .filter-pill.active { background: #2563eb; border-color: #2563eb; color: #fff; }
+
+  /* ── Table toolbar: search left, Edit/Save actions right ── */
+  .table-toolbar {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    margin-bottom: 14px; flex-wrap: wrap;
+  }
+  .search-wrap { position: relative; flex: 1; min-width: 220px; max-width: 360px; }
+  .search-wrap .search-icon {
+    position: absolute; left: 12px; top: 50%; transform: translateY(-50%);
+    color: #64748b; font-size: 13px; pointer-events: none;
+  }
+  #search-input {
+    width: 100%; background: #1e293b; border: 1px solid #334155; border-radius: 9px;
+    padding: 9px 12px 9px 32px; color: #e2e8f0; font-family: inherit; font-size: 13px;
+  }
+  #search-input:focus { outline: none; border-color: #3b82f6; }
+  #search-input::placeholder { color: #64748b; }
+
+  .toolbar-actions { display: flex; gap: 10px; align-items: center; }
+  .toolbar-actions button {
+    border-radius: 9px; padding: 9px 18px; font-weight: 700; font-size: 12.5px;
+    cursor: pointer; font-family: inherit; border: 1px solid transparent; transition: all .15s;
+  }
+  #edit-all-btn { background: transparent; border-color: #334155; color: #94a3b8; }
+  #edit-all-btn:hover { border-color: #475569; color: #e2e8f0; }
+  #edit-all-btn.editing { border-color: #f59e0b; color: #fbbf24; }
+  #save-all-btn {
+    background: linear-gradient(135deg, #3b82f6, #2563eb); border: none; color: #fff; display: none;
+  }
+  #save-all-btn:hover:not(:disabled) { opacity: .92; }
+  #save-all-btn:disabled { opacity: .5; cursor: not-allowed; }
+  #save-all-btn.visible { display: inline-block; }
+  #request-btn {
+    background: linear-gradient(135deg, #8b5cf6, #7c3aed); border: none; color: #fff;
+  }
+  #request-btn:hover:not(:disabled) { opacity: .92; }
+  #request-btn:disabled { opacity: .35; cursor: not-allowed; }
+
+  .screenshot-note { font-size: 10.5px; margin-top: 4px; font-weight: 600; }
+  .screenshot-note.queued, .screenshot-note.processing { color: #93c5fd; }
+  .screenshot-note.failed { color: #f87171; }
+  .screenshot-note .retry-link {
+    color: #f87171; text-decoration: underline; text-underline-offset: 2px;
+    cursor: pointer; background: none; border: none; font: inherit; padding: 0; margin-left: 4px;
+  }
+
+  .tracking-table-wrap {
+    background: #1e293b; border: 1px solid #334155; border-radius: 14px; overflow: hidden;
+  }
+  table.tracking-table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  table.tracking-table th {
+    text-align: left; padding: 13px 16px; font-size: 10.5px; text-transform: uppercase;
+    letter-spacing: .05em; color: #64748b; font-weight: 700; border-bottom: 1px solid #334155;
+    background: #172033;
+  }
+  table.tracking-table td {
+    padding: 13px 16px; border-bottom: 1px solid #26334a; color: #cbd5e1; vertical-align: middle;
+  }
+  table.tracking-table tr:last-child td { border-bottom: none; }
+  table.tracking-table tr.selected td { background: #1c2942; }
+  table.tracking-table td.ref-cell { font-family: 'JetBrains Mono', monospace; color: #e2e8f0; }
+  table.tracking-table td.num-cell { color: #64748b; font-family: 'JetBrains Mono', monospace; }
+
+  .row-checkbox, .select-all-checkbox { width: 15px; height: 15px; accent-color: #3b82f6; cursor: pointer; }
+
+  .status-badge {
+    display: inline-block; padding: 3px 10px; border-radius: 999px;
+    font-size: 11px; font-weight: 700; letter-spacing: .02em;
+  }
+  .status-badge.pending { background: #3f2d0f; color: #fbbf24; }
+  .status-badge.done { background: #0f2b1c; color: #86efac; }
+
+  .itos-input {
+    width: 100%; max-width: 160px; background: #0f172a; border: 1px solid #3b82f6;
+    border-radius: 7px; padding: 6px 9px; color: #e2e8f0; font-family: 'JetBrains Mono', monospace;
+    font-size: 12.5px;
+  }
+  .itos-input:focus { outline: none; border-color: #60a5fa; }
+  .itos-empty { color: #475569; font-style: italic; }
+
+  .tracking-empty {
+    text-align: center; padding: 48px 24px; color: #64748b; font-size: 13px;
+  }
+
+  .source-btn {
+    background: #172033; border: 1px solid #334155; color: #93c5fd;
+    width: 32px; height: 32px; border-radius: 8px; cursor: pointer;
+    font-size: 15px; display: inline-flex; align-items: center; justify-content: center;
+    transition: all .15s;
+  }
+  .source-btn:hover { border-color: #3b82f6; background: #1c2942; }
+  .source-dash { color: #475569; font-size: 13px; }
+
+  /* ── Lightbox ─────────────────────────────────────────── */
+  .lightbox-overlay {
+    display: none; position: fixed; inset: 0; background: rgba(3, 7, 18, 0.88);
+    z-index: 100; align-items: center; justify-content: center; padding: 24px;
+    backdrop-filter: blur(4px);
+  }
+  .lightbox-overlay.visible { display: flex; }
+  .lightbox-box {
+    width: 100%; max-width: 1100px; display: flex; flex-direction: column; gap: 10px;
+  }
+  .lightbox-topbar { display: flex; align-items: center; justify-content: space-between; }
+  .lightbox-counter {
+    color: #94a3b8; font-size: 12.5px; font-family: 'JetBrains Mono', monospace; font-weight: 600;
+  }
+  .lightbox-topbar-actions { display: flex; gap: 8px; }
+  .lightbox-icon-btn {
+    background: #1e293b; border: 1px solid #334155; color: #e2e8f0;
+    width: 34px; height: 34px; border-radius: 8px; cursor: pointer; font-size: 15px;
+    display: inline-flex; align-items: center; justify-content: center; transition: all .15s;
+  }
+  .lightbox-icon-btn:hover { border-color: #475569; background: #26334a; }
+
+  .lightbox-stage {
+    position: relative; display: flex; align-items: center; justify-content: center;
+    background: #0b1220; border: 1px solid #334155; border-radius: 14px;
+    min-height: 300px; max-height: 82vh; overflow: hidden;
+  }
+  #lightbox-img { max-width: 100%; max-height: 82vh; object-fit: contain; display: block; }
+  .lightbox-nav {
+    position: absolute; top: 50%; transform: translateY(-50%);
+    background: rgba(15, 23, 42, 0.75); border: 1px solid #334155; color: #fff;
+    width: 42px; height: 42px; border-radius: 50%; cursor: pointer; font-size: 22px;
+    display: flex; align-items: center; justify-content: center; transition: all .15s;
+  }
+  .lightbox-nav:hover { background: rgba(30, 41, 59, 0.9); border-color: #3b82f6; }
+  .lightbox-nav:disabled { opacity: .25; cursor: not-allowed; }
+  .lightbox-prev { left: 14px; }
+  .lightbox-next { right: 14px; }
+
+  /* Native browser Fullscreen API target — stretch the image to fill the screen. */
+  .lightbox-stage:fullscreen { max-height: 100vh; border-radius: 0; background: #000; }
+  .lightbox-stage:fullscreen #lightbox-img { max-height: 100vh; }
+
+  /* Card layout on narrow screens */
+  @media (max-width: 640px) {
+    table.tracking-table thead { display: none; }
+    table.tracking-table, table.tracking-table tbody, table.tracking-table tr, table.tracking-table td {
+      display: block; width: 100%;
+    }
+    table.tracking-table tr {
+      padding: 12px 14px; border-bottom: 1px solid #26334a;
+    }
+    table.tracking-table td {
+      border-bottom: none; padding: 5px 0; display: flex; justify-content: space-between; align-items: center;
+    }
+    table.tracking-table td::before {
+      content: attr(data-label); color: #64748b; font-size: 10.5px; text-transform: uppercase;
+      letter-spacing: .05em; font-weight: 700;
+    }
+    table.tracking-table td.checkbox-cell { justify-content: flex-start; gap: 8px; }
+    table.tracking-table td.checkbox-cell::before { content: "Select"; }
+  }
 </style>
 </head>
 <body>
@@ -153,10 +328,13 @@
       <div class="mark">V</div>
       <span>Vanmoer</span>
     </div>
-    <button id="logout-btn">Log out</button>
+    <div style="display:flex; align-items:center; gap:10px;">
+      <button id="tracking-btn">Screenshot</button>
+      <button id="logout-btn">Log out</button>
+    </div>
   </header>
 
-  <div class="container">
+  <div class="container" id="upload-view">
     <div class="page-header">
       <h1>{{ label }}</h1>
       <p>Upload dispatch advice PDF(s) → generate the output Excel</p>
@@ -190,6 +368,68 @@
       </div>
       <a id="download-link" href="#"><span>⬇</span> Download Excel</a>
       <span class="reset-link" id="reset-link">← Process another batch</span>
+    </div>
+  </div>
+
+  <div class="tracking-container" id="tracking-view" style="display:none;">
+    <button class="back-link" id="back-link">← Back to upload</button>
+    <div class="page-header">
+      <h1>Order Tracking</h1>
+      <p>One row per shipment reference — enter the ITOS number once it's booked</p>
+    </div>
+
+    <div class="filter-bar">
+      <button class="filter-pill" data-period="today">Today</button>
+      <button class="filter-pill" data-period="week">This Week</button>
+      <button class="filter-pill" data-period="month">This Month</button>
+      <button class="filter-pill active" data-period="all">All</button>
+    </div>
+
+    <div class="table-toolbar">
+      <div class="search-wrap">
+        <span class="search-icon">🔍</span>
+        <input type="text" id="search-input" placeholder="Search by reference…" />
+      </div>
+      <div class="toolbar-actions">
+        <button type="button" id="request-btn" disabled>Request Screenshot</button>
+        <button type="button" id="edit-all-btn">Edit</button>
+        <button type="button" id="save-all-btn">Save</button>
+      </div>
+    </div>
+
+    <div class="tracking-table-wrap">
+      <table class="tracking-table">
+        <thead>
+          <tr>
+            <th><input type="checkbox" class="select-all-checkbox" id="select-all" /></th>
+            <th>S.No</th>
+            <th>Reference</th>
+            <th>Date</th>
+            <th>ITOS</th>
+            <th>Source</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="orders-tbody"></tbody>
+      </table>
+      <div class="tracking-empty" id="orders-empty" style="display:none;">No orders in this period yet.</div>
+    </div>
+  </div>
+
+  <div class="lightbox-overlay" id="lightbox-overlay">
+    <div class="lightbox-box" id="lightbox-box">
+      <div class="lightbox-topbar">
+        <span class="lightbox-counter" id="lightbox-counter"></span>
+        <div class="lightbox-topbar-actions">
+          <button type="button" class="lightbox-icon-btn" id="lightbox-fullscreen-btn" title="Toggle fullscreen">⛶</button>
+          <button type="button" class="lightbox-icon-btn" id="lightbox-close-btn" title="Close">✕</button>
+        </div>
+      </div>
+      <div class="lightbox-stage">
+        <button type="button" class="lightbox-nav lightbox-prev" id="lightbox-prev" title="Previous">‹</button>
+        <img id="lightbox-img" alt="Order screenshot" />
+        <button type="button" class="lightbox-nav lightbox-next" id="lightbox-next" title="Next">›</button>
+      </div>
     </div>
   </div>
 
@@ -274,7 +514,7 @@
           await VanmoerAuth.downloadFile(data.download_url, "Sabic_Outbound_Output.xlsx");
         };
       } catch (err) {
-        status.textContent = err.message;
+        VanmoerAuth.renderError(status, err);
         status.className = "err";
         status.style.display = "block";
       } finally {
@@ -289,6 +529,387 @@
       renderFileList();
       results.classList.remove("visible");
       status.style.display = "none";
+    });
+
+    // ── Order tracking panel ────────────────────────────────────────────
+    const uploadView = document.getElementById("upload-view");
+    const trackingView = document.getElementById("tracking-view");
+    const trackingBtn = document.getElementById("tracking-btn");
+    const backLink = document.getElementById("back-link");
+    const ordersTbody = document.getElementById("orders-tbody");
+    const ordersEmpty = document.getElementById("orders-empty");
+    const selectAllCheckbox = document.getElementById("select-all");
+    const searchInput = document.getElementById("search-input");
+    const editAllBtn = document.getElementById("edit-all-btn");
+    const saveAllBtn = document.getElementById("save-all-btn");
+    const requestBtn = document.getElementById("request-btn");
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+    let currentPeriod = "all";
+    let orders = [];
+    let searchTerm = "";
+    let editMode = false;
+    // id -> in-progress ITOS value while editMode is on. Keyed separately
+    // from `orders` so a value typed for a row stays intact even if a
+    // search filter temporarily hides that row from the table.
+    let draftItos = {};
+    const checkedIds = new Set();
+    // Only runs while something is actually queued/processing — the common
+    // idle case never polls at all.
+    let pollTimer = null;
+
+    function showTracking() {
+      uploadView.style.display = "none";
+      trackingView.style.display = "block";
+      loadOrders();
+    }
+    function showUpload() {
+      trackingView.style.display = "none";
+      uploadView.style.display = "block";
+      exitEditMode();
+      stopPolling();
+    }
+    trackingBtn.addEventListener("click", showTracking);
+    backLink.addEventListener("click", showUpload);
+
+    document.querySelectorAll(".filter-pill").forEach(pill => {
+      pill.addEventListener("click", () => {
+        document.querySelectorAll(".filter-pill").forEach(p => p.classList.remove("active"));
+        pill.classList.add("active");
+        currentPeriod = pill.dataset.period;
+        exitEditMode();
+        loadOrders();
+      });
+    });
+
+    searchInput.addEventListener("input", () => {
+      searchTerm = searchInput.value.trim().toLowerCase();
+      renderOrders();
+    });
+
+    async function loadOrders() {
+      ordersTbody.innerHTML = "";
+      ordersEmpty.style.display = "none";
+      checkedIds.clear();
+      try {
+        await refreshOrders();
+      } catch (err) {
+        ordersEmpty.textContent = err.message;
+        ordersEmpty.style.display = "block";
+      }
+    }
+
+    // Re-fetches without disturbing edit mode/checkboxes — used both for the
+    // initial load and for the background poll while a screenshot run is
+    // in flight.
+    async function refreshOrders() {
+      const url = `${window.location.pathname}orders?period=${currentPeriod}&tz=${encodeURIComponent(tz)}`;
+      const res = await VanmoerAuth.authFetch(url);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to load orders");
+      orders = data.orders || [];
+      renderOrders();
+      updateRequestButton();
+      syncPolling();
+    }
+
+    function syncPolling() {
+      const needsPoll = orders.some(o => o.screenshot_status === "queued" || o.screenshot_status === "processing");
+      if (needsPoll && !pollTimer) {
+        pollTimer = setInterval(() => { refreshOrders().catch(() => {}); }, 3000);
+      } else if (!needsPoll && pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+    }
+
+    function stopPolling() {
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, c => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+      }[c]));
+    }
+
+    function formatDate(iso) {
+      const d = new Date(iso);
+      return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+    }
+
+    function visibleOrders() {
+      if (!searchTerm) return orders;
+      return orders.filter(o => o.reference.toLowerCase().includes(searchTerm));
+    }
+
+    function renderOrders() {
+      selectAllCheckbox.checked = false;
+      const rows = visibleOrders();
+      if (rows.length === 0) {
+        ordersTbody.innerHTML = "";
+        ordersEmpty.textContent = searchTerm ? "No references match your search." : "No orders in this period yet.";
+        ordersEmpty.style.display = "block";
+        return;
+      }
+      ordersEmpty.style.display = "none";
+      ordersTbody.innerHTML = rows.map((o, i) => {
+        const locked = o.screenshot_status === "queued" || o.screenshot_status === "processing";
+        const itosCell = (editMode && !locked)
+          ? `<input type="text" class="itos-input" data-id="${o.id}" value="${escapeHtml(draftItos[o.id] ?? (o.itos_number || ""))}" placeholder="ITOS number" />`
+          : (o.itos_number
+              ? `<span class="num-cell">${escapeHtml(o.itos_number)}</span>`
+              : `<span class="itos-empty">— not saved —</span>`);
+
+        let screenshotNote = "";
+        if (o.screenshot_status === "queued") {
+          screenshotNote = `<div class="screenshot-note queued">Screenshot queued…</div>`;
+        } else if (o.screenshot_status === "processing") {
+          screenshotNote = `<div class="screenshot-note processing">Capturing screenshot…</div>`;
+        } else if (o.screenshot_status === "failed") {
+          screenshotNote = `<div class="screenshot-note failed" title="${escapeHtml(o.screenshot_error || "")}">
+            Screenshot failed <button type="button" class="retry-link" data-id="${o.id}">Retry</button>
+          </div>`;
+        }
+
+        const sourceCell = o.status === "done"
+          ? `<button type="button" class="source-btn" data-id="${o.id}" title="View screenshots">🖼️</button>`
+          : `<span class="source-dash">—</span>`;
+
+        return `
+          <tr data-id="${o.id}">
+            <td class="checkbox-cell"><input type="checkbox" class="row-checkbox" data-id="${o.id}" ${checkedIds.has(o.id) ? "checked" : ""} /></td>
+            <td data-label="S.No">${i + 1}</td>
+            <td data-label="Reference" class="ref-cell">${escapeHtml(o.reference)}</td>
+            <td data-label="Date">${formatDate(o.date)}</td>
+            <td data-label="ITOS">${itosCell}</td>
+            <td data-label="Source">${sourceCell}</td>
+            <td data-label="Status">
+              <span class="status-badge ${o.status}">${o.status === "done" ? "Done" : "Pending"}</span>
+              ${screenshotNote}
+            </td>
+          </tr>
+        `;
+      }).join("");
+
+      if (editMode) {
+        ordersTbody.querySelectorAll(".itos-input").forEach(input => {
+          input.addEventListener("input", () => {
+            draftItos[Number(input.dataset.id)] = input.value;
+          });
+        });
+      }
+      ordersTbody.querySelectorAll(".row-checkbox").forEach(cb => {
+        cb.addEventListener("change", () => {
+          const id = Number(cb.dataset.id);
+          if (cb.checked) checkedIds.add(id); else checkedIds.delete(id);
+          cb.closest("tr").classList.toggle("selected", cb.checked);
+          updateRequestButton();
+        });
+      });
+      ordersTbody.querySelectorAll(".retry-link").forEach(btn => {
+        btn.addEventListener("click", () => retryScreenshot(Number(btn.dataset.id)));
+      });
+      ordersTbody.querySelectorAll(".source-btn").forEach(btn => {
+        btn.addEventListener("click", () => openLightbox(Number(btn.dataset.id)));
+      });
+    }
+
+    selectAllCheckbox.addEventListener("change", () => {
+      ordersTbody.querySelectorAll(".row-checkbox").forEach(cb => {
+        cb.checked = selectAllCheckbox.checked;
+        const id = Number(cb.dataset.id);
+        if (cb.checked) checkedIds.add(id); else checkedIds.delete(id);
+        cb.closest("tr").classList.toggle("selected", cb.checked);
+      });
+      updateRequestButton();
+    });
+
+    function updateRequestButton() {
+      const selected = orders.filter(o => checkedIds.has(o.id));
+      const eligible = selected.length > 0 && selected.every(o =>
+        o.itos_number
+        && o.screenshot_status !== "queued"
+        && o.screenshot_status !== "processing"
+        && o.screenshot_status !== "done"
+      );
+      requestBtn.disabled = !eligible;
+    }
+
+    async function requestScreenshots(ids) {
+      const res = await VanmoerAuth.authFetch(`${window.location.pathname}screenshots/request`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ order_tracking_ids: ids }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Request failed");
+      return data;
+    }
+
+    requestBtn.addEventListener("click", async () => {
+      const ids = Array.from(checkedIds);
+      if (ids.length === 0) return;
+
+      requestBtn.disabled = true;
+      requestBtn.textContent = "Requesting…";
+      try {
+        const data = await requestScreenshots(ids);
+        checkedIds.clear();
+        if (data.skipped && data.skipped.length > 0) {
+          const reasons = data.skipped.map(s => `#${s.id}: ${s.reason}`).join("\n");
+          alert(`${data.queued.length} queued.\nSkipped:\n${reasons}`);
+        }
+        await refreshOrders();
+      } catch (err) {
+        alert(err.message);
+      } finally {
+        requestBtn.textContent = "Request Screenshot";
+        updateRequestButton();
+      }
+    });
+
+    async function retryScreenshot(id) {
+      try {
+        await VanmoerAuth.authFetch(`${window.location.pathname}screenshots/retry`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ order_tracking_ids: [id] }),
+        });
+        await refreshOrders();
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
+    // ── Screenshot lightbox ──────────────────────────────────────────────
+    const lightboxOverlay = document.getElementById("lightbox-overlay");
+    const lightboxStage = document.getElementById("lightbox-stage");
+    const lightboxImg = document.getElementById("lightbox-img");
+    const lightboxCounter = document.getElementById("lightbox-counter");
+    const lightboxPrev = document.getElementById("lightbox-prev");
+    const lightboxNext = document.getElementById("lightbox-next");
+    const lightboxCloseBtn = document.getElementById("lightbox-close-btn");
+    const lightboxFullscreenBtn = document.getElementById("lightbox-fullscreen-btn");
+
+    let lightboxFiles = [];
+    let lightboxIndex = 0;
+
+    async function openLightbox(orderTrackingId) {
+      try {
+        const res = await VanmoerAuth.authFetch(`${window.location.pathname}screenshots/${orderTrackingId}/files`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Could not load screenshots");
+        if (!data.files || data.files.length === 0) {
+          alert("No screenshots found for this order.");
+          return;
+        }
+        lightboxFiles = data.files;
+        lightboxIndex = 0;
+        await renderLightboxImage();
+        lightboxOverlay.classList.add("visible");
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
+    // Images are served through an authenticated endpoint, not a plain URL,
+    // so <img src> can't be set directly — fetch the bytes and hand the
+    // <img> a local object URL instead.
+    async function renderLightboxImage() {
+      const file = lightboxFiles[lightboxIndex];
+      lightboxCounter.textContent = `${lightboxIndex + 1} / ${lightboxFiles.length}`;
+      lightboxPrev.disabled = lightboxIndex === 0;
+      lightboxNext.disabled = lightboxIndex === lightboxFiles.length - 1;
+
+      const res = await VanmoerAuth.authFetch(file.url);
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const previous = lightboxImg.src;
+      lightboxImg.src = objectUrl;
+      if (previous && previous.startsWith("blob:")) URL.revokeObjectURL(previous);
+    }
+
+    function closeLightbox() {
+      lightboxOverlay.classList.remove("visible");
+      if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+      if (lightboxImg.src.startsWith("blob:")) URL.revokeObjectURL(lightboxImg.src);
+      lightboxImg.src = "";
+      lightboxFiles = [];
+    }
+
+    lightboxPrev.addEventListener("click", () => {
+      if (lightboxIndex > 0) { lightboxIndex--; renderLightboxImage(); }
+    });
+    lightboxNext.addEventListener("click", () => {
+      if (lightboxIndex < lightboxFiles.length - 1) { lightboxIndex++; renderLightboxImage(); }
+    });
+    lightboxCloseBtn.addEventListener("click", closeLightbox);
+    lightboxOverlay.addEventListener("click", (e) => {
+      if (e.target === lightboxOverlay) closeLightbox();
+    });
+    lightboxFullscreenBtn.addEventListener("click", () => {
+      if (document.fullscreenElement) {
+        document.exitFullscreen().catch(() => {});
+      } else {
+        lightboxStage.requestFullscreen().catch(() => {});
+      }
+    });
+    document.addEventListener("keydown", (e) => {
+      if (!lightboxOverlay.classList.contains("visible")) return;
+      if (e.key === "Escape") closeLightbox();
+      else if (e.key === "ArrowLeft") lightboxPrev.click();
+      else if (e.key === "ArrowRight") lightboxNext.click();
+    });
+
+    function enterEditMode() {
+      editMode = true;
+      draftItos = Object.fromEntries(orders.map(o => [o.id, o.itos_number || ""]));
+      editAllBtn.textContent = "Cancel";
+      editAllBtn.classList.add("editing");
+      saveAllBtn.classList.add("visible");
+      renderOrders();
+    }
+
+    function exitEditMode() {
+      editMode = false;
+      draftItos = {};
+      editAllBtn.textContent = "Edit";
+      editAllBtn.classList.remove("editing");
+      saveAllBtn.classList.remove("visible");
+      renderOrders();
+    }
+
+    editAllBtn.addEventListener("click", () => {
+      if (editMode) exitEditMode(); else enterEditMode();
+    });
+
+    saveAllBtn.addEventListener("click", async () => {
+      const updates = orders.map(o => ({
+        id: o.id,
+        itos_number: (draftItos[o.id] ?? o.itos_number ?? "").trim(),
+      }));
+
+      saveAllBtn.disabled = true;
+      saveAllBtn.textContent = "Saving…";
+      try {
+        const res = await VanmoerAuth.authFetch(`${window.location.pathname}orders`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ updates }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Save failed");
+
+        const updatedById = Object.fromEntries((data.orders || []).map(o => [o.id, o]));
+        orders = orders.map(o => updatedById[o.id] || o);
+        exitEditMode();
+      } catch (err) {
+        alert(err.message);
+      } finally {
+        saveAllBtn.disabled = false;
+        saveAllBtn.textContent = "Save";
+      }
     });
   </script>
 </body>

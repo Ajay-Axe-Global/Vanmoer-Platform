@@ -33,8 +33,30 @@
 
   document.getElementById("logout-btn").addEventListener("click", () => VanmoerAuth.logout());
   document.getElementById("backup-btn").addEventListener("click", async () => {
-    await VanmoerAuth.authFetch("/api/admin/backup", { method: "POST" });
-    alert("Backup complete.");
+    const btn = document.getElementById("backup-btn");
+    const label = document.getElementById("backup-btn-label");
+    btn.disabled = true;
+    btn.classList.remove("success", "error");
+    btn.classList.add("loading");
+    label.textContent = "Backing up…";
+    try {
+      const res = await VanmoerAuth.authFetch("/api/admin/backup", { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Backup failed");
+      btn.classList.remove("loading");
+      btn.classList.add("success");
+      label.textContent = "✓ Backed up";
+    } catch (err) {
+      btn.classList.remove("loading");
+      btn.classList.add("error");
+      label.textContent = "✗ Backup failed";
+    } finally {
+      setTimeout(() => {
+        btn.classList.remove("success", "error");
+        label.textContent = "Backup DB";
+        btn.disabled = false;
+      }, 2500);
+    }
   });
 
   function showMsg(el, text, ok) {

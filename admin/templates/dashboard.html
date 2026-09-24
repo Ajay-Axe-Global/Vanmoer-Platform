@@ -114,6 +114,37 @@
       color: var(--text);
     }
 
+    header button.plain:disabled {
+      cursor: not-allowed;
+      opacity: .7;
+    }
+
+    header button.plain .btn-spinner {
+      display: none;
+      width: 12px;
+      height: 12px;
+      border: 2px solid rgba(148, 163, 184, .35);
+      border-top-color: var(--text-secondary);
+      border-radius: 50%;
+      margin-right: 6px;
+      vertical-align: -2px;
+      animation: page-loader-spin .7s linear infinite;
+    }
+
+    header button.plain.loading .btn-spinner {
+      display: inline-block;
+    }
+
+    header button.plain.success {
+      border-color: #14532d;
+      color: #86efac;
+    }
+
+    header button.plain.error {
+      border-color: #7f1d1d;
+      color: #fca5a5;
+    }
+
     main {
       max-width: 1680px;
       margin: 0 auto;
@@ -1027,7 +1058,7 @@
         <button class="tab-btn" data-tab="users">Users</button>
         <button class="tab-btn" data-tab="billing">Billing &amp; Usage</button>
       </div>
-      <button class="plain" id="backup-btn">Backup DB</button>
+      <button class="plain" id="backup-btn"><span class="btn-spinner"></span><span id="backup-btn-label">Backup DB</span></button>
       <button class="plain" id="logout-btn">Log out</button>
     </div>
   </header>

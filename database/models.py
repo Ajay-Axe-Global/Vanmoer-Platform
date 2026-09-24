@@ -106,6 +106,92 @@ class JobHistory(Base):
     task = relationship("Task", back_populates="jobs")
 
 
+class OrderTracking(Base):
+    """One row per distinct business reference (e.g. a SABIC dispatch
+    shipment number) for a client+task, tracking what happens to it AFTER
+    the Excel is generated — an ITOS order number gets keyed in against it
+    and its status flips from "pending" to "done". Deliberately generic
+    (not SABIC-specific) so the same table backs other clients'/tasks'
+    outbound tracking panels later without another schema change.
+
+    Reprocessing the same reference (e.g. a re-uploaded dispatch advice)
+    must never reset status/itos_number back to pending — see
+    helpers.jobs.upsert_order_tracking(), which only moves job_id forward
+    on an existing row and leaves status/itos_number alone."""
+    __tablename__ = "order_tracking"
+    __table_args__ = (
+        UniqueConstraint("client_id", "task_id", "reference", name="uq_tracking_client_task_reference"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False)
+    task_id = Column(Integer, ForeignKey("tasks.id"), nullable=False)
+    reference = Column(String(255), nullable=False)
+    # Latest job that touched this reference — nullable since a reference
+    # can outlive the job row it first came from in edge cases, but in
+    # practice always set at insert time.
+    job_id = Column(Integer, ForeignKey("job_history.id"), nullable=True)
+    status = Column(String(20), nullable=False, default="pending")  # "pending" | "done"
+    itos_number = Column(String(120), nullable=True)
+    # Lifecycle of the ITOS screenshot automation for this row, independent
+    # of `status` above — None until a screenshot Request has ever been
+    # made; "queued"/"processing" while the single background worker (see
+    # helpers/screenshot_worker.py) is on it or waiting its turn;
+    # "done"/"failed" once it finishes. A screenshot success is what flips
+    # `status` to "done" (NOT saving the ITOS number by itself) — see
+    # helpers/screenshot_queue.py.
+    screenshot_status = Column(String(20), nullable=True)
+    screenshot_error = Column(String(500), nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow,
+                         onupdate=datetime.datetime.utcnow, nullable=False)
+    updated_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    client = relationship("Client")
+    task = relationship("Task")
+    job = relationship("JobHistory")
+    updated_by_user = relationship("User")
+
+
+class ScreenshotJob(Base):
+    """One row per (order_tracking row, screenshot attempt-series) — the
+    durable queue the background worker in helpers/screenshot_worker.py
+    consumes. Deliberately a DB table rather than an in-memory queue: it
+    must survive an app restart mid-run (see the crash-recovery sweep in
+    start_worker()), and a plain SQL query is enough to inspect it — no
+    Celery/Redis needed for a single physical GUI worker (see
+    helpers/screenshot_worker.py's module docstring for why).
+
+    A retry does NOT create a new row — the same row's `attempts` counts up
+    and `status` cycles back to "queued" (with `next_retry_at` set) until
+    either it succeeds or `max_attempts` is exhausted, at which point
+    `status` becomes the terminal "failed". Generic (not SABIC-specific) so
+    any client/task's tracking panel can reuse this table."""
+    __tablename__ = "screenshot_jobs"
+
+    id = Column(Integer, primary_key=True)
+    order_tracking_id = Column(Integer, ForeignKey("order_tracking.id"), nullable=False)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False)
+    task_id = Column(Integer, ForeignKey("tasks.id"), nullable=False)
+    itos_number = Column(String(120), nullable=False)  # snapshot at enqueue time
+    batch_id = Column(String(36), nullable=False)  # groups one "Request" click's rows
+    status = Column(String(20), nullable=False, default="queued")  # queued|processing|done|failed
+    attempts = Column(Integer, nullable=False, default=0)
+    max_attempts = Column(Integer, nullable=False, default=3)
+    last_error = Column(String(500), nullable=True)
+    screenshot_dir = Column(String(500), nullable=True)  # relative path, set once done
+    requested_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    requested_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    next_retry_at = Column(DateTime, nullable=True)
+
+    order_tracking = relationship("OrderTracking")
+    client = relationship("Client")
+    task = relationship("Task")
+    requested_by_user = relationship("User")
+
+
 class ModelPricing(Base):
     """Admin-entered $/1M-token price for a Gemini model, effective from a
     given moment onward. Adding a new row (when Google changes prices) never

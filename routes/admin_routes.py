@@ -2,7 +2,7 @@ import datetime
 
 from flask import Blueprint, g, jsonify, request
 from admin import service
-from database.backup import backup_now
+from database.scheduled_backup import backup_and_sync
 from helpers import billing
 from helpers.decorators import role_required
 
@@ -209,7 +209,7 @@ def get_stats_by_client():
 @bp.route("/backup", methods=["POST"])
 @role_required("admin")
 def post_backup():
-    backup_now()
+    backup_and_sync()
     return jsonify({"status": "ok"})
 
 

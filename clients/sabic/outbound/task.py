@@ -14,7 +14,7 @@ from flask import Blueprint, g, jsonify, render_template, request, send_file
 from werkzeug.utils import secure_filename
 
 from database.db import SessionLocal
-from database.models import Client, OrderTracking, Task as TaskModel
+from database.models import Client, OrderTracking, ScreenshotJob, Task as TaskModel
 from helpers.base_task import BaseTask
 from helpers.dates import period_range, utc_iso
 from helpers.decorators import task_access_required
@@ -440,6 +440,18 @@ def download(job_id):
     return send_file(path, as_attachment=True, download_name="Sabic_Outbound_Output.xlsx")
 
 
+def _order_row_json(r: OrderTracking) -> dict:
+    return {
+        "id": r.id,
+        "reference": r.reference,
+        "date": utc_iso(r.created_at),
+        "status": r.status,
+        "itos_number": r.itos_number,
+        "screenshot_status": r.screenshot_status,
+        "screenshot_error": r.screenshot_error,
+    }
+
+
 @bp.route("/orders")
 @task_access_required(CLIENT_SLUG, TASK_SLUG)
 def list_orders():
@@ -463,15 +475,7 @@ def list_orders():
             q = q.filter(OrderTracking.created_at >= since, OrderTracking.created_at < until)
 
         rows = q.order_by(OrderTracking.created_at.desc()).all()
-        return jsonify({"orders": [{
-            "id": r.id,
-            "reference": r.reference,
-            "date": utc_iso(r.created_at),
-            "status": r.status,
-            "itos_number": r.itos_number,
-            "screenshot_status": r.screenshot_status,
-            "screenshot_error": r.screenshot_error,
-        } for r in rows]})
+        return jsonify({"orders": [_order_row_json(r) for r in rows]})
     finally:
         session.close()
 
@@ -537,15 +541,7 @@ def update_orders():
 
         session.commit()
         return jsonify({
-            "orders": [{
-                "id": r.id,
-                "reference": r.reference,
-                "date": utc_iso(r.created_at),
-                "status": r.status,
-                "itos_number": r.itos_number,
-                "screenshot_status": r.screenshot_status,
-                "screenshot_error": r.screenshot_error,
-            } for r in updated],
+            "orders": [_order_row_json(r) for r in updated],
             "skipped": skipped,
         })
     finally:
@@ -643,3 +639,56 @@ def get_order_screenshot_image(order_tracking_id, filename):
     if directory not in path.parents or not path.is_file():
         return jsonify({"error": "Not found"}), 404
     return send_file(path)
+
+
+@bp.route("/orders/<int:order_tracking_id>/revoke", methods=["POST"])
+@task_access_required(CLIENT_SLUG, TASK_SLUG)
+def revoke_order(order_tracking_id):
+    """Manually reverts a Done row back to Pending — e.g. the captured
+    screenshots turned out wrong and the shipment needs re-requesting.
+    itos_number and any existing screenshot files are left untouched (the
+    old files just stop being the row's "current" result); only status and
+    the screenshot lifecycle reset, which is what makes the row eligible
+    for Request Screenshot again."""
+    session = SessionLocal()
+    try:
+        row = _order_tracking_row_or_404(session, order_tracking_id)
+        if not row:
+            return jsonify({"error": "Not found"}), 404
+        if row.status != "done":
+            return jsonify({"error": "Only a Done row can be reverted to Pending."}), 400
+
+        row.status = "pending"
+        row.screenshot_status = None
+        row.screenshot_error = None
+        row.updated_by = g.user["user_id"]
+        session.commit()
+        return jsonify({"order": _order_row_json(row)})
+    finally:
+        session.close()
+
+
+@bp.route("/orders/<int:order_tracking_id>", methods=["DELETE"])
+@task_access_required(CLIENT_SLUG, TASK_SLUG)
+def delete_order(order_tracking_id):
+    """Removes a row entirely. Blocked while a screenshot job is actually
+    in flight for it — deleting out from under the background worker mid-run
+    is exactly what causes it to crash trying to save its result back to a
+    row that's no longer there (see helpers/screenshot_worker.py). Any
+    ScreenshotJob history for the row is deleted too (FK cleanup); the
+    screenshot PNG files on disk are left alone — deleting a tracking row is
+    not the same as deciding the captured evidence should be destroyed."""
+    session = SessionLocal()
+    try:
+        row = _order_tracking_row_or_404(session, order_tracking_id)
+        if not row:
+            return jsonify({"error": "Not found"}), 404
+        if row.screenshot_status in ("queued", "processing"):
+            return jsonify({"error": "Cannot delete while a screenshot request is in progress."}), 409
+
+        session.query(ScreenshotJob).filter_by(order_tracking_id=order_tracking_id).delete()
+        session.delete(row)
+        session.commit()
+        return jsonify({"deleted": order_tracking_id})
+    finally:
+        session.close()

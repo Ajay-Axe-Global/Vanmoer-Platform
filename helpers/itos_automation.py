@@ -36,7 +36,8 @@ APPS_TAB_X = int(os.getenv("ITOS_APPS_TAB_X", "301"))
 APPS_TAB_Y = int(os.getenv("ITOS_APPS_TAB_Y", "347"))
 CARD_X = int(os.getenv("ITOS_CARD_X", "410"))
 CARD_Y = int(os.getenv("ITOS_CARD_Y", "457"))
-MAX_EDGE_LAUNCH_RETRIES = int(os.getenv("ITOS_MAX_LAUNCH_RETRIES", "3"))
+MAX_EDGE_LAUNCH_RETRIES = int(os.getenv("ITOS_MAX_LAUNCH_RETRIES", "2"))
+DATE_FROM_YEARS_BACK = int(os.getenv("ITOS_DATE_FROM_YEARS_BACK", "5"))
 
 
 class ScreenshotAutomationError(Exception):
@@ -213,20 +214,38 @@ def _check_existing_edge():
     time.sleep(0.5)
     return True
 
-
 def _launch_edge_fresh():
     subprocess.Popen(f'explorer.exe shell:appsFolder\\{APP_ID}', shell=True)
-    time.sleep(5)
+    time.sleep(8)
 
     try:
-        app = Application(backend="uia").connect(title_re=".*Windows App.*", timeout=15)
+        app = Application(backend="uia").connect(title_re=".*Windows App.*", timeout=20)
     except Exception:
+        print("Could not connect to Windows App")
         return False
 
     window = app.window(title_re=".*Windows App.*")
-    window.wait("visible", timeout=10)
-    window.set_focus()
-    time.sleep(1)
+
+    # Force the window visible
+    try:
+        import ctypes
+        hwnd = window.handle
+        print(f"Window handle: {hwnd}")
+        print(f"Window rect before: {window.rectangle()}")
+
+        ctypes.windll.user32.ShowWindow(hwnd, 9)        # SW_RESTORE
+        time.sleep(0.5)
+        ctypes.windll.user32.ShowWindow(hwnd, 3)        # SW_MAXIMIZE
+        time.sleep(0.5)
+        ctypes.windll.user32.SetForegroundWindow(hwnd)
+        time.sleep(1)
+
+        print(f"Window visible: {window.is_visible()}")
+        print(f"Window rect after: {window.rectangle()}")
+    except Exception as e:
+        print(f"ctypes focus failed: {e}")
+
+    # Debug screenshot to verify Windows App is on screen
 
     pyautogui.click(APPS_TAB_X, APPS_TAB_Y)
     time.sleep(2)
@@ -249,7 +268,6 @@ def _launch_edge_fresh():
             return True
 
     return False
-
 
 def _ensure_edge_ready() -> bool:
     if _check_existing_edge():
@@ -284,24 +302,30 @@ def _prepare_index_page(wait_for_load=False):
     if not _open_console_and_enable_paste():
         return False
 
-    _console_run("""
-        (function() {
+    # Computed from TODAY's real date every time, never from whatever the
+    # picker currently shows — this runs once per order in a batch, so
+    # reading-and-shifting the picker's own (already-shifted) value here
+    # compounded further back on every subsequent order in the same run
+    # (2026 -> 2020 -> 2014 -> 2008 ...). Setting an absolute target date is
+    # idempotent no matter how many times this gets called.
+    _console_run(f"""
+        (function() {{
             var attempts = 0;
-            var check = setInterval(function() {
+            var check = setInterval(function() {{
                 attempts++;
-                if (typeof $ !== "undefined" && $("#dateFrom").length > 0) {
+                if (typeof $ !== "undefined" && $("#dateFrom").length > 0) {{
                     clearInterval(check);
                     var picker = $("#dateFrom").data("kendoDatePicker");
-                    if (picker && picker.value()) {
-                        var d = new Date(picker.value());
-                        d.setFullYear(d.getFullYear() - 6);
+                    if (picker) {{
+                        var d = new Date();
+                        d.setFullYear(d.getFullYear() - {DATE_FROM_YEARS_BACK});
                         picker.value(d);
                         picker.trigger("change");
-                    }
-                }
-                if (attempts > 15) { clearInterval(check); }
-            }, 500);
-        })();
+                    }}
+                }}
+                if (attempts > 15) {{ clearInterval(check); }}
+            }}, 500);
+        }})();
     """, 3)
     return True
 
@@ -314,8 +338,16 @@ def _process_single_order(order_number: str, order_folder: Path) -> list[Path]:
     shot3 = order_folder / f"{order_number}_03_transport.png"
 
     # ── SCREENSHOT 1 — Search → main tile ────────────
+    # A leftover value in the separate External ID field (left over from
+    # browsing a previous order, or a previous search) makes iTOS filter by
+    # BOTH fields at once — clear it first, only if it actually has a value,
+    # so the Number search below is the sole filter in effect.
     _console_run(f"""
     (function() {{
+        var extId = $("#externalId");
+        if (extId.length && extId.val()) {{
+            extId.val("").trigger("input").trigger("change").trigger("keyup");
+        }}
         $("#orderNumber").val("{order_number}").trigger("input").trigger("change").trigger("keyup");
         setTimeout(function() {{
             $(".menu-item[title='Search']").trigger("click");

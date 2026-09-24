@@ -258,6 +258,16 @@
   .source-btn:hover { border-color: #3b82f6; background: #1c2942; }
   .source-dash { color: #475569; font-size: 13px; }
 
+  .row-actions { display: flex; gap: 6px; justify-content: flex-end; }
+  .row-action-btn {
+    background: #172033; border: 1px solid #334155; color: #94a3b8;
+    width: 30px; height: 30px; border-radius: 8px; cursor: pointer;
+    font-size: 13px; display: inline-flex; align-items: center; justify-content: center;
+    transition: all .15s;
+  }
+  .row-action-btn.revoke-btn:hover { border-color: #f59e0b; color: #fbbf24; background: #23180b; }
+  .row-action-btn.delete-btn:hover { border-color: #ef4444; color: #f87171; background: #2a1414; }
+
   /* ── Lightbox ─────────────────────────────────────────── */
   .lightbox-overlay {
     display: none; position: fixed; inset: 0; background: rgba(3, 7, 18, 0.88);
@@ -297,9 +307,21 @@
   .lightbox-prev { left: 14px; }
   .lightbox-next { right: 14px; }
 
-  /* Native browser Fullscreen API target — stretch the image to fill the screen. */
-  .lightbox-stage:fullscreen { max-height: 100vh; border-radius: 0; background: #000; }
-  .lightbox-stage:fullscreen #lightbox-img { max-height: 100vh; }
+  /* CSS-only "maximize" toggle — deliberately NOT the browser Fullscreen API
+     (element.requestFullscreen()): that call is silently blocked in a lot of
+     real deployment contexts (embedded/kiosk browser frames, restricted
+     permissions policies) with no visible error, which is exactly what made
+     the ⛶ button appear to do nothing. This just resizes elements we already
+     control, so it always works regardless of the surrounding browser setup. */
+  .lightbox-overlay.maximized { padding: 0; }
+  .lightbox-overlay.maximized .lightbox-box { max-width: 100%; height: 100%; }
+  .lightbox-overlay.maximized .lightbox-stage {
+    max-height: none; height: 100%; border-radius: 0; background: #000;
+  }
+  .lightbox-overlay.maximized #lightbox-img { max-height: 100vh; }
+  .lightbox-overlay.maximized .lightbox-topbar {
+    position: absolute; top: 12px; left: 12px; right: 12px; z-index: 1;
+  }
 
   /* Card layout on narrow screens */
   @media (max-width: 640px) {
@@ -408,6 +430,7 @@
             <th>ITOS</th>
             <th>Source</th>
             <th>Status</th>
+            <th></th>
           </tr>
         </thead>
         <tbody id="orders-tbody"></tbody>
@@ -676,6 +699,10 @@
           ? `<button type="button" class="source-btn" data-id="${o.id}" title="View screenshots">🖼️</button>`
           : `<span class="source-dash">—</span>`;
 
+        const revokeBtn = o.status === "done"
+          ? `<button type="button" class="row-action-btn revoke-btn" data-id="${o.id}" title="Revert to Pending">↺</button>`
+          : "";
+
         return `
           <tr data-id="${o.id}">
             <td class="checkbox-cell"><input type="checkbox" class="row-checkbox" data-id="${o.id}" ${checkedIds.has(o.id) ? "checked" : ""} /></td>
@@ -687,6 +714,12 @@
             <td data-label="Status">
               <span class="status-badge ${o.status}">${o.status === "done" ? "Done" : "Pending"}</span>
               ${screenshotNote}
+            </td>
+            <td data-label="">
+              <div class="row-actions">
+                ${revokeBtn}
+                <button type="button" class="row-action-btn delete-btn" data-id="${o.id}" title="Delete row">🗑</button>
+              </div>
             </td>
           </tr>
         `;
@@ -712,6 +745,12 @@
       });
       ordersTbody.querySelectorAll(".source-btn").forEach(btn => {
         btn.addEventListener("click", () => openLightbox(Number(btn.dataset.id)));
+      });
+      ordersTbody.querySelectorAll(".revoke-btn").forEach(btn => {
+        btn.addEventListener("click", () => revokeOrder(Number(btn.dataset.id)));
+      });
+      ordersTbody.querySelectorAll(".delete-btn").forEach(btn => {
+        btn.addEventListener("click", () => deleteOrder(Number(btn.dataset.id)));
       });
     }
 
@@ -782,9 +821,41 @@
       }
     }
 
+    async function revokeOrder(id) {
+      try {
+        const res = await VanmoerAuth.authFetch(`${window.location.pathname}orders/${id}/revoke`, {
+          method: "POST",
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Could not revert this row");
+        orders = orders.map(o => o.id === id ? data.order : o);
+        renderOrders();
+        updateRequestButton();
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
+    async function deleteOrder(id) {
+      if (!confirm("Delete this row? This cannot be undone (captured screenshot files, if any, are kept on disk).")) return;
+      try {
+        const res = await VanmoerAuth.authFetch(`${window.location.pathname}orders/${id}`, {
+          method: "DELETE",
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Could not delete this row");
+        orders = orders.filter(o => o.id !== id);
+        checkedIds.delete(id);
+        renderOrders();
+        updateRequestButton();
+        syncPolling();
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
     // ── Screenshot lightbox ──────────────────────────────────────────────
     const lightboxOverlay = document.getElementById("lightbox-overlay");
-    const lightboxStage = document.getElementById("lightbox-stage");
     const lightboxImg = document.getElementById("lightbox-img");
     const lightboxCounter = document.getElementById("lightbox-counter");
     const lightboxPrev = document.getElementById("lightbox-prev");
@@ -831,8 +902,7 @@
     }
 
     function closeLightbox() {
-      lightboxOverlay.classList.remove("visible");
-      if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+      lightboxOverlay.classList.remove("visible", "maximized");
       if (lightboxImg.src.startsWith("blob:")) URL.revokeObjectURL(lightboxImg.src);
       lightboxImg.src = "";
       lightboxFiles = [];
@@ -849,15 +919,19 @@
       if (e.target === lightboxOverlay) closeLightbox();
     });
     lightboxFullscreenBtn.addEventListener("click", () => {
-      if (document.fullscreenElement) {
-        document.exitFullscreen().catch(() => {});
-      } else {
-        lightboxStage.requestFullscreen().catch(() => {});
-      }
+      lightboxOverlay.classList.toggle("maximized");
     });
     document.addEventListener("keydown", (e) => {
       if (!lightboxOverlay.classList.contains("visible")) return;
-      if (e.key === "Escape") closeLightbox();
+      if (e.key === "Escape") {
+        // First Escape exits the maximized view; a second closes the lightbox —
+        // matches how the native Fullscreen API used to layer these two states.
+        if (lightboxOverlay.classList.contains("maximized")) {
+          lightboxOverlay.classList.remove("maximized");
+        } else {
+          closeLightbox();
+        }
+      }
       else if (e.key === "ArrowLeft") lightboxPrev.click();
       else if (e.key === "ArrowRight") lightboxNext.click();
     });

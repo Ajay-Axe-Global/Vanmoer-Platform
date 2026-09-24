@@ -17,9 +17,23 @@ the web app running.
 """
 
 import ctypes
+
+import sys
+# MUST be before any other imports that touch the display
+if sys.platform == "win32":
+    try:
+        ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+    except Exception:
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except Exception:
+            try:
+                ctypes.windll.user32.SetProcessDPIAware()
+            except Exception:
+                pass
 import os
 import subprocess
-import sys
+
 import time
 from pathlib import Path
 
@@ -41,52 +55,29 @@ MAX_EDGE_LAUNCH_RETRIES = int(os.getenv("ITOS_MAX_LAUNCH_RETRIES", "2"))
 DATE_FROM_YEARS_BACK = int(os.getenv("ITOS_DATE_FROM_YEARS_BACK", "5"))
 
 
-def _declare_dpi_awareness():
-    """
-    Without this, Windows treats this process as "DPI-unaware" and secretly
-    renders/reports everything to it at a scaled-DOWN virtual resolution
-    (e.g. a real 1920x1080 24" monitor at 125% scaling appears to an unaware
-    process as 1536x864) instead of true native pixels. pyautogui.screenshot()
-    then captures at that reduced virtual resolution and Windows stretches it
-    back up to fill the real screen — which is exactly what "low quality on
-    a 24-inch monitor" looks like: it's not a compression/format issue, the
-    captured bitmap itself has fewer real pixels than the display.
-
-    Must be called once, as early as possible in the process — before any
-    window/graphics APIs are touched — which is why this runs at import time
-    of this module rather than lazily inside capture_order_screenshots().
-    Tries the modern per-monitor-v2 API first, falling back for older
-    Windows versions; safe to no-op on failure (screenshots just stay at
-    whatever awareness the process already had).
-
-    NOTE: this changes the process's coordinate space from virtual/scaled
-    pixels to TRUE physical pixels. Any ITOS_APPS_TAB_X/Y and ITOS_CARD_X/Y
-    values measured before this fix was in place were measured in the OLD
-    (scaled) coordinate space and must be re-measured now that this is on,
-    or clicks will land in the wrong spot.
-    """
-    if sys.platform != "win32":
-        return
-    try:
-        # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 — Windows 10 1703+.
-        ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
-        return
-    except Exception:
-        pass
-    try:
-        # PROCESS_PER_MONITOR_DPI_AWARE — Windows 8.1+.
-        ctypes.windll.shcore.SetProcessDpiAwareness(2)
-        return
-    except Exception:
-        pass
-    try:
-        # System DPI aware — Vista+, universal fallback.
-        ctypes.windll.user32.SetProcessDPIAware()
-    except Exception:
-        pass
+# def _declare_dpi_awareness():
+#     if sys.platform != "win32":
+#         return
+#     try:
+#         ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+#         print("DPI: per-monitor-v2 ✓")
+#         return
+#     except Exception as e:
+#         print(f"DPI v2 failed: {e}")
+#     try:
+#         ctypes.windll.shcore.SetProcessDpiAwareness(2)
+#         print("DPI: per-monitor ✓")
+#         return
+#     except Exception as e:
+#         print(f"DPI per-monitor failed: {e}")
+#     try:
+#         ctypes.windll.user32.SetProcessDPIAware()
+#         print("DPI: system-aware ✓")
+#     except Exception as e:
+#         print(f"DPI all methods failed: {e}")
 
 
-_declare_dpi_awareness()
+
 
 
 class ScreenshotAutomationError(Exception):
@@ -277,7 +268,7 @@ def _launch_edge_fresh():
 
     # Force the window visible
     try:
-        import ctypes
+        # import ctypes
         hwnd = window.handle
         print(f"Window handle: {hwnd}")
         print(f"Window rect before: {window.rectangle()}")

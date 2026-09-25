@@ -16,3 +16,4 @@ google-api-python-client==2.198.0
 pywinauto==0.6.9
 pyautogui==0.9.54
 pyperclip==1.11.0
+playwright==1.62.0

@@ -325,8 +325,19 @@ def _ensure_edge_ready() -> bool:
 
 
 def _reconnect_if_needed() -> bool:
-    if _check_edge_alive():
-        return True
+    # Always route through _ensure_edge_ready() — specifically its first
+    # step, _check_existing_edge() — which is what actually navigates to
+    # the iTOS index page. The old shortcut here (_check_edge_alive():
+    # true the instant ANY Edge window exists, on ANY page) skipped that
+    # navigation entirely, so a freshly-opened Edge window sitting on its
+    # default Bing/new-tab page — or any other leftover page from before —
+    # got treated as "ready," and the date-filter/search script ran against
+    # whatever page it actually had loaded, only reaching iTOS afterward
+    # (at the end of capture_order_screenshots(), which navigates back to
+    # the index page to reset state for the *next* job — too late for the
+    # one that had just run against the wrong page). Every request now
+    # explicitly (re)navigates to the iTOS index page before anything else
+    # happens, whether Edge was already open or not.
     return _ensure_edge_ready()
 
 

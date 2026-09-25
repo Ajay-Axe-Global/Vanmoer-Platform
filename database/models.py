@@ -142,6 +142,13 @@ class OrderTracking(Base):
     # helpers/screenshot_queue.py.
     screenshot_status = Column(String(20), nullable=True)
     screenshot_error = Column(String(500), nullable=True)
+    # Lifecycle of the Outlook forward-with-screenshots automation, same
+    # None/"queued"/"processing"/terminal shape as screenshot_status above
+    # but independent of it — see helpers/email_worker.py. Only ever
+    # meaningful once status == "done" (there's nothing to attach before
+    # the screenshots exist).
+    email_status = Column(String(20), nullable=True)  # None|"queued"|"processing"|"sent"|"failed"
+    email_error = Column(String(500), nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow,
                          onupdate=datetime.datetime.utcnow, nullable=False)
@@ -185,6 +192,42 @@ class ScreenshotJob(Base):
     started_at = Column(DateTime, nullable=True)
     finished_at = Column(DateTime, nullable=True)
     next_retry_at = Column(DateTime, nullable=True)
+
+    order_tracking = relationship("OrderTracking")
+    client = relationship("Client")
+    task = relationship("Task")
+    requested_by_user = relationship("User")
+
+
+class EmailJob(Base):
+    """One row per Outlook forward-with-screenshots attempt — the durable
+    queue helpers/email_worker.py consumes. Structurally the same pattern
+    as ScreenshotJob (a DB table instead of an in-memory queue, so it
+    survives a restart), but deliberately has NO attempts/max_attempts/
+    next_retry_at: unlike retaking a screenshot, sending an email is not
+    idempotent, so this never auto-retries — any failure is terminal
+    ("failed") and a human-initiated Retry (see helpers/email_queue.py)
+    inserts a fresh row, the same way an initial request does. Also
+    independent of ScreenshotJob's queue/worker — Playwright drives its
+    own isolated Chrome profile here, not the physical desktop, so it
+    never contends with the screenshot automation for the screen; it has
+    its own single-concurrency constraint instead (only one process can
+    hold the persistent Outlook browser profile open at a time), which is
+    why this still gets its own dedicated single worker."""
+    __tablename__ = "email_jobs"
+
+    id = Column(Integer, primary_key=True)
+    order_tracking_id = Column(Integer, ForeignKey("order_tracking.id"), nullable=False)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False)
+    task_id = Column(Integer, ForeignKey("tasks.id"), nullable=False)
+    reference = Column(String(255), nullable=False)  # snapshot — the Outlook search term
+    batch_id = Column(String(36), nullable=False)  # groups one "Approve" click's rows
+    status = Column(String(20), nullable=False, default="queued")  # queued|processing|sent|failed
+    last_error = Column(String(500), nullable=True)
+    requested_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    requested_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
 
     order_tracking = relationship("OrderTracking")
     client = relationship("Client")

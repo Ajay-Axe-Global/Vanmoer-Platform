@@ -29,7 +29,8 @@ from flask import Flask, send_from_directory
 
 from database.scheduled_backup import backup_and_sync
 from database.seed import seed
-from helpers.screenshot_worker import start_worker
+from helpers.email_worker import start_worker as start_email_worker
+from helpers.screenshot_worker import start_worker as start_screenshot_worker
 from routes import register_all
 
 BASE_DIR = Path(__file__).parent
@@ -75,7 +76,12 @@ def create_app() -> Flask:
     register_all(app)
     _start_backup_scheduler()
     if not _running_in_reloader_watcher():
-        start_worker()
+        # Two independent single-concurrency workers — see
+        # helpers/email_worker.py's module docstring for why sending
+        # emails doesn't share the screenshot worker's physical-desktop
+        # constraint and gets its own dedicated thread instead.
+        start_screenshot_worker()
+        start_email_worker()
 
     @app.route("/")
     @app.route("/login")

@@ -26,6 +26,9 @@ database/*.sqlite3
 # Uploads (user content)
 uploads/
 screenshots/
+# Outlook Chrome profile — holds an authenticated Microsoft 365 session
+# (cookies/tokens), never commit this.
+outlook_profile/
 credentials.json
 token.json
 database/drive_file_ids.json

@@ -171,9 +171,12 @@ Microsoft phone-call MFA challenge on this machine.
 
 **Already set up, don't need touching unless something moves:**
 
-- `OUTLOOK_PROFILE_DIR` defaults to the existing
-  `D:/Axe-Global/Screenshot/outlook_profile/` — this folder already holds a
-  completed-MFA session from earlier testing, reused as-is.
+- `OUTLOOK_PROFILE_DIR` defaults to `outlook_profile/` inside this project's
+  own source directory (`Vanmoer-Platform/outlook_profile/`) — a one-time
+  copy of the completed-MFA session originally set up under
+  `Screenshot/outlook_profile/`, kept in-project so the Outlook automation
+  doesn't depend on a folder outside this codebase. Gitignored — never
+  committed, since it holds live session cookies.
 - `OUTLOOK_CHROME_PATH` defaults to the exact Chrome install
   (`C:\Program Files\Google\Chrome\Application\chrome.exe`) that profile was
   authenticated against.

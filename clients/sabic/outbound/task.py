@@ -14,13 +14,14 @@ from flask import Blueprint, g, jsonify, render_template, request, send_file
 from werkzeug.utils import secure_filename
 
 from database.db import SessionLocal
-from database.models import Client, OrderTracking, ScreenshotJob, Task as TaskModel
+from database.models import Client, EmailJob, OrderTracking, ScreenshotJob, Task as TaskModel
 from helpers.base_task import BaseTask
 from helpers.dates import period_range, utc_iso
 from helpers.decorators import task_access_required
 from helpers.excel_writer import write_excel
 from helpers.jobs import build_reference, job_output_path, log_job, new_job_dir, upsert_order_tracking
 from helpers.pdf_utils import extract_text
+from helpers.email_queue import request_emails, retry_failed_emails
 from helpers.screenshot_queue import SCREENSHOTS_DIR, list_screenshot_files, request_screenshots, retry_failed
 
 CLIENT_SLUG = "sabic"
@@ -449,6 +450,8 @@ def _order_row_json(r: OrderTracking) -> dict:
         "itos_number": r.itos_number,
         "screenshot_status": r.screenshot_status,
         "screenshot_error": r.screenshot_error,
+        "email_status": r.email_status,
+        "email_error": r.email_error,
     }
 
 
@@ -647,9 +650,10 @@ def revoke_order(order_tracking_id):
     """Manually reverts a Done row back to Pending — e.g. the captured
     screenshots turned out wrong and the shipment needs re-requesting.
     itos_number and any existing screenshot files are left untouched (the
-    old files just stop being the row's "current" result); only status and
-    the screenshot lifecycle reset, which is what makes the row eligible
-    for Request Screenshot again."""
+    old files just stop being the row's "current" result); status, the
+    screenshot lifecycle, AND the email lifecycle all reset — an email
+    approval tied to the previous (now-superseded) screenshots shouldn't
+    still show as available/sent once those screenshots are being redone."""
     session = SessionLocal()
     try:
         row = _order_tracking_row_or_404(session, order_tracking_id)
@@ -657,10 +661,14 @@ def revoke_order(order_tracking_id):
             return jsonify({"error": "Not found"}), 404
         if row.status != "done":
             return jsonify({"error": "Only a Done row can be reverted to Pending."}), 400
+        if row.email_status in ("queued", "processing"):
+            return jsonify({"error": "Cannot revoke while an email send is in progress."}), 409
 
         row.status = "pending"
         row.screenshot_status = None
         row.screenshot_error = None
+        row.email_status = None
+        row.email_error = None
         row.updated_by = g.user["user_id"]
         session.commit()
         return jsonify({"order": _order_row_json(row)})
@@ -671,13 +679,15 @@ def revoke_order(order_tracking_id):
 @bp.route("/orders/<int:order_tracking_id>", methods=["DELETE"])
 @task_access_required(CLIENT_SLUG, TASK_SLUG)
 def delete_order(order_tracking_id):
-    """Removes a row entirely. Blocked while a screenshot job is actually
-    in flight for it — deleting out from under the background worker mid-run
-    is exactly what causes it to crash trying to save its result back to a
-    row that's no longer there (see helpers/screenshot_worker.py). Any
-    ScreenshotJob history for the row is deleted too (FK cleanup); the
-    screenshot PNG files on disk are left alone — deleting a tracking row is
-    not the same as deciding the captured evidence should be destroyed."""
+    """Removes a row entirely. Blocked while a screenshot OR email job is
+    actually in flight for it — deleting out from under a background worker
+    mid-run is exactly what causes it to crash trying to save its result
+    back to a row that's no longer there (see helpers/screenshot_worker.py,
+    helpers/email_worker.py). Any ScreenshotJob/EmailJob history for the row
+    is deleted too (FK cleanup); the screenshot PNG files on disk are left
+    alone — deleting a tracking row is not the same as deciding the
+    captured evidence (or a record of an email having been sent) should be
+    destroyed."""
     session = SessionLocal()
     try:
         row = _order_tracking_row_or_404(session, order_tracking_id)
@@ -685,10 +695,53 @@ def delete_order(order_tracking_id):
             return jsonify({"error": "Not found"}), 404
         if row.screenshot_status in ("queued", "processing"):
             return jsonify({"error": "Cannot delete while a screenshot request is in progress."}), 409
+        if row.email_status in ("queued", "processing"):
+            return jsonify({"error": "Cannot delete while an email send is in progress."}), 409
 
         session.query(ScreenshotJob).filter_by(order_tracking_id=order_tracking_id).delete()
+        session.query(EmailJob).filter_by(order_tracking_id=order_tracking_id).delete()
         session.delete(row)
         session.commit()
         return jsonify({"deleted": order_tracking_id})
+    finally:
+        session.close()
+
+
+@bp.route("/emails/request", methods=["POST"])
+@task_access_required(CLIENT_SLUG, TASK_SLUG)
+def request_order_emails():
+    """Queues an Outlook forward-with-screenshots send for the given rows
+    (single or batch). Returns immediately — the actual send happens later,
+    one row at a time, on the dedicated email worker
+    (helpers/email_worker.py); this endpoint only ever inserts queue rows."""
+    data = request.get_json(silent=True) or {}
+    ids = data.get("order_tracking_ids")
+    if not isinstance(ids, list) or not ids:
+        return jsonify({"error": "order_tracking_ids must be a non-empty list"}), 400
+
+    session = SessionLocal()
+    try:
+        result = request_emails(session, CLIENT_SLUG, TASK_SLUG, ids, g.user["user_id"])
+        return jsonify(result)
+    finally:
+        session.close()
+
+
+@bp.route("/emails/retry", methods=["POST"])
+@task_access_required(CLIENT_SLUG, TASK_SLUG)
+def retry_order_emails():
+    """Re-queues rows whose email send previously failed — a manual Retry
+    click. There is no automatic retry for emails (see
+    helpers/email_worker.py for why), so this is the only way a failed
+    send gets attempted again."""
+    data = request.get_json(silent=True) or {}
+    ids = data.get("order_tracking_ids")
+    if not isinstance(ids, list) or not ids:
+        return jsonify({"error": "order_tracking_ids must be a non-empty list"}), 400
+
+    session = SessionLocal()
+    try:
+        result = retry_failed_emails(session, CLIENT_SLUG, TASK_SLUG, ids, g.user["user_id"])
+        return jsonify(result)
     finally:
         session.close()

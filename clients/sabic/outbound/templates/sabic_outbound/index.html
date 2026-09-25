@@ -203,10 +203,18 @@
   #request-btn:hover:not(:disabled) { opacity: .92; }
   #request-btn:disabled { opacity: .35; cursor: not-allowed; }
 
-  .screenshot-note { font-size: 10.5px; margin-top: 4px; font-weight: 600; }
-  .screenshot-note.queued, .screenshot-note.processing { color: #93c5fd; }
-  .screenshot-note.failed { color: #f87171; }
-  .screenshot-note .retry-link {
+  #approve-btn {
+    background: linear-gradient(135deg, #059669, #047857); border: none; color: #fff;
+  }
+  #approve-btn:hover:not(:disabled) { opacity: .92; }
+  #approve-btn:disabled { opacity: .35; cursor: not-allowed; }
+
+  .screenshot-note, .email-note { font-size: 10.5px; margin-top: 4px; font-weight: 600; }
+  .screenshot-note.queued, .screenshot-note.processing,
+  .email-note.queued, .email-note.processing { color: #93c5fd; }
+  .screenshot-note.failed, .email-note.failed { color: #f87171; }
+  .email-note.sent { color: #6ee7b7; }
+  .screenshot-note .retry-link, .email-note .retry-link {
     color: #f87171; text-decoration: underline; text-underline-offset: 2px;
     cursor: pointer; background: none; border: none; font: inherit; padding: 0; margin-left: 4px;
   }
@@ -306,6 +314,30 @@
   .lightbox-nav:disabled { opacity: .25; cursor: not-allowed; }
   .lightbox-prev { left: 14px; }
   .lightbox-next { right: 14px; }
+
+  /* ── Confirm dialog (replaces native confirm()) ──────────── */
+  .confirm-overlay {
+    display: none; position: fixed; inset: 0; background: rgba(3, 7, 18, 0.72);
+    z-index: 200; align-items: center; justify-content: center; padding: 24px;
+    backdrop-filter: blur(3px);
+  }
+  .confirm-overlay.visible { display: flex; }
+  .confirm-box {
+    width: 100%; max-width: 420px; background: #1e293b; border: 1px solid #334155;
+    border-radius: 14px; padding: 24px; animation: chip-in .15s ease-out;
+  }
+  .confirm-title { font-size: 15.5px; font-weight: 700; color: #f8fafc; margin-bottom: 10px; }
+  .confirm-message { font-size: 13.5px; color: #cbd5e1; line-height: 1.55; margin-bottom: 22px; }
+  .confirm-actions { display: flex; justify-content: flex-end; gap: 10px; }
+  .confirm-actions button {
+    border: 1px solid transparent; border-radius: 9px; padding: 9px 18px;
+    font-weight: 700; font-size: 13px; cursor: pointer; font-family: inherit; transition: all .15s;
+  }
+  .confirm-cancel-btn { background: transparent; border-color: #334155; color: #94a3b8; }
+  .confirm-cancel-btn:hover { border-color: #475569; color: #e2e8f0; }
+  .confirm-ok-btn { background: linear-gradient(135deg, #3b82f6, #2563eb); color: #fff; }
+  .confirm-ok-btn:hover { opacity: .92; }
+  .confirm-ok-btn.danger { background: linear-gradient(135deg, #ef4444, #dc2626); }
 
   /* CSS-only "maximize" toggle — deliberately NOT the browser Fullscreen API
      (element.requestFullscreen()): that call is silently blocked in a lot of
@@ -414,6 +446,7 @@
       </div>
       <div class="toolbar-actions">
         <button type="button" id="request-btn" disabled>Request Screenshot</button>
+        <button type="button" id="approve-btn" disabled>Approve &amp; Send</button>
         <button type="button" id="edit-all-btn">Edit</button>
         <button type="button" id="save-all-btn">Save</button>
       </div>
@@ -456,9 +489,58 @@
     </div>
   </div>
 
+  <div class="confirm-overlay" id="confirm-overlay">
+    <div class="confirm-box">
+      <div class="confirm-title" id="confirm-title">Are you sure?</div>
+      <div class="confirm-message" id="confirm-message"></div>
+      <div class="confirm-actions">
+        <button type="button" class="confirm-cancel-btn" id="confirm-cancel-btn">Cancel</button>
+        <button type="button" class="confirm-ok-btn" id="confirm-ok-btn">OK</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     const auth = VanmoerAuth.requireAuth();
     document.getElementById("logout-btn").addEventListener("click", () => VanmoerAuth.logout());
+
+    // ── Styled confirm dialog (replaces the native browser confirm()) ────
+    const confirmOverlay = document.getElementById("confirm-overlay");
+    const confirmTitleEl = document.getElementById("confirm-title");
+    const confirmMessageEl = document.getElementById("confirm-message");
+    const confirmOkBtn = document.getElementById("confirm-ok-btn");
+    const confirmCancelBtn = document.getElementById("confirm-cancel-btn");
+
+    function showConfirm(message, { title = "Are you sure?", okLabel = "OK", danger = false } = {}) {
+      return new Promise((resolve) => {
+        confirmTitleEl.textContent = title;
+        confirmMessageEl.textContent = message;
+        confirmOkBtn.textContent = okLabel;
+        confirmOkBtn.classList.toggle("danger", danger);
+        confirmOverlay.classList.add("visible");
+
+        function cleanup(result) {
+          confirmOverlay.classList.remove("visible");
+          confirmOkBtn.removeEventListener("click", onOk);
+          confirmCancelBtn.removeEventListener("click", onCancel);
+          confirmOverlay.removeEventListener("click", onBackdrop);
+          document.removeEventListener("keydown", onKeydown);
+          resolve(result);
+        }
+        function onOk() { cleanup(true); }
+        function onCancel() { cleanup(false); }
+        function onBackdrop(e) { if (e.target === confirmOverlay) cleanup(false); }
+        function onKeydown(e) {
+          if (e.key === "Escape") cleanup(false);
+          else if (e.key === "Enter") cleanup(true);
+        }
+
+        confirmOkBtn.addEventListener("click", onOk);
+        confirmCancelBtn.addEventListener("click", onCancel);
+        confirmOverlay.addEventListener("click", onBackdrop);
+        document.addEventListener("keydown", onKeydown);
+      });
+    }
 
     let selectedFiles = [];
     const dropzone = document.getElementById("dropzone");
@@ -566,6 +648,7 @@
     const editAllBtn = document.getElementById("edit-all-btn");
     const saveAllBtn = document.getElementById("save-all-btn");
     const requestBtn = document.getElementById("request-btn");
+    const approveBtn = document.getElementById("approve-btn");
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
     let currentPeriod = "all";
@@ -633,11 +716,15 @@
       orders = data.orders || [];
       renderOrders();
       updateRequestButton();
+      updateApproveButton();
       syncPolling();
     }
 
     function syncPolling() {
-      const needsPoll = orders.some(o => o.screenshot_status === "queued" || o.screenshot_status === "processing");
+      const needsPoll = orders.some(o =>
+        o.screenshot_status === "queued" || o.screenshot_status === "processing"
+        || o.email_status === "queued" || o.email_status === "processing"
+      );
       if (needsPoll && !pollTimer) {
         pollTimer = setInterval(() => { refreshOrders().catch(() => {}); }, 3000);
       } else if (!needsPoll && pollTimer) {
@@ -695,6 +782,19 @@
           </div>`;
         }
 
+        let emailNote = "";
+        if (o.email_status === "queued") {
+          emailNote = `<div class="email-note queued">Email queued…</div>`;
+        } else if (o.email_status === "processing") {
+          emailNote = `<div class="email-note processing">Sending…</div>`;
+        } else if (o.email_status === "sent") {
+          emailNote = `<div class="email-note sent">✉ Sent</div>`;
+        } else if (o.email_status === "failed") {
+          emailNote = `<div class="email-note failed" title="${escapeHtml(o.email_error || "")}">
+            Email failed <button type="button" class="email-retry-link" data-id="${o.id}">Retry</button>
+          </div>`;
+        }
+
         const sourceCell = o.status === "done"
           ? `<button type="button" class="source-btn" data-id="${o.id}" title="View screenshots">🖼️</button>`
           : `<span class="source-dash">—</span>`;
@@ -714,6 +814,7 @@
             <td data-label="Status">
               <span class="status-badge ${o.status}">${o.status === "done" ? "Done" : "Pending"}</span>
               ${screenshotNote}
+              ${emailNote}
             </td>
             <td data-label="">
               <div class="row-actions">
@@ -738,10 +839,14 @@
           if (cb.checked) checkedIds.add(id); else checkedIds.delete(id);
           cb.closest("tr").classList.toggle("selected", cb.checked);
           updateRequestButton();
+          updateApproveButton();
         });
       });
       ordersTbody.querySelectorAll(".retry-link").forEach(btn => {
         btn.addEventListener("click", () => retryScreenshot(Number(btn.dataset.id)));
+      });
+      ordersTbody.querySelectorAll(".email-retry-link").forEach(btn => {
+        btn.addEventListener("click", () => retryEmail(Number(btn.dataset.id)));
       });
       ordersTbody.querySelectorAll(".source-btn").forEach(btn => {
         btn.addEventListener("click", () => openLightbox(Number(btn.dataset.id)));
@@ -762,6 +867,7 @@
         cb.closest("tr").classList.toggle("selected", cb.checked);
       });
       updateRequestButton();
+      updateApproveButton();
     });
 
     function updateRequestButton() {
@@ -773,6 +879,17 @@
         && o.screenshot_status !== "done"
       );
       requestBtn.disabled = !eligible;
+    }
+
+    function updateApproveButton() {
+      const selected = orders.filter(o => checkedIds.has(o.id));
+      const eligible = selected.length > 0 && selected.every(o =>
+        o.status === "done"
+        && o.email_status !== "queued"
+        && o.email_status !== "processing"
+        && o.email_status !== "sent"
+      );
+      approveBtn.disabled = !eligible;
     }
 
     async function requestScreenshots(ids) {
@@ -821,6 +938,60 @@
       }
     }
 
+    async function requestEmails(ids) {
+      const res = await VanmoerAuth.authFetch(`${window.location.pathname}emails/request`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ order_tracking_ids: ids }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Request failed");
+      return data;
+    }
+
+    approveBtn.addEventListener("click", async () => {
+      const ids = Array.from(checkedIds);
+      if (ids.length === 0) return;
+
+      const count = ids.length;
+      const confirmed = await showConfirm(
+        `This will forward ${count} email${count > 1 ? "s" : ""} with the captured screenshots ` +
+        `attached and send ${count > 1 ? "them" : "it"} immediately. This cannot be undone.`,
+        { title: "Send email?", okLabel: "Send", danger: true }
+      );
+      if (!confirmed) return;
+
+      approveBtn.disabled = true;
+      approveBtn.textContent = "Sending…";
+      try {
+        const data = await requestEmails(ids);
+        checkedIds.clear();
+        if (data.skipped && data.skipped.length > 0) {
+          const reasons = data.skipped.map(s => `#${s.id}: ${s.reason}`).join("\n");
+          alert(`${data.queued.length} queued.\nSkipped:\n${reasons}`);
+        }
+        await refreshOrders();
+      } catch (err) {
+        alert(err.message);
+      } finally {
+        approveBtn.textContent = "Approve & Send";
+        updateApproveButton();
+      }
+    });
+
+    async function retryEmail(id) {
+      try {
+        await VanmoerAuth.authFetch(`${window.location.pathname}emails/retry`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ order_tracking_ids: [id] }),
+        });
+        await refreshOrders();
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
     async function revokeOrder(id) {
       try {
         const res = await VanmoerAuth.authFetch(`${window.location.pathname}orders/${id}/revoke`, {
@@ -831,13 +1002,18 @@
         orders = orders.map(o => o.id === id ? data.order : o);
         renderOrders();
         updateRequestButton();
+        updateApproveButton();
       } catch (err) {
         alert(err.message);
       }
     }
 
     async function deleteOrder(id) {
-      if (!confirm("Delete this row? This cannot be undone (captured screenshot files, if any, are kept on disk).")) return;
+      const confirmed = await showConfirm(
+        "This cannot be undone (captured screenshot files, if any, are kept on disk).",
+        { title: "Delete this row?", okLabel: "Delete", danger: true }
+      );
+      if (!confirmed) return;
       try {
         const res = await VanmoerAuth.authFetch(`${window.location.pathname}orders/${id}`, {
           method: "DELETE",
@@ -848,6 +1024,7 @@
         checkedIds.delete(id);
         renderOrders();
         updateRequestButton();
+        updateApproveButton();
         syncPolling();
       } catch (err) {
         alert(err.message);

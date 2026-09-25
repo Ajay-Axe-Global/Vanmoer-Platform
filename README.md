@@ -151,6 +151,50 @@ If a screenshot request stays stuck on "queued" then eventually shows
 `Screenshot job ... attempt .../3 failed, retrying in ...s: <reason>` — the
 `<reason>` says exactly which of the two steps above failed.
 
+### Outlook email automation setup (per-machine, one-time)
+
+The SABIC Outbound "Approve & Send" feature (`helpers/outlook_automation.py`)
+forwards an existing Outlook thread (found by searching the shared
+`CT-SabicOutbound` mailbox for the shipment's reference number) with the 3
+captured ITOS screenshots pasted inline, then sends it. Unlike the ITOS
+screenshot automation, this drives its **own isolated Chrome window**
+(Playwright), not the physical desktop — but the first-ever login (or a
+re-login after the session expires) still requires a human to answer a
+Microsoft phone-call MFA challenge on this machine.
+
+**Required `.env` values:**
+
+- `OUTLOOK_EMAIL` / `OUTLOOK_PASSWORD` — only used if the saved session has
+  expired and a fresh login is attempted; day-to-day sends never touch them.
+- `OUTLOOK_FORWARD_TO` — comma-separated recipient list. Every approved send
+  goes to all of them, every time — there's no per-row recipient choice.
+
+**Already set up, don't need touching unless something moves:**
+
+- `OUTLOOK_PROFILE_DIR` defaults to the existing
+  `D:/Axe-Global/Screenshot/outlook_profile/` — this folder already holds a
+  completed-MFA session from earlier testing, reused as-is.
+- `OUTLOOK_CHROME_PATH` defaults to the exact Chrome install
+  (`C:\Program Files\Google\Chrome\Application\chrome.exe`) that profile was
+  authenticated against.
+
+**The MFA reality**: the saved session lasts roughly 20 days ("Don't ask
+again for 20 days," already checked). When it expires, a queued email job
+fails with `email_status = "failed"` and the message "Outlook session
+expired — needs manual re-login on the server." To fix it: the automation
+opens a **visible** Chrome window (`headless=False`) when it runs — if a
+job is currently failing for this reason, trigger one more Approve, and
+while it's running, go answer the phone call on this machine and complete
+the sign-in in that Chrome window. Once done, the session is saved again
+and the next ~20 days of jobs run unattended. There is currently no way to
+skip this human step — it would need a different Microsoft 365 auth method
+(e.g. a dedicated service/app-only account) set up by IT.
+
+Sending is **not automatically retried** on failure (unlike screenshots) —
+check the shared mailbox's Sent folder to confirm a failed-looking send
+didn't actually go out before clicking Retry, since retrying a send that
+silently succeeded would forward the same email twice.
+
 ## Adding a new client or task
 
 **Important: the Admin Page's "Clients" tab is not where a new client gets

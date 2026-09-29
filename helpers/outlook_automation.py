@@ -727,7 +727,7 @@ def send_forwarded_screenshots(reference: str, screenshot_paths: list[Path]) -> 
     with sync_playwright() as playwright:
         context = playwright.chromium.launch_persistent_context(
             PROFILE_DIR,
-            headless=False,
+            headless=True,  
             executable_path=CHROME_PATH,
             viewport={"width": 1366, "height": 768},
             args=["--disable-blink-features=AutomationControlled"],

@@ -6,6 +6,7 @@ file's docstring) so token.json exists.
 """
 import json
 import logging
+import os
 from pathlib import Path
 
 from google.auth.exceptions import RefreshError
@@ -24,6 +25,16 @@ TOKEN_PATH = BASE_DIR / "token.json"
 FILE_IDS_PATH = Path(__file__).parent / "drive_file_ids.json"
 
 SCOPES = ["https://www.googleapis.com/auth/drive.file"]
+
+# Keeps dev/test runs from ever overwriting the production backup on Drive:
+# unset (or "production") uploads to the same "app.db"/"app_backup.db" files
+# prod has always used, so this is a no-op for prod. Any other value uploads
+# to separate "<env>-app.db"/"<env>-app_backup.db" files instead.
+APP_ENV = os.getenv("APP_ENV", "production")
+
+
+def _drive_name(base: str) -> str:
+    return base if APP_ENV == "production" else f"{APP_ENV}-{base}"
 
 
 def _load_file_ids() -> dict:
@@ -78,8 +89,8 @@ def sync_to_drive():
     try:
         service = _get_drive_service()
         file_ids = _load_file_ids()
-        _upload_one(service, file_ids, DB_PATH, "app.db")
-        _upload_one(service, file_ids, BACKUP_PATH, "app_backup.db")
+        _upload_one(service, file_ids, DB_PATH, _drive_name("app.db"))
+        _upload_one(service, file_ids, BACKUP_PATH, _drive_name("app_backup.db"))
         _save_file_ids(file_ids)
     except RefreshError:
         logger.error(

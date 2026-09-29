@@ -381,9 +381,14 @@ def _prepare_index_page(wait_for_load=False):
     return True
 
 
-def _process_single_order(order_number: str, order_folder: Path) -> list[Path]:
+def _process_single_order(order_number: str, order_folder: Path, search_value: str) -> list[Path]:
     """3-screenshot flow for one order. Console must be open with paste
-    enabled when called; console is CLOSED when this returns."""
+    enabled when called; console is CLOSED when this returns.
+
+    `order_number` names the output files; `search_value` is what actually
+    gets typed into iTOS's External ID box — the two are allowed to differ
+    (e.g. searching by a business reference while still filing screenshots
+    under the ITOS number's folder/prefix)."""
     shot1 = order_folder / f"{order_number}_01_order.png"
     shot2 = order_folder / f"{order_number}_02_addresses.png"
     shot3 = order_folder / f"{order_number}_03_transport.png"
@@ -395,11 +400,15 @@ def _process_single_order(order_number: str, order_folder: Path) -> list[Path]:
     # so the Number search below is the sole filter in effect.
     _console_run(f"""
     (function() {{
-        var extId = $("#externalId");
-        if (extId.length && extId.val()) {{
-            extId.val("").trigger("input").trigger("change").trigger("keyup");
+        var orderNum = $("#orderNumber");
+        if (orderNum.length && orderNum.val()) {{
+            orderNum.val("").trigger("input").trigger("change").trigger("keyup");
         }}
-        $("#orderNumber").val("{order_number}").trigger("input").trigger("change").trigger("keyup");
+
+        // Step 2: Enter the value in External ID field
+        $("#externalId").val("{search_value}").trigger("input").trigger("change").trigger("keyup");
+
+        // Step 3: Click Search, then click the first result tile
         setTimeout(function() {{
             $(".menu-item[title='Search']").trigger("click");
             var check = setInterval(function() {{
@@ -472,12 +481,15 @@ def _process_single_order(order_number: str, order_folder: Path) -> list[Path]:
 # PUBLIC ENTRY POINT
 # ═══════════════════════════════════════════════════════════
 
-def capture_order_screenshots(order_number: str, output_dir: Path) -> list[Path]:
+def capture_order_screenshots(order_number: str, output_dir: Path, search_value: str | None = None) -> list[Path]:
     """
     Ensures Edge/iTOS is ready (reusing an existing session if one's already
-    open, otherwise launching one), searches `order_number` on the iTOS
-    index page (this is exactly the ITOS number saved on an OrderTracking
-    row — nothing else is searched on), and saves 3 PNGs into `output_dir`.
+    open, otherwise launching one), searches `search_value` on the iTOS
+    index page, and saves 3 PNGs into `output_dir` named after
+    `order_number`. `search_value` defaults to `order_number` when not
+    given, but a caller can pass a different business reference to search
+    by while still filing the screenshots under the ITOS number's
+    folder/prefix.
 
     Raises ScreenshotAutomationError with a human-readable reason on any
     failure instead of silently returning False, so the caller (the
@@ -487,6 +499,9 @@ def capture_order_screenshots(order_number: str, output_dir: Path) -> list[Path]
     """
     if sys.platform != "win32":
         raise ScreenshotAutomationError("iTOS screenshot automation only runs on Windows.")
+
+    if search_value is None:
+        search_value = order_number
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -498,7 +513,7 @@ def capture_order_screenshots(order_number: str, output_dir: Path) -> list[Path]
         raise ScreenshotAutomationError("Could not prepare the iTOS index page (console/date filter).")
 
     try:
-        paths = _process_single_order(order_number, output_dir)
+        paths = _process_single_order(order_number, output_dir, search_value)
     except ScreenshotAutomationError:
         raise
     except Exception as e:

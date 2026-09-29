@@ -57,3 +57,6 @@ def init_db():
         "email_status": "VARCHAR(20)",
         "email_error": "VARCHAR(500)",
     })
+    _add_missing_columns("screenshot_jobs", {
+        "reference": "VARCHAR(255)",
+    })

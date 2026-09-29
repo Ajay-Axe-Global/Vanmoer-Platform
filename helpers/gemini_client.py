@@ -63,6 +63,32 @@ def _strip_code_fence(text: str) -> str:
     return text
 
 
+def _diagnose_empty_response(response) -> str:
+    """response.text comes back "" (rather than raising) whenever the model
+    produced no visible output part — e.g. a thinking model (gemini-2.5-*)
+    burned its whole max_output_tokens budget on internal reasoning before
+    emitting any answer, or the prompt/output tripped a safety filter. Both
+    look identical to a bare json.loads("") failure, so pull finish_reason /
+    block_reason out of the response to tell them apart instead of leaving
+    the next person to guess."""
+    block_reason = getattr(getattr(response, "prompt_feedback", None), "block_reason", None)
+    if block_reason:
+        return f"prompt blocked (block_reason={block_reason})"
+    candidates = getattr(response, "candidates", None) or []
+    if not candidates:
+        return "no candidates returned"
+    finish_reason = getattr(candidates[0], "finish_reason", None)
+    if finish_reason is not None and str(finish_reason) not in ("1", "STOP"):
+        if str(finish_reason) in ("2", "MAX_TOKENS"):
+            return (
+                "finish_reason=MAX_TOKENS — the model likely spent its "
+                "entire max_output_tokens budget on internal reasoning "
+                "before emitting output text; try raising max_output_tokens"
+            )
+        return f"finish_reason={finish_reason}"
+    return "empty response text, cause unknown"
+
+
 def call_gemini(
     prompt: str,
     pdf_path: str | None = None,
@@ -111,7 +137,16 @@ def call_gemini(
             )
             _record_usage(model, getattr(response, "usage_metadata", None), call_label)
             text = _strip_code_fence(response.text)
-            return json.loads(text)
+            if not text:
+                raise RuntimeError(f"Gemini returned empty text ({_diagnose_empty_response(response)})")
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError as e:
+                snippet = text[:300].replace("\n", "\\n")
+                raise RuntimeError(
+                    f"Gemini response wasn't valid JSON ({_diagnose_empty_response(response)}); "
+                    f"json error: {e}; response started with: {snippet!r}"
+                ) from e
         except Exception as e:
             last_err = e
             # Out of quota/credits is never transient — retrying just burns

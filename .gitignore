@@ -29,6 +29,7 @@ screenshots/
 # Outlook Chrome profile — holds an authenticated Microsoft 365 session
 # (cookies/tokens), never commit this.
 outlook_profile/
+outlook_profiles/
 credentials.json
 token.json
 database/drive_file_ids.json

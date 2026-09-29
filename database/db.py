@@ -60,3 +60,8 @@ def init_db():
     _add_missing_columns("screenshot_jobs", {
         "reference": "VARCHAR(255)",
     })
+    _add_missing_columns("users", {
+        "outlook_username": "VARCHAR(255)",
+        "outlook_password": "VARCHAR(500)",
+        "outlook_status": "VARCHAR(20)",
+    })

@@ -11,6 +11,7 @@ from sqlalchemy import case, func, or_
 from database.backup import backup_now
 from database.db import SessionLocal
 from database.models import Client, GeminiUsageLog, JobHistory, Task, User, UserTaskAccess
+from helpers.crypto_utils import encrypt_secret
 from helpers.dates import period_range, resolve_tz, utc_iso
 from helpers.jwt_utils import hash_password
 
@@ -82,6 +83,12 @@ def list_users(client_slug: str | None = None, task_slug: str | None = None) -> 
             "username": u.username,
             "role": u.role,
             "is_active": u.is_active,
+            "outlook_username": u.outlook_username,
+            # Password itself is never returned to the client, connected
+            # or not — the admin form only ever writes a new one, never
+            # reads the old one back.
+            "outlook_connected": bool(u.outlook_password),
+            "outlook_status": u.outlook_status,
             "grants": [
                 {"client": g.client.name, "client_slug": g.client.slug,
                  "task": g.task.name, "task_slug": g.task.slug}
@@ -118,7 +125,8 @@ def _resolve_grants(session, role: str, grants: list[dict] | None) -> list[tuple
     return resolved
 
 
-def create_user(name: str, username: str, password: str, role: str, grants: list[dict] | None) -> dict:
+def create_user(name: str, username: str, password: str, role: str, grants: list[dict] | None,
+                 outlook_username: str | None = None, outlook_password: str | None = None) -> dict:
     name = (name or "").strip()
     username = (username or "").strip()
     if not name or not username or not password:
@@ -133,11 +141,15 @@ def create_user(name: str, username: str, password: str, role: str, grants: list
 
         resolved_grants = _resolve_grants(session, role, grants)
 
+        outlook_username = (outlook_username or "").strip() or None
+
         user = User(
             name=name,
             username=username,
             password_hash=hash_password(password),
             role=role,
+            outlook_username=outlook_username,
+            outlook_password=encrypt_secret(outlook_password) if outlook_password else None,
         )
         session.add(user)
         session.flush()  # assign user.id before attaching grants
@@ -152,7 +164,8 @@ def create_user(name: str, username: str, password: str, role: str, grants: list
 
 
 def update_user(user_id: int, name: str, username: str, password: str | None, role: str,
-                 grants: list[dict] | None) -> dict:
+                 grants: list[dict] | None,
+                 outlook_username: str | None = None, outlook_password: str | None = None) -> dict:
     name = (name or "").strip()
     username = (username or "").strip()
     if not name or not username:
@@ -177,6 +190,17 @@ def update_user(user_id: int, name: str, username: str, password: str | None, ro
         user.role = role
         if password:  # blank password on edit = keep the existing one
             user.password_hash = hash_password(password)
+
+        # Outlook username can be cleared (blank field = disconnect this
+        # user's Outlook account); blank Outlook password on edit = keep
+        # the existing encrypted one, same "blank means unchanged"
+        # convention as the login password above.
+        user.outlook_username = (outlook_username or "").strip() or None
+        if outlook_password:
+            user.outlook_password = encrypt_secret(outlook_password)
+        elif not user.outlook_username:
+            user.outlook_password = None
+            user.outlook_status = None
 
         # Replace the grant set wholesale — simpler and safer than diffing,
         # and the admin UI always submits the full intended list anyway.

@@ -22,6 +22,15 @@ route around: if the saved profile's session is no longer valid,
 capture-time raises LoginRequiredError with a clear message instead of
 hanging or guessing, and it's on a human to re-authenticate once, after
 which the saved session carries the automation for another ~20 days.
+
+PER-USER ACCOUNTS: email/password/profile_dir are passed into
+send_forwarded_screenshots() per call (resolved by helpers/email_worker.py
+from whichever platform user requested the send — see User.outlook_username/
+outlook_password/outlook_status in database/models.py), not read as fixed
+globals here. Each platform user gets their own persistent Chrome profile
+directory under OUTLOOK_PROFILE_BASE_DIR, so their saved Outlook session
+(and MFA-verified device trust) is theirs alone — one user's expired session
+never blocks another's send, and each user answers their own phone.
 """
 
 import base64
@@ -35,17 +44,14 @@ from playwright.sync_api import sync_playwright
 
 logger = logging.getLogger("outlook_automation")
 
-EMAIL = os.getenv("OUTLOOK_EMAIL")
-PASSWORD = os.getenv("OUTLOOK_PASSWORD")
-# Lives inside this project's own source directory (a top-level runtime-data
-# folder, same pattern as helpers/screenshot_queue.py's SCREENSHOTS_DIR) —
-# a one-time copy of the already-authenticated profile Screenshot/outlook.js
-# originally used, so the completed-MFA session carries over without living
-# outside the Vanmoer-Platform tree. `executable_path` (not Playwright's
-# `channel="chrome"` resolution) launches the literal same Chrome install
-# that session was authenticated against, removing any chance of Playwright
-# silently picking a different Chrome.
-PROFILE_DIR = os.getenv("OUTLOOK_PROFILE_DIR", str(Path(__file__).parent.parent / "outlook_profile"))
+# Parent directory holding one persistent Chrome profile subfolder per
+# platform user (see profile_dir_for_user() below) — the per-user
+# equivalent of the old single shared OUTLOOK_PROFILE_DIR.
+PROFILE_BASE_DIR = Path(os.getenv("OUTLOOK_PROFILE_BASE_DIR", str(Path(__file__).parent.parent / "outlook_profiles")))
+# `executable_path` (not Playwright's `channel="chrome"` resolution) launches
+# the literal same Chrome install every saved profile was authenticated
+# against, removing any chance of Playwright silently picking a different
+# Chrome.
 CHROME_PATH = os.getenv("OUTLOOK_CHROME_PATH", r"C:\Program Files\Google\Chrome\Application\chrome.exe")
 OUTLOOK_URL = "https://outlook.office.com/mail/"
 FORWARD_TO = [addr.strip() for addr in os.getenv("OUTLOOK_FORWARD_TO", "").split(",") if addr.strip()]
@@ -68,6 +74,15 @@ class LoginRequiredError(EmailAutomationError):
     """The saved Outlook session is no longer valid and needs a human to
     manually complete the phone-call MFA challenge on this machine before
     any further email jobs can succeed."""
+
+
+def profile_dir_for_user(user_id: int) -> str:
+    """Every platform user gets their own persistent Chrome profile
+    subfolder, so their Outlook session/MFA device-trust is theirs alone —
+    isolated cookie jars, never a shared login. Directory is created lazily
+    by Chromium itself on first launch_persistent_context() call, same as
+    the old single-profile setup."""
+    return str(PROFILE_BASE_DIR / f"user_{user_id}")
 
 
 def _is_login_url(url: str) -> bool:
@@ -101,19 +116,19 @@ def _needs_login(page, timeout_seconds: int = 25) -> bool:
     return _is_login_url(page.url)
 
 
-def _perform_login(page):
+def _perform_login(page, email: str | None, password: str | None):
     """Automates the parts of the Microsoft sign-in that DON'T need a
     human: picking the remembered account if Outlook offers one, or typing
-    OUTLOOK_EMAIL then OUTLOOK_PASSWORD for a fresh sign-in (ported from
+    this user's own email then password for a fresh sign-in (ported from
     outlook.js's Step A/Step B). The phone-call MFA challenge itself still
     genuinely requires a human and is handled separately by
     _wait_for_outlook_or_raise() — this function only gets the sign-in far
     enough to reach that MFA step (or, if the saved session is still good,
     straight past it)."""
-    if not EMAIL:
+    if not email:
         return
 
-    pick_account_row = page.locator("div.table-row").filter(has_text=EMAIL)
+    pick_account_row = page.locator("div.table-row").filter(has_text=email)
     email_box = page.get_by_role("textbox", name="Enter your email, phone, or")
 
     winner = None
@@ -139,7 +154,7 @@ def _perform_login(page):
         used_pick_account = True
         time.sleep(4)
     elif winner == "email":
-        email_box.fill(EMAIL)
+        email_box.fill(email)
         email_box.press("Enter")
         time.sleep(4)
     # else: login page not detected in time — fall through, the MFA wait
@@ -155,11 +170,11 @@ def _perform_login(page):
     # count=1 and visible=True; an earlier claim that ARIA role="textbox"
     # can never match a password input was wrong, based on an untested
     # assumption from the ARIA spec rather than this actual page's behavior.
-    if PASSWORD:
+    if password:
         try:
             pass_box = page.get_by_role("textbox", name=re.compile(r"Enter the password", re.IGNORECASE))
             pass_box.wait_for(state="visible", timeout=10000)
-            pass_box.fill(PASSWORD)
+            pass_box.fill(password)
             logger.warning("Password field filled — clicking Sign in.")
             page.get_by_role("button", name="Sign in").click()
             time.sleep(4)
@@ -185,13 +200,36 @@ def _dismiss_post_login_prompts(page):
         pass  # page didn't appear — that's fine
  
     # ── Step 2: "Stay signed in?" → click "Yes" ─────────────
-    try:
-        stay_yes = page.get_by_role("button", name="Yes")
-        stay_yes.wait_for(state="visible", timeout=15000)
-        stay_yes.click()
+    # The real element here is `<input type="submit" id="idSIButton9"
+    # value="Yes">` (confirmed from this exact page's live markup), not a
+    # plain <button> — get_by_role("button", name="Yes") alone was matching
+    # unreliably (this login page's knockout-bound markup can render more
+    # than one role="button"-ish node before the real one settles), leaving
+    # the automation stuck on this screen for the full 60s wait_for_url
+    # timeout below with no visible error, since the old code swallowed the
+    # failure with a bare `except: pass`. #idSIButton9 is Microsoft's own
+    # stable element ID for this button across every account (it's their
+    # login page, not anything account-specific), so it's tried first; the
+    # role-based locator stays as a fallback in case Microsoft ever changes
+    # that ID.
+    clicked_yes = False
+    for attempt in (
+        lambda: page.locator("#idSIButton9"),
+        lambda: page.locator('input[type="submit"][value="Yes"]'),
+        lambda: page.get_by_role("button", name="Yes"),
+    ):
+        try:
+            btn = attempt().first
+            btn.wait_for(state="visible", timeout=15000)
+            btn.click()
+            clicked_yes = True
+            break
+        except Exception:
+            continue
+    if clicked_yes:
         logger.warning("Clicked 'Stay signed in → Yes'.")
-    except Exception:
-        pass  # already past it
+    else:
+        logger.warning("'Stay signed in?' Yes button not found/clicked (may already be past this screen).")
  
     # ── Step 3: Wait for Outlook mail to fully load ──────────
     try:
@@ -210,29 +248,20 @@ def _click_call_option(page) -> bool:
     identity" screen — ported from outlook.js's clickCallOption(). Without
     this, nothing ever triggers the call at all (confirmed: the automation
     was previously just staring at this screen indefinitely with no
-    verification method ever selected). Prefers a "Call" row whose masked
-    number ends in "11" (matching the
-    verification method already used for this account); falls back to
-    whichever "Call" row appears first otherwise."""
+    verification method ever selected).
+
+    Just clicks whichever "Call" row appears first — this screen only ever
+    lists verification methods actually registered to the account currently
+    signing in, so there's nothing to disambiguate. (An earlier version of
+    this only clicked a row whose masked number ended in a specific "11" —
+    that matched one hardcoded shared account's own phone number and broke
+    for every other user's differently-ending number once this became
+    per-user; removed rather than trying to guess each user's digits.)"""
     try:
         page.wait_for_selector("div.table-row", timeout=30000)
     except Exception:
         return False
     time.sleep(2)
-
-    rows = page.locator("div.table-row")
-    try:
-        count = rows.count()
-    except Exception:
-        count = 0
-    for i in range(count):
-        try:
-            text = rows.nth(i).inner_text()
-        except Exception:
-            continue
-        if "Call" in text and "11" in text:
-            rows.nth(i).click()
-            return True
 
     try:
         page.locator("div.table-row").filter(has_text="Call").first.click()
@@ -697,21 +726,31 @@ def _click_send(page):
     time.sleep(3)
 
 
-def send_forwarded_screenshots(reference: str, screenshot_paths: list[Path]) -> None:
+def send_forwarded_screenshots(reference: str, screenshot_paths: list[Path],
+                                *, user_id: int, email: str | None, password: str | None) -> None:
     """
-    Opens the persistent Outlook profile, confirms the saved session is
-    still valid, navigates to CT-SabicOutbound > UPDATE in CTS, searches
-    `reference` (the OrderTracking business reference, e.g. a SABIC
-    dispatch shipment number — the same value already shown in the tracking
-    panel's Reference column), opens the latest ("All results") matching
-    thread, forwards it to OUTLOOK_FORWARD_TO with each of
-    `screenshot_paths` pasted inline (in the given order) via the
-    clipboard-write + Ctrl+V technique, and sends.
+    Opens THIS USER's own persistent Outlook profile (profile_dir_for_user
+    (user_id)), confirms the saved session is still valid, navigates to
+    CT-SabicOutbound > UPDATE in CTS, searches `reference` (the
+    OrderTracking business reference, e.g. a SABIC dispatch shipment
+    number — the same value already shown in the tracking panel's
+    Reference column), opens the latest ("All results") matching thread,
+    forwards it to OUTLOOK_FORWARD_TO with each of `screenshot_paths`
+    pasted inline (in the given order) via the clipboard-write + Ctrl+V
+    technique, and sends.
+
+    `email`/`password` are this user's own Outlook credentials (decrypted
+    by the caller from User.outlook_password just before this call, never
+    persisted here) — only used if the saved session under this user's
+    profile dir has expired and a fresh login is needed; day-to-day runs
+    with a still-valid session never touch them.
 
     Raises EmailAutomationError (or its LoginRequiredError subtype) with a
-    human-readable reason on any failure — never silently no-ops. Not
-    called concurrently with itself: only one process may hold
-    PROFILE_DIR open at a time (see helpers/email_worker.py).
+    human-readable reason on any failure — never silently no-ops. Safe to
+    run concurrently for DIFFERENT user_ids (separate profile dirs, no
+    shared lock); helpers/email_worker.py still processes jobs one at a
+    time regardless, since a handful of users doesn't need real
+    concurrency here.
 
     When OUTLOOK_SEND_ENABLED is not set to true (the default), every step
     up through pasting the images runs for real, but Send is never clicked
@@ -723,11 +762,18 @@ def send_forwarded_screenshots(reference: str, screenshot_paths: list[Path]) -> 
         raise EmailAutomationError("OUTLOOK_FORWARD_TO is not configured — no recipients to send to.")
     if not screenshot_paths:
         raise EmailAutomationError(f"No screenshot files to attach for reference {reference}.")
+    if not email:
+        raise EmailAutomationError(
+            "This user has no Outlook account connected — set an Outlook username/password "
+            "for them in Admin > Users before approving a send."
+        )
+
+    profile_dir = profile_dir_for_user(user_id)
 
     with sync_playwright() as playwright:
         context = playwright.chromium.launch_persistent_context(
-            PROFILE_DIR,
-            headless=True,  
+            profile_dir,
+            headless=False,
             executable_path=CHROME_PATH,
             viewport={"width": 1366, "height": 768},
             args=["--disable-blink-features=AutomationControlled"],
@@ -737,7 +783,7 @@ def send_forwarded_screenshots(reference: str, screenshot_paths: list[Path]) -> 
             page.goto(OUTLOOK_URL, wait_until="domcontentloaded", timeout=60000)
 
             if _needs_login(page):
-                _perform_login(page)
+                _perform_login(page, email, password)
                 _wait_for_outlook_or_raise(page)
 
             _open_update_in_cts_folder(page)

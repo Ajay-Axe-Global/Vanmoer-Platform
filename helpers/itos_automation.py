@@ -99,12 +99,27 @@ def _is_edge_title(title):
 
 
 def _find_edge_wrapper():
+    """UIA calls against a remote/RDP-rendered window (which is what the
+    real Edge window is here, inside Windows App) can throw a transient COM
+    error on ANY window in the enumeration, not just Edge's own. The
+    try/except used to wrap the whole loop, so one flaky window hit before
+    Edge in enumeration order silently aborted the entire scan and reported
+    "no Edge" even when a perfectly valid Edge window was sitting right
+    there untouched — a false negative that then sent the caller down the
+    launch-fresh path (and, on a subsequent failed retry, force-killed the
+    already-working session — see _ensure_edge_ready()). Catching per-window
+    instead means one bad .window_text() call is skipped, not fatal to the
+    whole search."""
     try:
-        for w in Desktop(backend="uia").windows():
+        windows = Desktop(backend="uia").windows()
+    except Exception:
+        return None
+    for w in windows:
+        try:
             if _is_edge_title(w.window_text()):
                 return w
-    except Exception:
-        pass
+        except Exception:
+            continue
     return None
 
 
@@ -422,6 +437,15 @@ def _process_single_order(order_number: str, order_folder: Path, search_value: s
         }}, 300);
     }})();
     """, 4)
+
+    # Click the Attachments tab before capturing the order overview shot.
+    _console_run("""
+        (function() {
+            var tab = [...document.querySelectorAll('a.header.ui-tabs-anchor')]
+                .find(el => el.textContent.trim() === 'Attachments');
+            if (tab) { tab.click(); }
+        })();
+    """, 2)
     _take_screenshot(shot1, "Order overview")
 
     # ── SCREENSHOT 2 — Order Items → tile → Addresses ─

@@ -1226,6 +1226,23 @@
             <option value="admin">Admin</option>
           </select>
 
+          <div class="row">
+            <div>
+              <label for="user-outlook-username">Outlook email <span class="hint">(for forward-with-screenshots)</span></label>
+              <input id="user-outlook-username" placeholder="name@vanmoer.com" />
+            </div>
+            <div>
+              <label for="user-outlook-password">Outlook password</label>
+              <input id="user-outlook-password" type="password" placeholder="" />
+            </div>
+          </div>
+          <p style="font-size:11px;color:var(--text-secondary);margin:8px 0 16px;line-height:1.5">
+            Drafts/sends for this user go through their own Outlook account. Leave both blank
+            if this user doesn't use the Outlook forward feature. The password is stored
+            encrypted — the automation only reuses it to refresh an expired session, which
+            still requires this user to answer a phone-call verification themselves.
+          </p>
+
           <div class="inline-client-row">
             <div class="field">
               <label for="inline-client-name">New client <span class="hint">(if not listed below)</span></label>
@@ -1284,6 +1301,7 @@
                 <th>Role</th>
                 <th>Grants</th>
                 <th>Status</th>
+                <th>Outlook</th>
                 <th></th>
               </tr>
             </thead>

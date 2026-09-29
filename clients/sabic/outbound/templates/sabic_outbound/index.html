@@ -429,7 +429,7 @@
     <button class="back-link" id="back-link">← Back to upload</button>
     <div class="page-header">
       <h1>Order Tracking</h1>
-      <p>One row per shipment reference — enter the ITOS number once it's booked</p>
+      <p>One row per shipment reference — the ITOS number is an optional label; screenshots search by reference</p>
     </div>
 
     <div class="filter-bar">
@@ -873,8 +873,7 @@
     function updateRequestButton() {
       const selected = orders.filter(o => checkedIds.has(o.id));
       const eligible = selected.length > 0 && selected.every(o =>
-        o.itos_number
-        && o.screenshot_status !== "queued"
+        o.screenshot_status !== "queued"
         && o.screenshot_status !== "processing"
         && o.screenshot_status !== "done"
       );

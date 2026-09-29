@@ -73,6 +73,8 @@ def post_user():
             password=data.get("password", ""),
             role=data.get("role", "user"),
             grants=data.get("grants"),  # [{"client_slug": ..., "task_slug": ...}, ...]
+            outlook_username=data.get("outlook_username"),
+            outlook_password=data.get("outlook_password"),
         )
         return jsonify(result), 201
     except ValueError as e:
@@ -91,6 +93,8 @@ def put_user(user_id):
             password=data.get("password") or None,
             role=data.get("role", "user"),
             grants=data.get("grants"),
+            outlook_username=data.get("outlook_username"),
+            outlook_password=data.get("outlook_password") or None,
         )
         return jsonify(result)
     except ValueError as e:

@@ -28,7 +28,8 @@ import threading
 import time
 
 from database.db import SessionLocal
-from database.models import EmailJob, OrderTracking
+from database.models import EmailJob, OrderTracking, User
+from helpers.crypto_utils import decrypt_secret
 from helpers.outlook_automation import EmailAutomationError, LoginRequiredError, send_forwarded_screenshots
 from helpers.screenshot_queue import list_screenshot_files, screenshot_dir_for
 
@@ -118,6 +119,21 @@ def _process_job(session, job: EmailJob):
         _handle_failure(session, job, row, "No ITOS number on this row — nothing to attach.")
         return
 
+    # Each job's requester is who owns the Outlook account the send goes
+    # through — see User.outlook_username/outlook_password/outlook_status
+    # in database/models.py. The forward always uses the account of
+    # whoever clicked Approve on this row, never a shared/hardcoded one.
+    user = session.query(User).filter_by(id=job.requested_by).first()
+    if not user or not user.outlook_username:
+        _handle_failure(
+            session, job, row,
+            "No Outlook account connected for this user — set one in Admin > Users, "
+            "then retry.",
+        )
+        return
+
+    password = decrypt_secret(user.outlook_password) if user.outlook_password else None
+
     screenshot_dir = screenshot_dir_for(client_slug, row.itos_number)
     filenames = list_screenshot_files(client_slug, row.itos_number)
     if not filenames:
@@ -126,8 +142,12 @@ def _process_job(session, job: EmailJob):
     screenshot_paths = [screenshot_dir / name for name in filenames]
 
     try:
-        send_forwarded_screenshots(job.reference, screenshot_paths)
+        send_forwarded_screenshots(
+            job.reference, screenshot_paths,
+            user_id=user.id, email=user.outlook_username, password=password,
+        )
     except LoginRequiredError as e:
+        user.outlook_status = "needs_reauth"
         _handle_failure(session, job, row, str(e))
         return
     except EmailAutomationError as e:
@@ -138,6 +158,7 @@ def _process_job(session, job: EmailJob):
         _handle_failure(session, job, row, f"Unexpected error: {e}")
         return
 
+    user.outlook_status = "connected"
     job.status = "sent"
     job.finished_at = datetime.datetime.utcnow()
     if row:
@@ -146,7 +167,7 @@ def _process_job(session, job: EmailJob):
         row.email_status = "sent"
         row.email_error = None
     session.commit()
-    logger.info("Email job %s (reference %s) sent", job.id, job.reference)
+    logger.info("Email job %s (reference %s) sent via %s", job.id, job.reference, user.outlook_username)
 
 
 def _handle_failure(session, job: EmailJob, row: OrderTracking | None, error: str):

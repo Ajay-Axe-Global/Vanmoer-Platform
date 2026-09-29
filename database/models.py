@@ -52,6 +52,24 @@ class User(Base):
     # still count correctly in both reports.
     is_active = Column(Boolean, nullable=False, default=True)
 
+    # This user's own Outlook mailbox for the forward-with-screenshots
+    # automation (helpers/outlook_automation.py) — each user's drafts/sends
+    # go out through THEIR account, not one shared hardcoded profile.
+    # outlook_password is encrypted (helpers/crypto_utils.py), never stored
+    # or logged in plaintext; it's only decrypted at the moment the
+    # automation needs to type it into Microsoft's login form. Both are
+    # nullable — a user who never uses the Outlook forward feature (or an
+    # admin account) simply never sets these.
+    outlook_username = Column(String(255), nullable=True)
+    outlook_password = Column(String(500), nullable=True)
+    # None: never connected. "connected": last login/MFA succeeded and the
+    # saved browser profile session is expected to still be good.
+    # "needs_reauth": the saved session expired or a login attempt failed —
+    # this user needs to trigger a send so the MFA phone call can reach
+    # them and refresh it. Set by helpers/email_worker.py, not the
+    # automation module itself (that module stays DB-agnostic).
+    outlook_status = Column(String(20), nullable=True)
+
     grants = relationship("UserTaskAccess", back_populates="user", cascade="all, delete-orphan")
     jobs = relationship("JobHistory", back_populates="user")
 

@@ -639,7 +639,9 @@
     document.getElementById("add-user-btn").textContent = "Add user";
     document.getElementById("cancel-edit-btn").style.display = "none";
     document.getElementById("user-password").placeholder = "";
-    ["user-name", "user-username", "user-password"].forEach(id => document.getElementById(id).value = "");
+    document.getElementById("user-outlook-password").placeholder = "";
+    ["user-name", "user-username", "user-password", "user-outlook-username", "user-outlook-password"]
+      .forEach(id => document.getElementById(id).value = "");
     document.getElementById("user-role").value = "user";
     document.getElementById("assignment-block").style.display = "block";
     renderGrantChips();
@@ -660,6 +662,10 @@
     document.getElementById("user-username").value = u.username;
     document.getElementById("user-password").value = "";
     document.getElementById("user-password").placeholder = "Leave blank to keep current password";
+    document.getElementById("user-outlook-username").value = u.outlook_username || "";
+    document.getElementById("user-outlook-password").value = "";
+    document.getElementById("user-outlook-password").placeholder =
+      u.outlook_connected ? "Leave blank to keep current password" : "";
     document.getElementById("user-role").value = u.role;
     document.getElementById("assignment-block").style.display = u.role === "admin" ? "none" : "block";
     renderGrantChips();
@@ -707,10 +713,20 @@
     renderUsersTable();
   }
 
+  // u.outlook_connected/outlook_status come from list_users() in
+  // admin/service.py — the password itself is never sent to the client,
+  // only whether one is set and the last known session state.
+  function outlookStatusLabel(u) {
+    if (!u.outlook_connected) return `<span class="badge inactive">not connected</span>`;
+    if (u.outlook_status === "needs_reauth") return `<span class="badge inactive">needs re-auth</span>`;
+    if (u.outlook_status === "connected") return `<span class="badge">connected</span>`;
+    return `<span class="badge inactive">not verified yet</span>`;
+  }
+
   function renderUsersTable() {
     const tbody = document.querySelector("#users-table tbody");
     if (usersTableRows.length === 0) {
-      tbody.innerHTML = `<tr class="empty-row"><td colspan="6">No users match these filters.</td></tr>`;
+      tbody.innerHTML = `<tr class="empty-row"><td colspan="7">No users match these filters.</td></tr>`;
       return;
     }
     tbody.innerHTML = usersTableRows.map(u => `
@@ -720,6 +736,7 @@
         <td><span class="badge">${u.role}</span></td>
         <td>${(u.grants || []).map(g => `${g.client}/${g.task}`).join(", ") || "—"}</td>
         <td><span class="badge ${u.is_active ? "" : "inactive"}">${u.is_active ? "active" : "inactive"}</span></td>
+        <td>${outlookStatusLabel(u)}</td>
         <td>
           <div class="row-actions">
             <button data-edit="${u.id}">Edit</button>
@@ -798,6 +815,8 @@
       password: document.getElementById("user-password").value,
       role,
       grants: role === "user" ? currentGrants.map(g => ({ client_slug: g.client_slug, task_slug: g.task_slug })) : [],
+      outlook_username: document.getElementById("user-outlook-username").value.trim(),
+      outlook_password: document.getElementById("user-outlook-password").value,
     };
 
     const isEdit = editingUserId !== null;

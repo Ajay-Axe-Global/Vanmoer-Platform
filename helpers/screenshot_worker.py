@@ -120,10 +120,10 @@ def _claim_next_job(session) -> ScreenshotJob | None:
 def _process_job(session, job: ScreenshotJob):
     row = session.query(OrderTracking).filter_by(id=job.order_tracking_id).first()
     client_slug = job.client.slug
-    output_dir = screenshot_dir_for(client_slug, job.itos_number)
+    output_dir = screenshot_dir_for(client_slug, job.reference)
 
     try:
-        capture_order_screenshots(job.itos_number, output_dir, search_value=job.reference or job.itos_number)
+        capture_order_screenshots(job.reference, output_dir)
     except ScreenshotAutomationError as e:
         _handle_failure(session, job, row, str(e))
         return
@@ -142,7 +142,7 @@ def _process_job(session, job: ScreenshotJob):
         row.screenshot_status = "done"
         row.screenshot_error = None
     session.commit()
-    logger.info("Screenshot job %s (order %s) completed", job.id, job.itos_number)
+    logger.info("Screenshot job %s (reference %s) completed", job.id, job.reference)
 
 
 def _handle_failure(session, job: ScreenshotJob, row: OrderTracking | None, error: str):

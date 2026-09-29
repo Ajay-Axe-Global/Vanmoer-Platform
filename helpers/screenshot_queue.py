@@ -21,18 +21,18 @@ from database.models import Client, OrderTracking, ScreenshotJob, Task
 SCREENSHOTS_DIR = Path(__file__).parent.parent / "screenshots"
 
 
-def screenshot_dir_for(client_slug: str, itos_number: str) -> Path:
-    d = SCREENSHOTS_DIR / client_slug / itos_number
+def screenshot_dir_for(client_slug: str, reference: str) -> Path:
+    d = SCREENSHOTS_DIR / client_slug / reference
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
-def list_screenshot_files(client_slug: str, itos_number: str) -> list[str]:
+def list_screenshot_files(client_slug: str, reference: str) -> list[str]:
     """Filenames only (not full paths) — the route layer resolves these back
     against screenshot_dir_for() itself so a caller can't smuggle a path via
-    itos_number. Sorted so the 3-shot sequence (_01_order, _02_addresses,
+    reference. Sorted so the 3-shot sequence (_01_order, _02_addresses,
     _03_transport) always displays in the order they were captured."""
-    d = SCREENSHOTS_DIR / client_slug / itos_number
+    d = SCREENSHOTS_DIR / client_slug / reference
     if not d.exists():
         return []
     return sorted(p.name for p in d.iterdir() if p.is_file() and p.suffix.lower() == ".png")
@@ -58,6 +58,8 @@ def _claim_rows_for_enqueue(session, client, task, order_tracking_ids: list[int]
 
     Returns {order_tracking_id: (itos_number, reference)} for every row that
     WAS successfully claimed (i.e. should get a new ScreenshotJob row).
+    reference is always present (OrderTracking.reference is non-nullable);
+    itos_number is optional and no longer gates eligibility.
     """
     status_conditions = [OrderTracking.screenshot_status.in_(
         [s for s in allow_from_status if s is not None]
@@ -73,8 +75,6 @@ def _claim_rows_for_enqueue(session, client, task, order_tracking_ids: list[int]
                 OrderTracking.id == otid,
                 OrderTracking.client_id == client.id,
                 OrderTracking.task_id == task.id,
-                OrderTracking.itos_number.isnot(None),
-                OrderTracking.itos_number != "",
                 or_(*status_conditions),
             )
             .values(screenshot_status="queued", screenshot_error=None)
@@ -88,10 +88,11 @@ def _claim_rows_for_enqueue(session, client, task, order_tracking_ids: list[int]
 
 def request_screenshots(session, client_slug: str, task_slug: str,
                          order_tracking_ids: list[int], user_id: int) -> dict:
-    """Queues a screenshot run for each given OrderTracking row. Rows that
-    have no saved ITOS number yet, or are already queued/processing/done,
-    are skipped (with a reason) rather than erroring the whole call — a
-    batch Request should make progress on whatever it validly can."""
+    """Queues a screenshot run for each given OrderTracking row, driven off
+    its reference (always present) — no ITOS number needed. Rows already
+    queued/processing/done are skipped (with a reason) rather than erroring
+    the whole call — a batch Request should make progress on whatever it
+    validly can."""
     client, task = _get_client_and_task(session, client_slug, task_slug)
 
     rows_by_id = {
@@ -106,8 +107,6 @@ def request_screenshots(session, client_slug: str, task_slug: str,
         row = rows_by_id.get(otid)
         if not row:
             skipped.append({"id": otid, "reason": "Not found."})
-        elif not row.itos_number:
-            skipped.append({"id": otid, "reason": "No ITOS number saved yet."})
         elif row.screenshot_status in ("queued", "processing"):
             skipped.append({"id": otid, "reason": "Already in progress."})
         elif row.screenshot_status == "done":
@@ -125,7 +124,10 @@ def request_screenshots(session, client_slug: str, task_slug: str,
     for otid, (itos_number, reference) in claimed.items():
         session.add(ScreenshotJob(
             order_tracking_id=otid, client_id=client.id, task_id=task.id,
-            itos_number=itos_number, reference=reference, batch_id=batch_id, status="queued",
+            # itos_number column is still NOT NULL on existing DBs — "" when
+            # absent rather than None, since reference is the only field the
+            # automation actually depends on now.
+            itos_number=itos_number or "", reference=reference, batch_id=batch_id, status="queued",
             requested_by=user_id, requested_at=datetime.datetime.utcnow(),
         ))
         queued.append(otid)
@@ -168,7 +170,7 @@ def retry_failed(session, client_slug: str, task_slug: str,
     for otid, (itos_number, reference) in claimed.items():
         session.add(ScreenshotJob(
             order_tracking_id=otid, client_id=client.id, task_id=task.id,
-            itos_number=itos_number, reference=reference, batch_id=batch_id, status="queued",
+            itos_number=itos_number or "", reference=reference, batch_id=batch_id, status="queued",
             requested_by=user_id, requested_at=datetime.datetime.utcnow(),
         ))
         queued.append(otid)

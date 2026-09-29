@@ -515,27 +515,16 @@ def update_orders():
             row = rows_by_id.get(u.get("id"))
             if not row:
                 continue
-            # A row with an in-flight screenshot job has already snapshotted
-            # its itos_number into a ScreenshotJob row — changing it here
-            # while that's queued/processing would desync the job from what
-            # the UI displays, so it's rejected until the run finishes.
             if row.screenshot_status in ("queued", "processing"):
                 skipped.append({"id": row.id, "reason": "Screenshot request in progress for this row."})
                 continue
 
+            # itos_number is purely an optional admin-entered label now — the
+            # automation searches/files by `reference` instead (see
+            # helpers/screenshot_queue.py), so saving it has no effect on
+            # screenshot_status/status.
             itos_number = (u.get("itos_number") or "").strip() or None
-            # Saving the ITOS number only records it — it no longer flips
-            # Status to "done" by itself (see helpers/screenshot_worker.py):
-            # only a successfully captured screenshot does that now. If the
-            # number actually changes on a row that was previously Done/
-            # Failed, the old screenshot result no longer applies to it, so
-            # its automation state resets to "never requested" for this
-            # (possibly new) order number.
-            if itos_number != row.itos_number:
-                row.itos_number = itos_number
-                row.status = "pending"
-                row.screenshot_status = None
-                row.screenshot_error = None
+            row.itos_number = itos_number
             row.updated_by = g.user["user_id"]
             updated.append(row)
 
@@ -607,9 +596,9 @@ def list_order_screenshot_files(order_tracking_id):
     session = SessionLocal()
     try:
         row = _order_tracking_row_or_404(session, order_tracking_id)
-        if not row or not row.itos_number:
+        if not row:
             return jsonify({"error": "Not found"}), 404
-        filenames = list_screenshot_files(CLIENT_SLUG, row.itos_number)
+        filenames = list_screenshot_files(CLIENT_SLUG, row.reference)
         return jsonify({
             "itos_number": row.itos_number,
             "files": [
@@ -626,18 +615,18 @@ def list_order_screenshot_files(order_tracking_id):
 @task_access_required(CLIENT_SLUG, TASK_SLUG)
 def get_order_screenshot_image(order_tracking_id, filename):
     """Serves one screenshot PNG. filename is re-sanitized and re-resolved
-    against this row's own itos_number folder (never trusted as a raw path)
-    so a crafted filename can't escape screenshots/<client>/<itos_number>/."""
+    against this row's own reference folder (never trusted as a raw path)
+    so a crafted filename can't escape screenshots/<client>/<reference>/."""
     session = SessionLocal()
     try:
         row = _order_tracking_row_or_404(session, order_tracking_id)
-        if not row or not row.itos_number:
+        if not row:
             return jsonify({"error": "Not found"}), 404
-        itos_number = row.itos_number
+        reference = row.reference
     finally:
         session.close()
 
-    directory = (SCREENSHOTS_DIR / CLIENT_SLUG / itos_number).resolve()
+    directory = (SCREENSHOTS_DIR / CLIENT_SLUG / reference).resolve()
     path = (directory / secure_filename(filename)).resolve()
     if directory not in path.parents or not path.is_file():
         return jsonify({"error": "Not found"}), 404

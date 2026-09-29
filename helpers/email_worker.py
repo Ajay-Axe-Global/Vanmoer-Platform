@@ -115,8 +115,8 @@ def _process_job(session, job: EmailJob):
     row = session.query(OrderTracking).filter_by(id=job.order_tracking_id).first()
     client_slug = job.client.slug
 
-    if not row or not row.itos_number:
-        _handle_failure(session, job, row, "No ITOS number on this row — nothing to attach.")
+    if not row:
+        _handle_failure(session, job, row, "Order tracking row not found — nothing to attach.")
         return
 
     # Each job's requester is who owns the Outlook account the send goes
@@ -134,8 +134,8 @@ def _process_job(session, job: EmailJob):
 
     password = decrypt_secret(user.outlook_password) if user.outlook_password else None
 
-    screenshot_dir = screenshot_dir_for(client_slug, row.itos_number)
-    filenames = list_screenshot_files(client_slug, row.itos_number)
+    screenshot_dir = screenshot_dir_for(client_slug, row.reference)
+    filenames = list_screenshot_files(client_slug, row.reference)
     if not filenames:
         _handle_failure(session, job, row, "No captured screenshot files found for this row.")
         return

@@ -56,8 +56,8 @@ def _claim_rows_for_enqueue(session, client, task, order_tracking_ids: list[int]
     SQLite serializes writers and the second UPDATE's WHERE clause simply
     won't match anymore once the first has already flipped the row.
 
-    Returns {order_tracking_id: itos_number} for every row that WAS
-    successfully claimed (i.e. should get a new ScreenshotJob row).
+    Returns {order_tracking_id: (itos_number, reference)} for every row that
+    WAS successfully claimed (i.e. should get a new ScreenshotJob row).
     """
     status_conditions = [OrderTracking.screenshot_status.in_(
         [s for s in allow_from_status if s is not None]
@@ -81,7 +81,7 @@ def _claim_rows_for_enqueue(session, client, task, order_tracking_ids: list[int]
         )
         if result.rowcount == 1:
             row = session.query(OrderTracking).filter_by(id=otid).first()
-            claimed[otid] = row.itos_number
+            claimed[otid] = (row.itos_number, row.reference)
     session.commit()
     return claimed
 
@@ -122,10 +122,10 @@ def request_screenshots(session, client_slug: str, task_slug: str,
 
     batch_id = str(uuid.uuid4())
     queued = []
-    for otid, itos_number in claimed.items():
+    for otid, (itos_number, reference) in claimed.items():
         session.add(ScreenshotJob(
             order_tracking_id=otid, client_id=client.id, task_id=task.id,
-            itos_number=itos_number, batch_id=batch_id, status="queued",
+            itos_number=itos_number, reference=reference, batch_id=batch_id, status="queued",
             requested_by=user_id, requested_at=datetime.datetime.utcnow(),
         ))
         queued.append(otid)
@@ -165,10 +165,10 @@ def retry_failed(session, client_slug: str, task_slug: str,
 
     batch_id = str(uuid.uuid4())
     queued = []
-    for otid, itos_number in claimed.items():
+    for otid, (itos_number, reference) in claimed.items():
         session.add(ScreenshotJob(
             order_tracking_id=otid, client_id=client.id, task_id=task.id,
-            itos_number=itos_number, batch_id=batch_id, status="queued",
+            itos_number=itos_number, reference=reference, batch_id=batch_id, status="queued",
             requested_by=user_id, requested_at=datetime.datetime.utcnow(),
         ))
         queued.append(otid)

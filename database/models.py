@@ -181,6 +181,11 @@ class ScreenshotJob(Base):
     client_id = Column(Integer, ForeignKey("clients.id"), nullable=False)
     task_id = Column(Integer, ForeignKey("tasks.id"), nullable=False)
     itos_number = Column(String(120), nullable=False)  # snapshot at enqueue time
+    # Business reference (OrderTracking.reference) snapshot at enqueue time —
+    # this, not itos_number, is what actually gets typed into iTOS's External
+    # ID search box; itos_number still gates eligibility and names the
+    # screenshot folder/files.
+    reference = Column(String(255), nullable=True)
     batch_id = Column(String(36), nullable=False)  # groups one "Request" click's rows
     status = Column(String(20), nullable=False, default="queued")  # queued|processing|done|failed
     attempts = Column(Integer, nullable=False, default=0)

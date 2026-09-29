@@ -123,7 +123,7 @@ def _process_job(session, job: ScreenshotJob):
     output_dir = screenshot_dir_for(client_slug, job.itos_number)
 
     try:
-        capture_order_screenshots(job.itos_number, output_dir)
+        capture_order_screenshots(job.itos_number, output_dir, search_value=job.reference or job.itos_number)
     except ScreenshotAutomationError as e:
         _handle_failure(session, job, row, str(e))
         return

@@ -1235,7 +1235,7 @@ def _normalize_weight_unit(unit: str) -> tuple[str, bool]:
 
 
 def extract_packing_list_nnrc(pdf_path: str) -> dict:
-    data = call_gemini(PKG_LIST_NNRC_PROMPT, pdf_path=pdf_path, max_output_tokens=16384)
+    data = call_gemini(PKG_LIST_NNRC_PROMPT, pdf_path=pdf_path, max_output_tokens=32768)
     dump_json(pdf_path, "pkg_list_nnrc_raw.json", data)
 
     # Layout B (Saudi Polymers) only — shipment-wide constants used to

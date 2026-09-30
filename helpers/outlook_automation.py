@@ -479,13 +479,11 @@ def _open_update_in_cts_folder(page):
         # Observed failure mode: the shared mailbox's folder drawer can
         # collapse back (or "UPDATE in CTS" just hasn't rendered under
         # CT-SabicOutbound yet) even though CT-SabicOutbound itself shows
-        # expanded — clicking its Inbox first (same primary selector
-        # outlook.js used for this, data-folder-name="inbox", last match
-        # since the shared mailbox's Inbox renders after the personal
-        # one) reliably settles the tree and reveals the subfolder. Tried
-        # once, then the UPDATE in CTS click is simply retried.
-        logger.warning('"UPDATE in CTS" not found on first try — clicking Inbox once, then retrying.')
-        _try_click_inbox(page)
+        # expanded — clicking the drawer's expand/collapse arrow once
+        # reliably settles the tree and reveals the subfolder. Tried once,
+        # then the UPDATE in CTS click is simply retried.
+        logger.warning('"UPDATE in CTS" not found on first try — clicking the folder arrow once, then retrying.')
+        _try_click_folder_arrow(page)
         time.sleep(2)
         folder_locator = _try_click_update_in_cts(page)
 
@@ -515,25 +513,33 @@ def _try_click_update_in_cts(page):
     return None
 
 
-def _try_click_inbox(page) -> bool:
-    """Clicks CT-SabicOutbound's Inbox — ported from outlook.js's Inbox
-    click strategies (data-folder-name first, exact-name role match as
-    fallback), used here only as a one-shot recovery step before retrying
-    the "UPDATE in CTS" click, not as this module's own navigation target."""
-    for attempt in (
-        lambda: page.locator('div[role="treeitem"][data-folder-name="inbox"]').last,
-        lambda: page.get_by_role("treeitem", name="Inbox", exact=True).last,
-    ):
-        try:
-            candidate = attempt()
-            candidate.wait_for(state="visible", timeout=8000)
-            candidate.click()
-            logger.warning("Clicked Inbox as a recovery step before retrying UPDATE in CTS.")
-            return True
-        except Exception:
-            continue
-    logger.warning("Could not click Inbox either during UPDATE in CTS recovery.")
-    return False
+_CLICK_FOLDER_ARROW_JS = """
+() => {
+    const arrow = document.querySelector('.ppZg6 button');
+    if (arrow) { arrow.click(); return true; }
+    return false;
+}
+"""
+
+
+def _try_click_folder_arrow(page) -> bool:
+    """Clicks the CT-SabicOutbound drawer's expand/collapse arrow — a
+    one-shot recovery step before retrying the "UPDATE in CTS" click when
+    it wasn't found the first time (the drawer can collapse back or the
+    subfolder can be slow to render). `.ppZg6` is this specific arrow
+    button's class in the current Outlook Web build — a page-structure
+    selector, not a secret, same reasoning as this module's other
+    hardcoded selectors."""
+    clicked = False
+    try:
+        clicked = bool(page.evaluate(_CLICK_FOLDER_ARROW_JS))
+    except Exception:
+        pass
+    if clicked:
+        logger.warning("Clicked the folder arrow as a recovery step before retrying UPDATE in CTS.")
+    else:
+        logger.warning("Could not click the folder arrow during UPDATE in CTS recovery.")
+    return clicked
 
 
 _CLICK_FIRST_RESULT_JS = """

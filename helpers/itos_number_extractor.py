@@ -6,34 +6,37 @@ without an admin having to type it in manually.
 
 Deliberately best-effort: itos_number is (and stays) an optional field with
 no automated field ever reading FROM it (see database/models.py), so nothing
-here should ever fail a screenshot job. Every failure path — bad crop, no
-Gemini credits, no match in the image — logs and returns None; callers just
+here should ever fail a screenshot job. Every failure path — bad image read,
+no Gemini credits, no match found — logs and returns None; callers just
 leave itos_number unset in that case.
 
-The crop box below was tuned against real 1920x1080 screenshots saved under
-screenshots/sabic/*/*_01_order.png (the iTOS order number label always sits
-top-left, just under the toolbar). If the remote desktop's resolution or the
-iTOS page layout ever changes, re-tune CROP_BOX against a fresh screenshot
-rather than trusting this blindly.
+Sends the FULL screenshot to Gemini rather than a fixed pixel crop of the
+top-left corner (an earlier version did that, tuned against one 1920x1080
+sample). That crop turned out fragile in prod: a "same resolution" remote
+desktop on a physically bigger monitor can still run a different OS/browser
+zoom level, shifting exactly where the label renders in pixel space even at
+an identical reported width/height — the crop silently missed the label and
+this always returned None, with no screenshot-job failure to signal it (by
+design). Sending the whole image removes that dependency entirely, at the
+cost of a slightly larger Gemini request.
 """
 
 import logging
 import re
 
-from PIL import Image
-
 from helpers.gemini_client import call_gemini
 
 logger = logging.getLogger("itos_number_extractor")
 
-CROP_BOX = (0, 260, 260, 330)  # (left, top, right, bottom) in source pixels
 ITOS_NUMBER_RE = re.compile(r"^VMR\d+$")
 
 PROMPT = (
-    "This image is a cropped corner of an order screen. It may contain a "
-    "label formatted like \"VMR\" followed by digits (e.g. VMR717000). "
-    "Reply with ONLY a JSON object: {\"itos_number\": \"VMR717000\"} if you "
-    "find one, or {\"itos_number\": null} if you don't. No other text."
+    "This is a screenshot of an order screen in a logistics system. Find "
+    "the order number label formatted like \"VMR\" followed by digits "
+    "(e.g. VMR717000) — it's normally near the top-left of the page, just "
+    "under the toolbar. Reply with ONLY a JSON object: "
+    "{\"itos_number\": \"VMR717000\"} if you find one, or "
+    "{\"itos_number\": null} if you don't. No other text."
 )
 
 
@@ -42,14 +45,10 @@ def extract_itos_number(shot1_path) -> str | None:
     order-overview screenshot). Never raises — returns None on any failure
     or if no valid VMR<digits> value is found."""
     try:
-        with Image.open(shot1_path) as im:
-            cropped = im.crop(CROP_BOX)
-            import io
-            buf = io.BytesIO()
-            cropped.save(buf, format="PNG")
-            image_bytes = buf.getvalue()
+        with open(shot1_path, "rb") as f:
+            image_bytes = f.read()
     except Exception as e:
-        logger.warning("ITOS number extraction: could not read/crop %s: %s", shot1_path, e)
+        logger.warning("ITOS number extraction: could not read %s: %s", shot1_path, e)
         return None
 
     try:

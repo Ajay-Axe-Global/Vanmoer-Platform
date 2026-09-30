@@ -145,6 +145,7 @@ def _process_job(session, job: EmailJob):
         send_forwarded_screenshots(
             job.reference, screenshot_paths,
             user_id=user.id, email=user.outlook_username, password=password,
+            itos_number=row.itos_number,
         )
     except LoginRequiredError as e:
         user.outlook_status = "needs_reauth"

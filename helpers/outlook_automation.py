@@ -55,7 +55,6 @@ PROFILE_BASE_DIR = Path(os.getenv("OUTLOOK_PROFILE_BASE_DIR", str(Path(__file__)
 CHROME_PATH = os.getenv("OUTLOOK_CHROME_PATH", r"C:\Program Files\Google\Chrome\Application\chrome.exe")
 OUTLOOK_URL = "https://outlook.office.com/mail/"
 FORWARD_TO = [addr.strip() for addr in os.getenv("OUTLOOK_FORWARD_TO", "").split(",") if addr.strip()]
-FORWARD_INTRO_TEXT = os.getenv("OUTLOOK_FORWARD_INTRO_TEXT", "").strip()
 MFA_MAX_RETRIES = int(os.getenv("OUTLOOK_MFA_MAX_RETRIES", "3"))
 # Testing switch: runs every real step (search, open thread, Forward, fill
 # To, paste all 3 screenshots inline) but stops short of clicking Send —
@@ -243,33 +242,6 @@ def _dismiss_post_login_prompts(page):
     logger.warning("Post-login prompts handled, Outlook should be loaded.")
 
 
-def _click_call_option(page) -> bool:
-    """Selects a phone-call verification method on the "Verify your
-    identity" screen — ported from outlook.js's clickCallOption(). Without
-    this, nothing ever triggers the call at all (confirmed: the automation
-    was previously just staring at this screen indefinitely with no
-    verification method ever selected).
-
-    Just clicks whichever "Call" row appears first — this screen only ever
-    lists verification methods actually registered to the account currently
-    signing in, so there's nothing to disambiguate. (An earlier version of
-    this only clicked a row whose masked number ended in a specific "11" —
-    that matched one hardcoded shared account's own phone number and broke
-    for every other user's differently-ending number once this became
-    per-user; removed rather than trying to guess each user's digits.)"""
-    try:
-        page.wait_for_selector("div.table-row", timeout=30000)
-    except Exception:
-        return False
-    time.sleep(2)
-
-    try:
-        page.locator("div.table-row").filter(has_text="Call").first.click()
-        return True
-    except Exception:
-        return False
-
-
 def _wait_for_outlook_or_raise(page):
     """Handles the phone-call MFA challenge end to end:
  
@@ -293,35 +265,32 @@ def _wait_for_outlook_or_raise(page):
     always True, so it always assumed success and never retried.
     """
     for attempt in range(1, MFA_MAX_RETRIES + 1):
-        # ── Check if we're on the "Verify your identity" page ────
-        on_verify_page = False
-        try:
-            on_verify_page = page.locator("div.table-row").count() > 0
-        except Exception:
-            pass
-        if not on_verify_page:
-            try:
-                on_verify_page = page.get_by_text("Verify your identity").is_visible()
-            except Exception:
-                pass
- 
-        # ── Click the Call option if on the verify page ──────────
-        if on_verify_page:
-            if _click_call_option(page):
-                logger.warning("MFA attempt %d/%d — clicked Call option.", attempt, MFA_MAX_RETRIES)
-            else:
-                logger.warning("MFA attempt %d/%d — could not click Call.", attempt, MFA_MAX_RETRIES)
- 
         logger.warning(
-            "MFA attempt %d/%d — phone should be ringing; answer and press #.",
+            "MFA attempt %d/%d — waiting for the Call option to render.",
             attempt, MFA_MAX_RETRIES,
         )
- 
-        # ── Wait for one of three outcomes (up to 2 minutes) ─────
+
+        # ── Wait for one of five outcomes (up to 2 minutes) ──────
         #   1. URL leaves login domain → MFA fully done
         #   2. "Sign in another way" link appears → check if success or failure
-        #   3. Timeout
+        #   3. "Let's keep your account secure" (proof-up) page appears →
+        #      MFA already succeeded, just not left the login domain yet
+        #      (proof-up-redirect-view is still served from
+        #      login.microsoftonline.com, so _is_login_url() alone never
+        #      catches this — without this check the loop just burns the
+        #      full 2-minute timeout doing nothing on this screen)
+        #   4. The Call row renders and gets clicked
+        #   5. Timeout
+        #
+        # The Call-row check used to run ONCE at the top of each attempt,
+        # before this wait loop started — if Microsoft's knockout-rendered
+        # proof list hadn't finished painting at that exact instant (a real,
+        # observed race), the click was skipped for the entire attempt and
+        # the loop then just sat idle for the full 2 minutes with nothing
+        # ever selected. Checking every second inside the loop instead means
+        # a late-rendering row still gets clicked as soon as it appears.
         result = None
+        clicked_call = False
         deadline = time.time() + 120
         while time.time() < deadline:
             # Check if we've left the login domain entirely
@@ -335,11 +304,34 @@ def _wait_for_outlook_or_raise(page):
                     break
             except Exception:
                 pass
+            # Check if we've already landed on the post-MFA "keep your
+            # account secure" prompt — that only ever appears after a
+            # successful sign-in, so treat it the same as "done".
+            try:
+                if page.locator("#skipMfaRegistrationLink").is_visible():
+                    result = "done"
+                    break
+            except Exception:
+                pass
+            # Click the Call option as soon as it's actually visible —
+            # retried every iteration (not just once) until it succeeds.
+            if not clicked_call:
+                try:
+                    call_row = page.locator("div.table-row").filter(has_text="Call").first
+                    if call_row.is_visible():
+                        call_row.click()
+                        clicked_call = True
+                        logger.warning(
+                            "MFA attempt %d/%d — clicked Call option; phone should be ringing, answer and press #.",
+                            attempt, MFA_MAX_RETRIES,
+                        )
+                except Exception:
+                    pass
             time.sleep(1)
  
-        # ── Outcome 1: URL left login domain → fully done ────────
+        # ── Outcome 1: URL left login domain, or proof-up page reached ──
         if result == "done":
-            logger.warning("MFA complete — URL left login domain.")
+            logger.warning("MFA complete — left login domain or reached the post-MFA prompts.")
             _dismiss_post_login_prompts(page)
             return
  
@@ -552,18 +544,32 @@ def _search_and_open_latest(page, reference: str):
     time.sleep(3)
 
 
-def _click_forward(page):
-    time.sleep(2)
-    clicked = page.evaluate("""
-        () => {
-            const btn = document.querySelector('div[role="menuitem"][aria-label="Forward"]');
-            if (btn) { btn.click(); return true; }
-            return false;
-        }
-    """)
-    if not clicked:
-        raise EmailAutomationError("Forward button not found on the opened message.")
-    time.sleep(3)
+_CLICK_FORWARD_JS = """
+() => {
+    const btn = document.querySelector('div[role="menuitem"][aria-label="Forward"]')
+        || document.querySelector('button[aria-label="Forward"]');
+    if (btn) { btn.click(); return true; }
+    return false;
+}
+"""
+
+
+def _click_forward(page, timeout_seconds: int = 15):
+    """Polls for the Forward button instead of a single fixed-delay check —
+    right after opening a just-clicked search result, the reading pane's
+    toolbar can still be rendering past a fixed sleep (the exact same class
+    of race documented in _wait_for_outlook_or_raise's docstring for the
+    MFA Call row), so a one-shot querySelector right after time.sleep(2)
+    can fire before the button exists yet and fail outright with no retry.
+    Tries both the menuitem (toolbar) and button (overflow menu) variants
+    Outlook Web can render this as."""
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        if page.evaluate(_CLICK_FORWARD_JS):
+            time.sleep(3)
+            return
+        time.sleep(0.5)
+    raise EmailAutomationError("Forward button not found on the opened message.")
 
 
 def _fill_recipients(page, recipients: list[str]):
@@ -590,6 +596,93 @@ def _fill_recipients(page, recipients: list[str]):
             }
         """)
         time.sleep(1.5)
+
+
+_SET_SUBJECT_JS = """
+(newSubject) => {
+    const subject = document.querySelector('input[aria-label="Subject"]');
+    if (!subject) return false;
+    const setter = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype, "value"
+    ).set;
+    setter.call(subject, newSubject);
+    subject.dispatchEvent(new Event("input", { bubbles: true }));
+    subject.dispatchEvent(new Event("change", { bubbles: true }));
+    return true;
+}
+"""
+
+
+def _set_subject(page, reference: str, itos_number: str | None):
+    """Replaces the compose window's existing subject (Outlook pre-fills
+    "Fw: <original subject>" on Forward) with the SABIC dispatch-request
+    line. Uses the native HTMLInputElement value setter (not `.fill()`)
+    because this is a React-controlled input (Fluent UI) — plain DOM
+    assignment or Playwright's fill() leaves React's internal value out of
+    sync with what's displayed/submitted, which is exactly why the setter
+    + dispatchEvent('input'/'change') combo is required here, same as any
+    other React-controlled field in this app's own automation elsewhere.
+
+    `itos_number` is appended as " / VMR..." when known; omitted (not a
+    blank " / ") when the row has no detected ITOS number yet, so the
+    subject never ships with a trailing " / " for those rows."""
+    subject_field = page.locator('input[aria-label="Subject"]')
+    subject_field.wait_for(state="visible", timeout=10000)
+
+    new_subject = f"SABIC OUTBOUND Please arrange dispatch for shipment: {reference}"
+    if itos_number:
+        new_subject += f" / {itos_number}"
+
+    if not page.evaluate(_SET_SUBJECT_JS, new_subject):
+        raise EmailAutomationError("Could not find the Subject field on the forward compose window.")
+    time.sleep(0.5)
+
+
+_INSERT_LINES_JS = """
+(lines) => {
+    const body = document.querySelector(
+        'div[role="textbox"][aria-label="Message body"][contenteditable="true"]'
+    );
+    if (!body) return false;
+    body.focus();
+    const frag = document.createDocumentFragment();
+    for (const line of lines) {
+        const div = document.createElement('div');
+        if (line === '') {
+            div.innerHTML = '<br>';
+        } else {
+            div.textContent = line;
+        }
+        frag.appendChild(div);
+    }
+    body.insertBefore(frag, body.firstChild);
+    body.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+    return true;
+}
+"""
+
+
+def _insert_order_intro(page, reference: str):
+    """Inserts the "Hi, / / This order was completed <reference>." lines as
+    the very first thing in the body — called AFTER _paste_screenshots_inline
+    on purpose: that function's pastes also land at the body's start (see its
+    own docstring), so inserting this intro afterwards, at body.firstChild,
+    pushes it above the images rather than the images pushing it down.
+    Net visual order ends up: intro text, then the 3 images, then the
+    forwarded thread — matching the requested layout without needing to
+    touch _paste_screenshots_inline's own caret logic.
+
+    Non-critical: swallows its own failure (logged) rather than failing the
+    whole send, same reasoning as the intro text this replaces — better to
+    send without the greeting line than to fail an otherwise-successful
+    forward over it."""
+    try:
+        lines = ["Hi,", "", f"This order was completed {reference}."]
+        if not page.evaluate(_INSERT_LINES_JS, lines):
+            logger.warning("Could not find the message body to insert the intro text.")
+        time.sleep(1)
+    except Exception as e:
+        logger.warning("Failed to insert order intro text: %s", e)
 
 
 _PASTE_IMAGE_JS = """
@@ -667,31 +760,6 @@ def _paste_screenshots_inline(page, screenshot_paths: list[Path]):
         time.sleep(0.5)
 
 
-def _insert_intro_text(page, text: str):
-    if not text:
-        return
-    try:
-        page.evaluate("""
-            (text) => {
-                const body = document.querySelector(
-                    'div[role="textbox"][aria-label="Message body"][contenteditable="true"]'
-                );
-                if (body) {
-                    body.focus();
-                    const newDiv = document.createElement('div');
-                    newDiv.textContent = text;
-                    body.insertBefore(newDiv, body.firstChild);
-                    body.dispatchEvent(new InputEvent('input', {
-                        bubbles: true, inputType: 'insertText', data: text,
-                    }));
-                }
-            }
-        """, text)
-        time.sleep(1)
-    except Exception:
-        pass  # non-critical — better to send without the intro line than fail the send
-
-
 def _save_draft_and_confirm(page, timeout_seconds: int = 15) -> bool:
     """Explicitly triggers Outlook Web's "Save draft" (Ctrl+S) — confirmed
     against a real run to show a "Draft saved at HH:MM" indicator near the
@@ -727,7 +795,8 @@ def _click_send(page):
 
 
 def send_forwarded_screenshots(reference: str, screenshot_paths: list[Path],
-                                *, user_id: int, email: str | None, password: str | None) -> None:
+                                *, user_id: int, email: str | None, password: str | None,
+                                itos_number: str | None = None) -> None:
     """
     Opens THIS USER's own persistent Outlook profile (profile_dir_for_user
     (user_id)), confirms the saved session is still valid, navigates to
@@ -735,9 +804,16 @@ def send_forwarded_screenshots(reference: str, screenshot_paths: list[Path],
     OrderTracking business reference, e.g. a SABIC dispatch shipment
     number — the same value already shown in the tracking panel's
     Reference column), opens the latest ("All results") matching thread,
-    forwards it to OUTLOOK_FORWARD_TO with each of `screenshot_paths`
-    pasted inline (in the given order) via the clipboard-write + Ctrl+V
-    technique, and sends.
+    forwards it to OUTLOOK_FORWARD_TO. Before attaching anything, replaces
+    Outlook's auto-filled "Fw: ..." subject with "SABIC OUTBOUND Please
+    arrange dispatch for shipment: {reference}[/ {itos_number}]" (see
+    _set_subject), then pastes each of `screenshot_paths` inline (in the
+    given order) via the clipboard-write + Ctrl+V technique, with a fixed
+    "Hi, / This order was completed {reference}." intro line placed above
+    the images (see _insert_order_intro), and sends.
+
+    `itos_number` is OrderTracking.itos_number for this row (may be None if
+    not yet detected) — used only in the subject line.
 
     `email`/`password` are this user's own Outlook credentials (decrypted
     by the caller from User.outlook_password just before this call, never
@@ -790,8 +866,9 @@ def send_forwarded_screenshots(reference: str, screenshot_paths: list[Path],
             _search_and_open_latest(page, reference)
             _click_forward(page)
             _fill_recipients(page, FORWARD_TO)
+            _set_subject(page, reference, itos_number)
             _paste_screenshots_inline(page, screenshot_paths)
-            _insert_intro_text(page, FORWARD_INTRO_TEXT)
+            _insert_order_intro(page, reference)
 
             if SEND_ENABLED:
                 _click_send(page)

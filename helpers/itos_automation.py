@@ -396,14 +396,24 @@ def _prepare_index_page(wait_for_load=False):
     return True
 
 
-def _process_single_order(order_number: str, order_folder: Path, search_value: str) -> list[Path]:
+def _process_single_order(
+    order_number: str, order_folder: Path, search_value: str, on_shot1_captured=None
+) -> list[Path]:
     """3-screenshot flow for one order. Console must be open with paste
     enabled when called; console is CLOSED when this returns.
 
     `order_number` names the output files; `search_value` is what actually
     gets typed into iTOS's External ID box — the two are allowed to differ
     (e.g. searching by a business reference while still filing screenshots
-    under the ITOS number's folder/prefix)."""
+    under the ITOS number's folder/prefix).
+
+    `on_shot1_captured`, if given, is called with `shot1`'s path the instant
+    it's saved — before shots 2/3 are taken — so a caller can kick off
+    slow, unrelated work (e.g. an OCR/vision API call) on a background
+    thread that overlaps with the remaining ~10s of on-screen automation
+    instead of adding its own latency after this function returns. Any
+    exception it raises is swallowed (it must never break the screenshot
+    flow); this module still has no idea what the callback does."""
     shot1 = order_folder / f"{order_number}_01_order.png"
     shot2 = order_folder / f"{order_number}_02_addresses.png"
     shot3 = order_folder / f"{order_number}_03_transport.png"
@@ -447,6 +457,11 @@ def _process_single_order(order_number: str, order_folder: Path, search_value: s
         })();
     """, 2)
     _take_screenshot(shot1, "Order overview")
+    if on_shot1_captured is not None:
+        try:
+            on_shot1_captured(shot1)
+        except Exception:
+            pass
 
     # ── SCREENSHOT 2 — Order Items → tile → Addresses ─
     _console_run("""document.getElementById("orderItemsTab").click();""", 2)
@@ -505,7 +520,9 @@ def _process_single_order(order_number: str, order_folder: Path, search_value: s
 # PUBLIC ENTRY POINT
 # ═══════════════════════════════════════════════════════════
 
-def capture_order_screenshots(order_number: str, output_dir: Path, search_value: str | None = None) -> list[Path]:
+def capture_order_screenshots(
+    order_number: str, output_dir: Path, search_value: str | None = None, on_shot1_captured=None
+) -> list[Path]:
     """
     Ensures Edge/iTOS is ready (reusing an existing session if one's already
     open, otherwise launching one), searches `search_value` on the iTOS
@@ -514,6 +531,9 @@ def capture_order_screenshots(order_number: str, output_dir: Path, search_value:
     given, but a caller can pass a different business reference to search
     by while still filing the screenshots under the ITOS number's
     folder/prefix.
+
+    `on_shot1_captured` is passed straight through to `_process_single_order`
+    — see its docstring.
 
     Raises ScreenshotAutomationError with a human-readable reason on any
     failure instead of silently returning False, so the caller (the
@@ -537,7 +557,7 @@ def capture_order_screenshots(order_number: str, output_dir: Path, search_value:
         raise ScreenshotAutomationError("Could not prepare the iTOS index page (console/date filter).")
 
     try:
-        paths = _process_single_order(order_number, output_dir, search_value)
+        paths = _process_single_order(order_number, output_dir, search_value, on_shot1_captured)
     except ScreenshotAutomationError:
         raise
     except Exception as e:

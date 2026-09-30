@@ -474,24 +474,100 @@ def _open_update_in_cts_folder(page):
 
     time.sleep(3)
     folder_locator = _try_click_update_in_cts(page)
+    if folder_locator is not None:
+        time.sleep(3)
+        return folder_locator
 
-    if folder_locator is None:
-        # Observed failure mode: the shared mailbox's folder drawer can
-        # collapse back (or "UPDATE in CTS" just hasn't rendered under
-        # CT-SabicOutbound yet) even though CT-SabicOutbound itself shows
-        # expanded — clicking the drawer's expand/collapse arrow once
-        # reliably settles the tree and reveals the subfolder. Tried once,
-        # then the UPDATE in CTS click is simply retried.
-        logger.warning('"UPDATE in CTS" not found on first try — clicking the folder arrow once, then retrying.')
-        _try_click_folder_arrow(page)
+    # Observed failure mode: the shared mailbox's folder drawer can
+    # collapse back (or "UPDATE in CTS" just hasn't rendered under
+    # CT-SabicOutbound yet) even though CT-SabicOutbound itself shows
+    # expanded. Primary recovery: Outlook Web's own "Go to folder" dialog
+    # (Ctrl+Y) — it jumps straight to the folder by name regardless of the
+    # tree's current expand/collapse/render state, so it doesn't depend on
+    # the tree structure at all (unlike clicking through it). Only if that
+    # doesn't work do we fall back to the more fragile arrow-click, which
+    # depends on the tree already being close to right.
+    logger.warning('"UPDATE in CTS" not found on first try — trying "Go to folder" (Ctrl+Y).')
+    if _try_go_to_folder(page, "UPDATE in CTS"):
+        time.sleep(3)
+        # "Go to folder" navigates the mailbox view directly; it doesn't
+        # click/select a tree-item locator the way the direct approach
+        # does, and nothing downstream uses the returned locator (see
+        # send_forwarded_screenshots) — just confirm arrival is enough.
+        return None
+
+    logger.warning('"Go to folder" recovery did not work either — trying the folder arrow once, then retrying.')
+    _try_click_folder_arrow(page)
+    time.sleep(2)
+    folder_locator = _try_click_update_in_cts(page)
+    if folder_locator is not None:
+        time.sleep(3)
+        return folder_locator
+
+    raise EmailAutomationError('Could not find the "UPDATE in CTS" folder in the folder pane.')
+
+
+_GO_TO_FOLDER_JS = """
+(folderName) => {
+    const input = document.querySelector('[role="dialog"] input[placeholder="Type a folder name"]');
+    if (!input) return false;
+    const setter = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype, "value"
+    ).set;
+    setter.call(input, folderName);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.focus();
+    input.dispatchEvent(new KeyboardEvent("keydown", {
+        key: "Enter", code: "Enter", bubbles: true, cancelable: true
+    }));
+    return true;
+}
+"""
+
+
+def _try_go_to_folder(page, folder_name: str) -> bool:
+    """Opens Outlook Web's "Go to folder" dialog with Ctrl+Y and types +
+    Enters `folder_name` to jump straight there — independent of the
+    folder tree's current expand/collapse/render state entirely (unlike
+    clicking through CT-SabicOutbound > UPDATE in CTS in the tree), so
+    it's a more reliable recovery than the arrow-click when the tree
+    itself is the problem. Uses the native HTMLInputElement value setter
+    (not `.fill()`/typing) for the same reason _set_subject does — this
+    dialog's input is a React-controlled Fluent UI SearchBox, so plain DOM
+    assignment leaves React's internal value out of sync with what
+    actually gets submitted on Enter."""
+    try:
+        page.keyboard.press("Control+y")
+    except Exception:
+        return False
+
+    deadline = time.time() + 5
+    dialog_seen = False
+    while time.time() < deadline:
+        try:
+            if page.locator('[role="dialog"] input[placeholder="Type a folder name"]').is_visible():
+                dialog_seen = True
+                break
+        except Exception:
+            pass
+        time.sleep(0.3)
+
+    if not dialog_seen:
+        logger.warning('"Go to folder" dialog (Ctrl+Y) did not open.')
+        return False
+
+    ok = False
+    try:
+        ok = bool(page.evaluate(_GO_TO_FOLDER_JS, folder_name))
+    except Exception:
+        pass
+
+    if ok:
+        logger.warning('Used "Go to folder" (Ctrl+Y) to jump to "%s".', folder_name)
         time.sleep(2)
-        folder_locator = _try_click_update_in_cts(page)
-
-    if folder_locator is None:
-        raise EmailAutomationError('Could not find the "UPDATE in CTS" folder in the folder pane.')
-
-    time.sleep(3)
-    return folder_locator
+    else:
+        logger.warning('"Go to folder" dialog opened but could not fill/submit the folder name.')
+    return ok
 
 
 def _try_click_update_in_cts(page):
@@ -526,15 +602,34 @@ def _try_click_folder_arrow(page) -> bool:
     """Clicks the CT-SabicOutbound drawer's expand/collapse arrow — a
     one-shot recovery step before retrying the "UPDATE in CTS" click when
     it wasn't found the first time (the drawer can collapse back or the
-    subfolder can be slow to render). `.ppZg6` is this specific arrow
-    button's class in the current Outlook Web build — a page-structure
-    selector, not a secret, same reasoning as this module's other
-    hardcoded selectors."""
+    subfolder can be slow to render).
+
+    Primary selector is `.ppZg6 button` — this arrow's class in the
+    current Outlook Web build. That's a Fluent UI/CSS-in-JS HASHED class,
+    not a stable one, so it isn't guaranteed to survive a future Outlook
+    Web rollout the way outlook.js's other page-structure selectors (IDs,
+    aria-labels) are — Microsoft can silently ship a rebuild with a
+    different hash for every user at once. If it doesn't match, falls back
+    to the CT-SabicOutbound tree item's own expand button, found by its
+    accessible name (role=treeitem, name="CT-SabicOutbound") instead of any
+    class — the same semantic locator already used earlier in
+    _open_update_in_cts_folder — which is what this recovery step is
+    actually trying to toggle anyway."""
     clicked = False
     try:
         clicked = bool(page.evaluate(_CLICK_FOLDER_ARROW_JS))
     except Exception:
         pass
+
+    if not clicked:
+        try:
+            sabic_item = page.get_by_role("treeitem", name="CT-SabicOutbound")
+            sabic_item.wait_for(state="visible", timeout=5000)
+            sabic_item.locator("button").first.click()
+            clicked = True
+        except Exception:
+            pass
+
     if clicked:
         logger.warning("Clicked the folder arrow as a recovery step before retrying UPDATE in CTS.")
     else:

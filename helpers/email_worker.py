@@ -12,10 +12,13 @@ the persistent Outlook browser profile directory open at once (see
 outlook_automation.py's docstring) — which is what serializing all email
 jobs through this one thread guarantees.
 
-No retry/backoff here, unlike the screenshot worker: sending an email isn't
-idempotent, so any failure is terminal ("failed") — see
-helpers/email_queue.py's retry_failed_emails() for how a human-initiated
-Retry re-queues a fresh attempt instead.
+No queued/backed-off retry here, unlike the screenshot worker: sending an
+email isn't idempotent. _process_job does make one immediate in-place retry
+on a transient automation failure (see its comment), since that's safe —
+everything that can raise happens before any real send occurs — but beyond
+that one retry, or on a LoginRequiredError (never worth retrying), failure
+is terminal ("failed") — see helpers/email_queue.py's retry_failed_emails()
+for how a human-initiated Retry re-queues a fresh attempt instead.
 
 start_worker() must be called exactly once per running app process — see
 its call site in main.py, guarded the same way the screenshot worker's is.
@@ -141,22 +144,43 @@ def _process_job(session, job: EmailJob):
         return
     screenshot_paths = [screenshot_dir / name for name in filenames]
 
-    try:
-        send_forwarded_screenshots(
-            job.reference, screenshot_paths,
-            user_id=user.id, email=user.outlook_username, password=password,
-            itos_number=row.itos_number,
-        )
-    except LoginRequiredError as e:
-        user.outlook_status = "needs_reauth"
-        _handle_failure(session, job, row, str(e))
-        return
-    except EmailAutomationError as e:
-        _handle_failure(session, job, row, str(e))
-        return
-    except Exception as e:
-        logger.exception("Unexpected exception processing email job %s", job.id)
-        _handle_failure(session, job, row, f"Unexpected error: {e}")
+    # One immediate retry on transient automation failures (e.g. a UI
+    # element not rendering in time — see outlook_automation.py's
+    # _click_forward for a real example) before giving up. Not a queued/
+    # backed-off retry like the screenshot worker's — this module still
+    # deliberately has no attempts/next_retry_at (see its docstring):
+    # sending isn't idempotent, so this only retries the ONE failure mode
+    # that's actually safe to redo — anything that raised before Send was
+    # ever clicked, which is every EmailAutomationError/unexpected
+    # exception in practice (send_forwarded_screenshots only returns
+    # cleanly, letting the job reach "sent" below, after a real send/draft
+    # succeeds with nothing left to fail afterward except closing the
+    # browser). LoginRequiredError is excluded — a dead session fails the
+    # exact same way every time and needs a human to re-auth regardless.
+    last_error = None
+    sent = False
+    for attempt in (1, 2):
+        try:
+            send_forwarded_screenshots(
+                job.reference, screenshot_paths,
+                user_id=user.id, email=user.outlook_username, password=password,
+                itos_number=row.itos_number,
+            )
+            sent = True
+            break
+        except LoginRequiredError as e:
+            user.outlook_status = "needs_reauth"
+            _handle_failure(session, job, row, str(e))
+            return
+        except EmailAutomationError as e:
+            last_error = str(e)
+            logger.warning("Email job %s attempt %d/2 failed: %s", job.id, attempt, last_error)
+        except Exception as e:
+            logger.exception("Unexpected exception processing email job %s (attempt %d/2)", job.id, attempt)
+            last_error = f"Unexpected error: {e}"
+
+    if not sent:
+        _handle_failure(session, job, row, last_error or "Unknown error")
         return
 
     user.outlook_status = "connected"
@@ -172,12 +196,15 @@ def _process_job(session, job: EmailJob):
 
 
 def _handle_failure(session, job: EmailJob, row: OrderTracking | None, error: str):
-    # No retry scheduling here, deliberately — see this module's docstring.
+    # Called only once both the initial attempt and its one immediate
+    # retry (see _process_job) are exhausted, or on LoginRequiredError
+    # (no retry at all — see _process_job). No queued/backed-off retry
+    # here, deliberately — see this module's docstring.
     job.status = "failed"
     job.finished_at = datetime.datetime.utcnow()
     job.last_error = error[:500]
     if row:
         row.email_status = "failed"
         row.email_error = error[:500]
-    logger.error("Email job %s failed (no auto-retry): %s", job.id, error)
+    logger.error("Email job %s failed (after retry): %s", job.id, error)
     session.commit()

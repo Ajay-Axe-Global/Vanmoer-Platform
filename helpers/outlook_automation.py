@@ -473,7 +473,33 @@ def _open_update_in_cts_folder(page):
         pass
 
     time.sleep(3)
-    folder_locator = None
+    folder_locator = _try_click_update_in_cts(page)
+
+    if folder_locator is None:
+        # Observed failure mode: the shared mailbox's folder drawer can
+        # collapse back (or "UPDATE in CTS" just hasn't rendered under
+        # CT-SabicOutbound yet) even though CT-SabicOutbound itself shows
+        # expanded — clicking its Inbox first (same primary selector
+        # outlook.js used for this, data-folder-name="inbox", last match
+        # since the shared mailbox's Inbox renders after the personal
+        # one) reliably settles the tree and reveals the subfolder. Tried
+        # once, then the UPDATE in CTS click is simply retried.
+        logger.warning('"UPDATE in CTS" not found on first try — clicking Inbox once, then retrying.')
+        _try_click_inbox(page)
+        time.sleep(2)
+        folder_locator = _try_click_update_in_cts(page)
+
+    if folder_locator is None:
+        raise EmailAutomationError('Could not find the "UPDATE in CTS" folder in the folder pane.')
+
+    time.sleep(3)
+    return folder_locator
+
+
+def _try_click_update_in_cts(page):
+    """Multi-strategy attempt at finding+clicking "UPDATE in CTS" — returns
+    the clicked locator, or None without raising (caller decides what to do
+    next, e.g. the Inbox-first retry in _open_update_in_cts_folder)."""
     for attempt in (
         lambda: page.locator('div[role="treeitem"][data-folder-name="update in cts"]').first,
         lambda: page.get_by_role("treeitem", name="UPDATE in CTS", exact=True).first,
@@ -483,16 +509,31 @@ def _open_update_in_cts_folder(page):
             candidate = attempt()
             candidate.wait_for(state="visible", timeout=8000)
             candidate.click()
-            folder_locator = candidate
-            break
+            return candidate
         except Exception:
             continue
+    return None
 
-    if folder_locator is None:
-        raise EmailAutomationError('Could not find the "UPDATE in CTS" folder in the folder pane.')
 
-    time.sleep(3)
-    return folder_locator
+def _try_click_inbox(page) -> bool:
+    """Clicks CT-SabicOutbound's Inbox — ported from outlook.js's Inbox
+    click strategies (data-folder-name first, exact-name role match as
+    fallback), used here only as a one-shot recovery step before retrying
+    the "UPDATE in CTS" click, not as this module's own navigation target."""
+    for attempt in (
+        lambda: page.locator('div[role="treeitem"][data-folder-name="inbox"]').last,
+        lambda: page.get_by_role("treeitem", name="Inbox", exact=True).last,
+    ):
+        try:
+            candidate = attempt()
+            candidate.wait_for(state="visible", timeout=8000)
+            candidate.click()
+            logger.warning("Clicked Inbox as a recovery step before retrying UPDATE in CTS.")
+            return True
+        except Exception:
+            continue
+    logger.warning("Could not click Inbox either during UPDATE in CTS recovery.")
+    return False
 
 
 _CLICK_FIRST_RESULT_JS = """
@@ -554,22 +595,48 @@ _CLICK_FORWARD_JS = """
 """
 
 
+def _compose_is_open(page) -> bool:
+    """The Subject field only exists once a Forward compose pane has
+    actually opened — used as the signal that the Shift+F shortcut below
+    worked, since key presses give no direct success/failure feedback the
+    way a button click's return value does."""
+    try:
+        return page.locator('input[aria-label="Subject"]').is_visible()
+    except Exception:
+        return False
+
+
 def _click_forward(page, timeout_seconds: int = 15):
-    """Polls for the Forward button instead of a single fixed-delay check —
-    right after opening a just-clicked search result, the reading pane's
-    toolbar can still be rendering past a fixed sleep (the exact same class
-    of race documented in _wait_for_outlook_or_raise's docstring for the
-    MFA Call row), so a one-shot querySelector right after time.sleep(2)
-    can fire before the button exists yet and fail outright with no retry.
-    Tries both the menuitem (toolbar) and button (overflow menu) variants
-    Outlook Web can render this as."""
+    """Primary: Outlook Web's Shift+F keyboard shortcut for Forward —
+    faster and skips the toolbar-rendering race entirely, since it doesn't
+    depend on the Forward button having painted yet. Falls back to polling
+    for and clicking the button (menuitem or overflow-menu variant) if the
+    shortcut doesn't visibly open a compose pane within a few seconds —
+    covers both "shortcut didn't fire because reading pane wasn't focused
+    yet" and any future case where Outlook changes/disables the shortcut.
+    The polling-not-one-shot approach itself guards the same race
+    documented in _wait_for_outlook_or_raise's docstring for the MFA Call
+    row: a fixed sleep + single check can fire before the toolbar has
+    rendered."""
+    try:
+        page.keyboard.press("Shift+F")
+    except Exception:
+        pass
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if _compose_is_open(page):
+            time.sleep(3)
+            return
+        time.sleep(0.3)
+
+    logger.warning("Shift+F didn't open a Forward compose pane — falling back to clicking the Forward button.")
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
         if page.evaluate(_CLICK_FORWARD_JS):
             time.sleep(3)
             return
         time.sleep(0.5)
-    raise EmailAutomationError("Forward button not found on the opened message.")
+    raise EmailAutomationError("Forward button not found on the opened message (keyboard shortcut and button both failed).")
 
 
 def _fill_recipients(page, recipients: list[str]):

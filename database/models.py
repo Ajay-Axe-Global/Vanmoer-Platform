@@ -232,9 +232,13 @@ class EmailJob(Base):
     as ScreenshotJob (a DB table instead of an in-memory queue, so it
     survives a restart), but deliberately has NO attempts/max_attempts/
     next_retry_at: unlike retaking a screenshot, sending an email is not
-    idempotent, so this never auto-retries — any failure is terminal
-    ("failed") and a human-initiated Retry (see helpers/email_queue.py)
-    inserts a fresh row, the same way an initial request does. Also
+    idempotent, so this never gets a QUEUED/backed-off retry the way a
+    screenshot job does. helpers/email_worker.py's _process_job does make
+    one immediate in-place retry within the same job on a transient
+    automation failure (safe since that always happens before any real
+    send), but beyond that, failure is terminal ("failed") and a
+    human-initiated Retry (see helpers/email_queue.py) inserts a fresh row,
+    the same way an initial request does. Also
     independent of ScreenshotJob's queue/worker — Playwright drives its
     own isolated Chrome profile here, not the physical desktop, so it
     never contends with the screenshot automation for the screen; it has

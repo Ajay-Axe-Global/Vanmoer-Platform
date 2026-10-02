@@ -22,11 +22,17 @@ from flask import Blueprint, g, jsonify, render_template, request, send_file
 from werkzeug.utils import secure_filename
 
 from database.db import SessionLocal
+from database.models import Client, EmailJob, OrderTracking, ScreenshotJob, Task as TaskModel
 from helpers.base_task import BaseTask
+from helpers.dates import period_range, utc_iso
 from helpers.decorators import task_access_required
+from helpers.email_queue import request_emails, retry_failed_emails
 from helpers.excel_writer import write_excel
-from helpers.jobs import build_reference, job_output_path, log_job, new_job_dir
+from helpers.jobs import build_reference, job_output_path, log_job, new_job_dir, upsert_order_tracking
 from helpers.pdf_utils import extract_text
+from helpers.screenshot_queue import (
+    SCREENSHOTS_DIR, list_screenshot_files, reference_dirname, request_screenshots, retry_failed,
+)
 
 CLIENT_SLUG = "vinmar"
 TASK_SLUG = "outbound"
@@ -49,11 +55,51 @@ COUNTRY_NAME_TO_CODE = {
 # is matched non-greedy and lets the regex engine backtrack until batch/qty/
 # unit line up at the end of the line (batch commonly contains a dash, e.g.
 # "3610667-01"; quantity never does, which is what makes the split
-# unambiguous).
+# unambiguous). Deliberately single-line (no DOTALL): letting "." cross line
+# breaks here would let the non-greedy description swallow unrelated header
+# text from earlier in the document (e.g. "Ship-to Party...") whenever THAT
+# line also starts with a word-ish token — it did, in an earlier version of
+# this regex. Line-wrapped product descriptions (see ITEM_TABLE_HEADER_RE /
+# _item_table_lines() below) are repaired BEFORE this regex ever runs, so it
+# can stay strictly single-line and safe.
 ITEM_ROW_RE = re.compile(
-    r"^([\w\-]+)\s+(.+?)\s+([\w\-]+)\s+([\d.,]+)\s+(T|KG|KGS|MT)\s*$",
+    r"^\s*([\w\-]+)\s+(.+?)\s+([\w\-]+)\s+([\d.,]+)\s+(T|KG|KGS|MT)\s*$",
     re.MULTILINE,
 )
+
+# Marks the start of the Item table — wording/case differs slightly across
+# the 3 letterheads ("PRODUCT DESCRIPTION" vs "Product Description").
+ITEM_TABLE_HEADER_RE = re.compile(
+    r"Item No\.?\s+Product Description\s+Batch\s*\(PO#\)\s+Quantity\s+UNIT",
+    re.IGNORECASE,
+)
+
+# Matches a complete "<qty> <unit>" token, used to re-split the flattened
+# item-table block back into one reconstructed line per item.
+_QTY_UNIT_RE = re.compile(r"[\d.,]+\s+(?:KGS|KG|MT|T)\b", re.IGNORECASE)
+
+
+def _item_table_lines(text: str) -> str:
+    """Returns the Item table's rows as one real line per item, repairing
+    any product description that got line-wrapped mid-word in the source PDF
+    (e.g. Axia Plastics' "ExxonMobil(TM) 7033N (Legacy Name -\\nExxonMo
+    3611070-01 27.500 T") — this only touches the Item table block, so it
+    can safely flatten every whitespace run (including the wrap) without
+    risking bleeding into unrelated sections of the document the way a
+    document-wide DOTALL regex would."""
+    header = ITEM_TABLE_HEADER_RE.search(text)
+    if not header:
+        return text  # unrecognized layout — let ITEM_ROW_RE try the raw text as-is
+
+    end = re.search(r"\n\s*(?:Additional Information|Loading Info\.)", text[header.end():], re.IGNORECASE)
+    block = text[header.end():header.end() + end.start()] if end else text[header.end():]
+
+    flat = re.sub(r"\s+", " ", block).strip()
+    # Insert a real newline right after each item's own "<qty> <unit>" — from
+    # there, every character up to the NEXT item's own number starts a fresh
+    # reconstructed line, regardless of how many source lines it was wrapped
+    # across.
+    return _QTY_UNIT_RE.sub(lambda m: m.group(0) + "\n", flat)
 
 
 def _release_no(t: str) -> str:
@@ -155,8 +201,9 @@ class VinmarOutboundTask(BaseTask):
         # (e.g. two lots of "PP J340") collapses into one summed-weight line,
         # and two different products that happen to share one batch/PO still
         # get their own separate lines, keyed only by product.
+        item_lines = _item_table_lines(text)
         weight_by_product: dict[str, int] = {}
-        for m in ITEM_ROW_RE.finditer(text):
+        for m in ITEM_ROW_RE.finditer(item_lines):
             _item_no, product, _batch, qty_raw, unit = m.groups()
             product = product.strip()
             weight_by_product[product] = weight_by_product.get(product, 0) + _weight_kg(qty_raw, unit)
@@ -238,9 +285,11 @@ def process():
 
         reference, reference_count = build_reference(r.get("reference") for r in result["rows"])
         source_filename = ", ".join(f.filename for f in files if f.filename.lower().endswith(".pdf"))
-        log_job(session, g.user["user_id"], CLIENT_SLUG, TASK_SLUG, f"{job_id}/output.xlsx", "success",
-                reference=reference, source_filename=source_filename, row_count=len(result["rows"]),
-                reference_count=reference_count)
+        job = log_job(session, g.user["user_id"], CLIENT_SLUG, TASK_SLUG, f"{job_id}/output.xlsx", "success",
+                      reference=reference, source_filename=source_filename, row_count=len(result["rows"]),
+                      reference_count=reference_count)
+        upsert_order_tracking(session, CLIENT_SLUG, TASK_SLUG,
+                               (r.get("reference") for r in result["rows"]), job.id)
 
         return jsonify({
             "success": True,
@@ -274,3 +323,298 @@ def download(job_id):
     if not path.exists():
         return jsonify({"error": "Output file not found."}), 404
     return send_file(path, as_attachment=True, download_name=OUTPUT_FILENAME)
+
+
+def _order_row_json(r: OrderTracking) -> dict:
+    return {
+        "id": r.id,
+        "reference": r.reference,
+        "date": utc_iso(r.created_at),
+        "status": r.status,
+        "itos_number": r.itos_number,
+        "screenshot_status": r.screenshot_status,
+        "screenshot_error": r.screenshot_error,
+        "email_status": r.email_status,
+        "email_error": r.email_error,
+    }
+
+
+@bp.route("/orders")
+@task_access_required(CLIENT_SLUG, TASK_SLUG)
+def list_orders():
+    """Backs the 'Screenshot' tracking panel — one row per distinct
+    reference for this client+task, optionally scoped to a calendar period
+    (Today/This week/This month), newest first."""
+    period = request.args.get("period", "all")
+    tz_name = request.args.get("tz")
+
+    session = SessionLocal()
+    try:
+        client = session.query(Client).filter_by(slug=CLIENT_SLUG).first()
+        task = session.query(TaskModel).filter_by(slug=TASK_SLUG).first()
+        q = session.query(OrderTracking).filter_by(client_id=client.id, task_id=task.id)
+
+        if period != "all":
+            try:
+                since, until = period_range(period, tz_name=tz_name)
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
+            q = q.filter(OrderTracking.created_at >= since, OrderTracking.created_at < until)
+
+        rows = q.order_by(OrderTracking.created_at.desc()).all()
+        return jsonify({"orders": [_order_row_json(r) for r in rows]})
+    finally:
+        session.close()
+
+
+@bp.route("/orders", methods=["PATCH"])
+@task_access_required(CLIENT_SLUG, TASK_SLUG)
+def update_orders():
+    """Batch save — one request updates the ITOS number for any number of
+    rows (a single-row save is just a 1-item list), so the panel's Save
+    button always writes in one DB round trip regardless of how many rows
+    were in edit mode."""
+    data = request.get_json(silent=True) or {}
+    updates = data.get("updates")
+    if not isinstance(updates, list) or not updates:
+        return jsonify({"error": "updates must be a non-empty list"}), 400
+
+    session = SessionLocal()
+    try:
+        client = session.query(Client).filter_by(slug=CLIENT_SLUG).first()
+        task = session.query(TaskModel).filter_by(slug=TASK_SLUG).first()
+
+        ids = [u.get("id") for u in updates if u.get("id") is not None]
+        rows_by_id = {
+            r.id: r for r in
+            session.query(OrderTracking)
+            .filter_by(client_id=client.id, task_id=task.id)
+            .filter(OrderTracking.id.in_(ids))
+            .all()
+        }
+
+        updated = []
+        skipped = []
+        for u in updates:
+            row = rows_by_id.get(u.get("id"))
+            if not row:
+                continue
+            if row.screenshot_status in ("queued", "processing"):
+                skipped.append({"id": row.id, "reason": "Screenshot request in progress for this row."})
+                continue
+
+            # itos_number is purely an optional admin-entered label now — the
+            # automation searches/files by `reference` instead (see
+            # helpers/screenshot_queue.py), so saving it has no effect on
+            # screenshot_status/status.
+            itos_number = (u.get("itos_number") or "").strip() or None
+            row.itos_number = itos_number
+            row.updated_by = g.user["user_id"]
+            updated.append(row)
+
+        if not updated and not skipped:
+            return jsonify({"error": "No matching orders for this client/task."}), 404
+
+        session.commit()
+        return jsonify({
+            "orders": [_order_row_json(r) for r in updated],
+            "skipped": skipped,
+        })
+    finally:
+        session.close()
+
+
+@bp.route("/screenshots/request", methods=["POST"])
+@task_access_required(CLIENT_SLUG, TASK_SLUG)
+def request_order_screenshots():
+    """Queues a screenshot automation run for the given rows (single or
+    batch, per the caller's checkbox selection). Returns immediately —
+    the actual automation runs later, one row at a time, on the single
+    background worker (helpers/screenshot_worker.py); this endpoint only
+    ever inserts queue rows."""
+    data = request.get_json(silent=True) or {}
+    ids = data.get("order_tracking_ids")
+    if not isinstance(ids, list) or not ids:
+        return jsonify({"error": "order_tracking_ids must be a non-empty list"}), 400
+
+    session = SessionLocal()
+    try:
+        result = request_screenshots(session, CLIENT_SLUG, TASK_SLUG, ids, g.user["user_id"])
+        return jsonify(result)
+    finally:
+        session.close()
+
+
+@bp.route("/screenshots/retry", methods=["POST"])
+@task_access_required(CLIENT_SLUG, TASK_SLUG)
+def retry_order_screenshots():
+    """Re-queues rows whose screenshot automation previously failed after
+    exhausting its automatic retries — a manual 'Retry' click."""
+    data = request.get_json(silent=True) or {}
+    ids = data.get("order_tracking_ids")
+    if not isinstance(ids, list) or not ids:
+        return jsonify({"error": "order_tracking_ids must be a non-empty list"}), 400
+
+    session = SessionLocal()
+    try:
+        result = retry_failed(session, CLIENT_SLUG, TASK_SLUG, ids, g.user["user_id"])
+        return jsonify(result)
+    finally:
+        session.close()
+
+
+def _order_tracking_row_or_404(session, order_tracking_id):
+    client = session.query(Client).filter_by(slug=CLIENT_SLUG).first()
+    task = session.query(TaskModel).filter_by(slug=TASK_SLUG).first()
+    return session.query(OrderTracking).filter_by(
+        id=order_tracking_id, client_id=client.id, task_id=task.id
+    ).first()
+
+
+@bp.route("/screenshots/<int:order_tracking_id>/files")
+@task_access_required(CLIENT_SLUG, TASK_SLUG)
+def list_order_screenshot_files(order_tracking_id):
+    """Backs the Source column's viewer — the filenames for one row's
+    captured screenshots (empty list if none exist yet, e.g. still queued
+    or never requested)."""
+    session = SessionLocal()
+    try:
+        row = _order_tracking_row_or_404(session, order_tracking_id)
+        if not row:
+            return jsonify({"error": "Not found"}), 404
+        filenames = list_screenshot_files(CLIENT_SLUG, row.reference)
+        return jsonify({
+            "itos_number": row.itos_number,
+            "files": [
+                {"filename": f,
+                 "url": f"/app/{CLIENT_SLUG}/{TASK_SLUG}/screenshots/{order_tracking_id}/image/{f}"}
+                for f in filenames
+            ],
+        })
+    finally:
+        session.close()
+
+
+@bp.route("/screenshots/<int:order_tracking_id>/image/<path:filename>")
+@task_access_required(CLIENT_SLUG, TASK_SLUG)
+def get_order_screenshot_image(order_tracking_id, filename):
+    """Serves one screenshot PNG. filename is re-sanitized and re-resolved
+    against this row's own reference folder (never trusted as a raw path)
+    so a crafted filename can't escape screenshots/<client>/<reference>/."""
+    session = SessionLocal()
+    try:
+        row = _order_tracking_row_or_404(session, order_tracking_id)
+        if not row:
+            return jsonify({"error": "Not found"}), 404
+        reference = row.reference
+    finally:
+        session.close()
+
+    directory = (SCREENSHOTS_DIR / CLIENT_SLUG / reference_dirname(reference)).resolve()
+    path = (directory / secure_filename(filename)).resolve()
+    if directory not in path.parents or not path.is_file():
+        return jsonify({"error": "Not found"}), 404
+    return send_file(path)
+
+
+@bp.route("/orders/<int:order_tracking_id>/revoke", methods=["POST"])
+@task_access_required(CLIENT_SLUG, TASK_SLUG)
+def revoke_order(order_tracking_id):
+    """Manually reverts a Done row back to Pending — e.g. the captured
+    screenshots turned out wrong and the shipment needs re-requesting.
+    itos_number and any existing screenshot files are left untouched (the
+    old files just stop being the row's "current" result); status, the
+    screenshot lifecycle, AND the email lifecycle all reset — an email
+    approval tied to the previous (now-superseded) screenshots shouldn't
+    still show as available/sent once those screenshots are being redone."""
+    session = SessionLocal()
+    try:
+        row = _order_tracking_row_or_404(session, order_tracking_id)
+        if not row:
+            return jsonify({"error": "Not found"}), 404
+        if row.status != "done":
+            return jsonify({"error": "Only a Done row can be reverted to Pending."}), 400
+        if row.email_status in ("queued", "processing"):
+            return jsonify({"error": "Cannot revoke while an email send is in progress."}), 409
+
+        row.status = "pending"
+        row.screenshot_status = None
+        row.screenshot_error = None
+        row.email_status = None
+        row.email_error = None
+        row.updated_by = g.user["user_id"]
+        session.commit()
+        return jsonify({"order": _order_row_json(row)})
+    finally:
+        session.close()
+
+
+@bp.route("/orders/<int:order_tracking_id>", methods=["DELETE"])
+@task_access_required(CLIENT_SLUG, TASK_SLUG)
+def delete_order(order_tracking_id):
+    """Removes a row entirely. Blocked while a screenshot OR email job is
+    actually in flight for it — deleting out from under a background worker
+    mid-run is exactly what causes it to crash trying to save its result
+    back to a row that's no longer there (see helpers/screenshot_worker.py,
+    helpers/email_worker.py). Any ScreenshotJob/EmailJob history for the row
+    is deleted too (FK cleanup); the screenshot PNG files on disk are left
+    alone — deleting a tracking row is not the same as deciding the
+    captured evidence (or a record of an email having been sent) should be
+    destroyed."""
+    session = SessionLocal()
+    try:
+        row = _order_tracking_row_or_404(session, order_tracking_id)
+        if not row:
+            return jsonify({"error": "Not found"}), 404
+        if row.screenshot_status in ("queued", "processing"):
+            return jsonify({"error": "Cannot delete while a screenshot request is in progress."}), 409
+        if row.email_status in ("queued", "processing"):
+            return jsonify({"error": "Cannot delete while an email send is in progress."}), 409
+
+        session.query(ScreenshotJob).filter_by(order_tracking_id=order_tracking_id).delete()
+        session.query(EmailJob).filter_by(order_tracking_id=order_tracking_id).delete()
+        session.delete(row)
+        session.commit()
+        return jsonify({"deleted": order_tracking_id})
+    finally:
+        session.close()
+
+
+@bp.route("/emails/request", methods=["POST"])
+@task_access_required(CLIENT_SLUG, TASK_SLUG)
+def request_order_emails():
+    """Queues an Outlook forward-with-screenshots send for the given rows
+    (single or batch). Returns immediately — the actual send happens later,
+    one row at a time, on the dedicated email worker
+    (helpers/email_worker.py); this endpoint only ever inserts queue rows."""
+    data = request.get_json(silent=True) or {}
+    ids = data.get("order_tracking_ids")
+    if not isinstance(ids, list) or not ids:
+        return jsonify({"error": "order_tracking_ids must be a non-empty list"}), 400
+
+    session = SessionLocal()
+    try:
+        result = request_emails(session, CLIENT_SLUG, TASK_SLUG, ids, g.user["user_id"])
+        return jsonify(result)
+    finally:
+        session.close()
+
+
+@bp.route("/emails/retry", methods=["POST"])
+@task_access_required(CLIENT_SLUG, TASK_SLUG)
+def retry_order_emails():
+    """Re-queues rows whose email send previously failed — a manual Retry
+    click. There is no automatic retry for emails (see
+    helpers/email_worker.py for why), so this is the only way a failed
+    send gets attempted again."""
+    data = request.get_json(silent=True) or {}
+    ids = data.get("order_tracking_ids")
+    if not isinstance(ids, list) or not ids:
+        return jsonify({"error": "order_tracking_ids must be a non-empty list"}), 400
+
+    session = SessionLocal()
+    try:
+        result = retry_failed_emails(session, CLIENT_SLUG, TASK_SLUG, ids, g.user["user_id"])
+        return jsonify(result)
+    finally:
+        session.close()

@@ -1,369 +1,1195 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <script src="/auth/client.js"></script>
-    <script>VanmoerAuth.guardCurrentTaskPage();</script>
-    <title>Vanmoer — Vinmar Outbound</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<script src="/auth/client.js"></script>
+<script>VanmoerAuth.guardCurrentTaskPage();</script>
+<title>Vanmoer — Vinmar Outbound</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
 
-        html,
-        body {
-            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
-            background: #0f172a;
-            color: #e2e8f0;
-            min-height: 100vh;
-            overflow-x: hidden;
-        }
+  html, body {
+    font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: #0f172a;
+    color: #e2e8f0;
+    min-height: 100vh;
+  }
 
-        header {
-            display: flex; align-items: center; justify-content: space-between;
-            padding: 18px 32px; border-bottom: 1px solid #1e293b;
-            background: rgba(15, 23, 42, 0.85); backdrop-filter: blur(6px);
-            position: sticky; top: 0; z-index: 10;
-        }
-        .brand { display: flex; align-items: center; gap: 10px; }
-        .brand .mark {
-            width: 26px; height: 26px; border-radius: 7px;
-            background: linear-gradient(135deg, #3b82f6, #2563eb);
-            display: flex; align-items: center; justify-content: center;
-            font-size: 13px; font-weight: 800; color: #fff;
-        }
-        .brand span { font-size: 15px; font-weight: 700; color: #f8fafc; letter-spacing: -0.01em; }
-        header button {
-            background: transparent; border: 1px solid #334155; color: #94a3b8;
-            padding: 8px 16px; border-radius: 8px; cursor: pointer; font-size: 13px;
-            font-weight: 500; font-family: inherit; transition: border-color .15s, color .15s, background .15s;
-        }
-        header button:hover { border-color: #475569; color: #e2e8f0; background: #1e293b; }
+  ::selection { background: #3b82f6; color: #fff; }
 
-        .container {
-            max-width: 640px;
-            margin: 0 auto;
-            padding: 40px 24px 64px;
-        }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 18px 32px; border-bottom: 1px solid #1e293b;
+    background: rgba(15, 23, 42, 0.85); backdrop-filter: blur(6px);
+    position: sticky; top: 0; z-index: 10;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; }
+  .brand .mark {
+    width: 26px; height: 26px; border-radius: 7px;
+    background: linear-gradient(135deg, #3b82f6, #2563eb);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; font-weight: 800; color: #fff;
+  }
+  .brand span { font-size: 15px; font-weight: 700; color: #f8fafc; letter-spacing: -0.01em; }
+  header button {
+    background: transparent; border: 1px solid #334155; color: #94a3b8;
+    padding: 8px 16px; border-radius: 8px; cursor: pointer; font-size: 13px;
+    font-weight: 500; font-family: inherit; transition: border-color .15s, color .15s, background .15s;
+  }
+  header button:hover { border-color: #475569; color: #e2e8f0; background: #1e293b; }
 
-        @media (max-width: 480px) {
-            .container { padding: 24px 16px 48px; }
-            header { padding: 14px 20px; }
-        }
+  .container { max-width: 640px; margin: 0 auto; padding: 48px 24px 64px; }
 
-        .page-header {
-            text-align: center;
-            margin-bottom: 32px;
-        }
+  @media (max-width: 480px) {
+    .container { padding: 32px 16px 48px; }
+    header { padding: 14px 20px; }
+  }
 
-        .page-header h1 {
-            font-size: 24px;
-            font-weight: 700;
-            color: #f8fafc;
-            margin-bottom: 6px;
-        }
+  .page-header { margin-bottom: 32px; }
+  .page-header h1 { font-size: 24px; font-weight: 700; color: #f8fafc; letter-spacing: -0.015em; margin-bottom: 6px; }
+  .page-header p {
+    font-family: 'JetBrains Mono', monospace; font-size: 12.5px; color: #64748b;
+  }
 
-        .page-header p {
-            font-size: 14px;
-            color: #94a3b8;
-        }
+  /* ── Dropzone ─────────────────────────────────────────── */
+  .dropzone {
+    border: 2px dashed #334155; border-radius: 14px; padding: 40px 24px;
+    text-align: center; cursor: pointer; margin-bottom: 20px;
+    background: #1e293b; transition: border-color .2s, background .2s, transform .1s;
+  }
+  .dropzone:hover { border-color: #475569; background: #22304a; }
+  .dropzone.drag { border-color: #3b82f6; background: #1c2942; transform: scale(1.005); }
+  .dropzone .icon { font-size: 30px; display: block; margin-bottom: 10px; opacity: .85; }
+  .dropzone p { font-size: 13.5px; color: #94a3b8; font-weight: 500; }
+  .dropzone p.hint { font-size: 11.5px; color: #64748b; margin-top: 4px; font-weight: 400; }
 
-        /* ── Dropzone ─────────────────────────────────────────── */
-        .dropzone {
-            border: 2px dashed #334155; border-radius: 14px; padding: 40px 24px;
-            text-align: center; cursor: pointer; margin-bottom: 20px;
-            background: #1e293b; transition: border-color .2s, background .2s, transform .1s;
-        }
-        .dropzone:hover { border-color: #475569; background: #22304a; }
-        .dropzone.drag { border-color: #3b82f6; background: #1c2942; transform: scale(1.005); }
-        .dropzone .icon { font-size: 30px; display: block; margin-bottom: 10px; opacity: .85; }
-        .dropzone p { font-size: 13.5px; color: #94a3b8; font-weight: 500; }
-        .dropzone p.hint { font-size: 11.5px; color: #64748b; margin-top: 4px; font-weight: 400; }
+  /* ── File chips ───────────────────────────────────────── */
+  #file-list { margin-bottom: 20px; display: flex; flex-direction: column; gap: 8px; }
+  .file-chip {
+    display: flex; align-items: center; gap: 10px;
+    background: #1e293b; border: 1px solid #334155; border-radius: 10px;
+    padding: 10px 12px; animation: chip-in .15s ease-out;
+  }
+  @keyframes chip-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+  .file-chip .file-icon {
+    font-size: 15px; width: 28px; height: 28px; border-radius: 7px;
+    background: #0f172a; display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+  }
+  .file-chip .file-name {
+    flex: 1; font-family: 'JetBrains Mono', monospace; font-size: 12px;
+    color: #cbd5e1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .file-chip .file-remove {
+    background: none; border: none; color: #64748b; font-size: 17px; line-height: 1;
+    cursor: pointer; padding: 2px 6px; border-radius: 5px; transition: color .15s, background .15s;
+  }
+  .file-chip .file-remove:hover { color: #f87171; background: #3b1219; }
 
-        /* ── File chips ───────────────────────────────────────── */
-        #file-list { margin-bottom: 20px; display: flex; flex-direction: column; gap: 8px; }
-        .file-chip {
-            display: flex; align-items: center; gap: 10px;
-            background: #1e293b; border: 1px solid #334155; border-radius: 10px;
-            padding: 10px 12px; animation: chip-in .15s ease-out;
-        }
-        @keyframes chip-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
-        .file-chip .file-icon {
-            font-size: 15px; width: 28px; height: 28px; border-radius: 7px;
-            background: #0f172a; display: flex; align-items: center; justify-content: center; flex-shrink: 0;
-        }
-        .file-chip .file-name {
-            flex: 1; font-family: 'Consolas', 'Menlo', monospace; font-size: 12px;
-            color: #cbd5e1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-        }
-        .file-chip .file-remove {
-            background: none; border: none; color: #64748b; font-size: 17px; line-height: 1;
-            cursor: pointer; padding: 2px 6px; border-radius: 5px; transition: color .15s, background .15s;
-        }
-        .file-chip .file-remove:hover { color: #f87171; background: #3b1219; }
+  /* ── Planned Date field ───────────────────────────────── */
+  .field-group { margin-bottom: 20px; }
+  .field-group label { display: block; font-size: 13px; font-weight: 600; color: #cbd5e1; margin-bottom: 8px; }
+  .field-group label .required { color: #ef4444; }
+  .field-group input[type="date"] {
+    width: 100%; padding: 12px 14px; font-size: 14px; font-family: inherit; color: #e2e8f0;
+    background: #1e293b; border: 2px solid #334155; border-radius: 10px; outline: none;
+    transition: border-color .2s; color-scheme: dark;
+  }
+  .field-group input[type="date"]:focus { border-color: #3b82f6; }
 
-        /* ── Planned Date field ─────────────────────────────── */
-        .field-group {
-            margin-bottom: 20px;
-        }
+  /* ── Primary button ───────────────────────────────────── */
+  button.primary {
+    width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px;
+    background: linear-gradient(135deg, #3b82f6, #2563eb); border: none; border-radius: 10px;
+    padding: 14px; color: #fff; font-weight: 700; font-size: 14.5px; cursor: pointer;
+    font-family: inherit; transition: opacity .2s, transform .1s;
+  }
+  button.primary:hover:not(:disabled) { opacity: .92; }
+  button.primary:active:not(:disabled) { transform: scale(.98); }
+  button.primary:disabled { opacity: .35; cursor: not-allowed; }
 
-        .field-group label {
-            display: block;
-            font-size: 13px;
-            font-weight: 600;
-            color: #cbd5e1;
-            margin-bottom: 8px;
-        }
+  .spinner {
+    width: 15px; height: 15px; border: 2px solid rgba(255,255,255,.35);
+    border-top-color: #fff; border-radius: 50%; animation: spin .7s linear infinite; display: none;
+  }
+  button.primary.loading .spinner { display: inline-block; }
+  @keyframes spin { to { transform: rotate(360deg); } }
 
-        .field-group label .required {
-            color: #ef4444;
-        }
+  /* ── Status / error ───────────────────────────────────── */
+  #status {
+    font-size: 13px; margin-top: 18px; padding: 13px 16px; border-radius: 10px;
+    display: none; font-weight: 500;
+  }
+  #status.err { display: block; color: #fca5a5; background: #3b1219; border: 1px solid #7f1d1d; }
+  #status.ok { display: block; color: #86efac; background: #0f2b1c; border: 1px solid #14532d; }
 
-        .field-group input[type="date"] {
-            width: 100%;
-            padding: 12px 14px;
-            font-size: 14px;
-            font-family: inherit;
-            color: #e2e8f0;
-            background: #1e293b;
-            border: 2px solid #334155;
-            border-radius: 10px;
-            outline: none;
-            transition: border-color .2s;
-            color-scheme: dark;
-        }
+  /* ── Results panel ────────────────────────────────────── */
+  #results { display: none; margin-top: 22px; }
+  #results.visible { display: block; animation: chip-in .2s ease-out; }
 
-        .field-group input[type="date"]:focus {
-            border-color: #3b82f6;
-        }
+  .stats-row { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 18px; }
+  .stat-chip {
+    background: #1e293b; border: 1px solid #334155; border-radius: 10px;
+    padding: 14px 12px; text-align: center;
+  }
+  .stat-chip .value { font-size: 22px; font-weight: 700; color: #f8fafc; }
+  .stat-chip .label {
+    font-size: 10.5px; color: #94a3b8; text-transform: uppercase;
+    letter-spacing: .06em; margin-top: 3px; font-weight: 600;
+  }
 
-        /* ── Primary button ───────────────────────────────────── */
-        button.primary {
-            width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px;
-            background: linear-gradient(135deg, #3b82f6, #2563eb); border: none; border-radius: 10px;
-            padding: 14px; color: #fff; font-weight: 700; font-size: 14.5px; cursor: pointer;
-            font-family: inherit; transition: opacity .2s, transform .1s;
-        }
-        button.primary:hover:not(:disabled) { opacity: .92; }
-        button.primary:active:not(:disabled) { transform: scale(.98); }
-        button.primary:disabled { opacity: .35; cursor: not-allowed; }
+  #download-link {
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    width: 100%; background: linear-gradient(135deg, #22c55e, #16a34a);
+    border: none; border-radius: 10px; padding: 13px; color: #fff;
+    font-weight: 700; font-size: 14.5px; cursor: pointer; text-decoration: none;
+    transition: opacity .2s, transform .1s;
+  }
+  #download-link:hover { opacity: .92; }
+  #download-link:active { transform: scale(.98); }
 
-        .spinner {
-            width: 15px; height: 15px; border: 2px solid rgba(255,255,255,.35);
-            border-top-color: #fff; border-radius: 50%; animation: spin .7s linear infinite; display: none;
-        }
-        button.primary.loading .spinner { display: inline-block; }
-        @keyframes spin { to { transform: rotate(360deg); } }
+  .reset-link {
+    display: block; text-align: center; margin-top: 16px; font-size: 12.5px;
+    color: #64748b; cursor: pointer; text-decoration: underline; text-underline-offset: 2px;
+  }
+  .reset-link:hover { color: #94a3b8; }
 
-        /* ── Status / error ───────────────────────────────────── */
-        #status {
-            font-size: 13px; margin-top: 18px; padding: 13px 16px; border-radius: 10px;
-            display: none; font-weight: 500;
-        }
-        #status.err { display: block; color: #fca5a5; background: #3b1219; border: 1px solid #7f1d1d; }
+  /* ── Tracking panel ───────────────────────────────────── */
+  .tracking-container { width: 100%; margin: 0 auto; padding: 40px 40px 64px; }
+  @media (max-width: 480px) { .tracking-container { padding: 24px 16px 48px; } }
 
-        /* ── Results panel ────────────────────────────────────── */
-        #results { display: none; margin-top: 22px; }
-        #results.visible { display: block; animation: chip-in .2s ease-out; }
+  .back-link {
+    display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px;
+    color: #64748b; cursor: pointer; text-decoration: none; margin-bottom: 18px;
+    background: none; border: none; font-family: inherit; padding: 0;
+  }
+  .back-link:hover { color: #94a3b8; }
 
-        .stats-row { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 18px; }
-        .stat-chip {
-            background: #1e293b; border: 1px solid #334155; border-radius: 10px;
-            padding: 14px 12px; text-align: center;
-        }
-        .stat-chip .value { font-size: 22px; font-weight: 700; color: #f8fafc; }
-        .stat-chip .label {
-            font-size: 10.5px; color: #94a3b8; text-transform: uppercase;
-            letter-spacing: .06em; margin-top: 3px; font-weight: 600;
-        }
+  .filter-bar { display: flex; gap: 8px; margin-bottom: 18px; flex-wrap: wrap; }
+  .filter-pill {
+    background: #1e293b; border: 1px solid #334155; color: #94a3b8;
+    padding: 7px 14px; border-radius: 999px; font-size: 12.5px; font-weight: 600;
+    cursor: pointer; font-family: inherit; transition: all .15s;
+  }
+  .filter-pill:hover { border-color: #475569; color: #e2e8f0; }
+  .filter-pill.active { background: #2563eb; border-color: #2563eb; color: #fff; }
 
-        #download-link {
-            display: flex; align-items: center; justify-content: center; gap: 8px;
-            width: 100%; background: linear-gradient(135deg, #22c55e, #16a34a);
-            border: none; border-radius: 10px; padding: 13px; color: #fff;
-            font-weight: 700; font-size: 14.5px; cursor: pointer; text-decoration: none;
-            transition: opacity .2s, transform .1s;
-        }
-        #download-link:hover { opacity: .92; }
-        #download-link:active { transform: scale(.98); }
+  /* ── Table toolbar: search left, Edit/Save actions right ── */
+  .table-toolbar {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    margin-bottom: 14px; flex-wrap: wrap;
+  }
+  .search-wrap { position: relative; flex: 1; min-width: 220px; max-width: 360px; }
+  .search-wrap .search-icon {
+    position: absolute; left: 12px; top: 50%; transform: translateY(-50%);
+    color: #64748b; font-size: 13px; pointer-events: none;
+  }
+  #search-input {
+    width: 100%; background: #1e293b; border: 1px solid #334155; border-radius: 9px;
+    padding: 9px 12px 9px 32px; color: #e2e8f0; font-family: inherit; font-size: 13px;
+  }
+  #search-input:focus { outline: none; border-color: #3b82f6; }
+  #search-input::placeholder { color: #64748b; }
 
-        .reset-link {
-            display: block; text-align: center; margin-top: 16px; font-size: 12.5px;
-            color: #64748b; cursor: pointer; text-decoration: underline; text-underline-offset: 2px;
-        }
-        .reset-link:hover { color: #94a3b8; }
-    </style>
+  .toolbar-actions { display: flex; gap: 10px; align-items: center; }
+  .toolbar-actions button {
+    border-radius: 9px; padding: 9px 18px; font-weight: 700; font-size: 12.5px;
+    cursor: pointer; font-family: inherit; border: 1px solid transparent; transition: all .15s;
+  }
+  #edit-all-btn { background: transparent; border-color: #334155; color: #94a3b8; }
+  #edit-all-btn:hover { border-color: #475569; color: #e2e8f0; }
+  #edit-all-btn.editing { border-color: #f59e0b; color: #fbbf24; }
+  #save-all-btn {
+    background: linear-gradient(135deg, #3b82f6, #2563eb); border: none; color: #fff; display: none;
+  }
+  #save-all-btn:hover:not(:disabled) { opacity: .92; }
+  #save-all-btn:disabled { opacity: .5; cursor: not-allowed; }
+  #save-all-btn.visible { display: inline-block; }
+  #request-btn {
+    background: linear-gradient(135deg, #8b5cf6, #7c3aed); border: none; color: #fff;
+  }
+  #request-btn:hover:not(:disabled) { opacity: .92; }
+  #request-btn:disabled { opacity: .35; cursor: not-allowed; }
+
+  #approve-btn {
+    background: linear-gradient(135deg, #059669, #047857); border: none; color: #fff;
+  }
+  #approve-btn:hover:not(:disabled) { opacity: .92; }
+  #approve-btn:disabled { opacity: .35; cursor: not-allowed; }
+
+  .screenshot-note, .email-note { font-size: 10.5px; margin-top: 4px; font-weight: 600; }
+  .screenshot-note.queued, .screenshot-note.processing,
+  .email-note.queued, .email-note.processing { color: #93c5fd; }
+  .screenshot-note.failed, .email-note.failed { color: #f87171; }
+  .email-note.sent { color: #6ee7b7; }
+  .screenshot-note .retry-link, .email-note .retry-link {
+    color: #f87171; text-decoration: underline; text-underline-offset: 2px;
+    cursor: pointer; background: none; border: none; font: inherit; padding: 0; margin-left: 4px;
+  }
+
+  .tracking-table-wrap {
+    background: #1e293b; border: 1px solid #334155; border-radius: 14px; overflow: hidden;
+  }
+  table.tracking-table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  table.tracking-table th {
+    text-align: left; padding: 13px 16px; font-size: 10.5px; text-transform: uppercase;
+    letter-spacing: .05em; color: #64748b; font-weight: 700; border-bottom: 1px solid #334155;
+    background: #172033;
+  }
+  table.tracking-table td {
+    padding: 13px 16px; border-bottom: 1px solid #26334a; color: #cbd5e1; vertical-align: middle;
+  }
+  table.tracking-table tr:last-child td { border-bottom: none; }
+  table.tracking-table tr.selected td { background: #1c2942; }
+  table.tracking-table td.ref-cell { font-family: 'JetBrains Mono', monospace; color: #e2e8f0; }
+  table.tracking-table td.num-cell { color: #64748b; font-family: 'JetBrains Mono', monospace; }
+
+  .row-checkbox, .select-all-checkbox { width: 15px; height: 15px; accent-color: #3b82f6; cursor: pointer; }
+
+  .status-badge {
+    display: inline-block; padding: 3px 10px; border-radius: 999px;
+    font-size: 11px; font-weight: 700; letter-spacing: .02em;
+  }
+  .status-badge.pending { background: #3f2d0f; color: #fbbf24; }
+  .status-badge.done { background: #0f2b1c; color: #86efac; }
+
+  .itos-input {
+    width: 100%; max-width: 160px; background: #0f172a; border: 1px solid #3b82f6;
+    border-radius: 7px; padding: 6px 9px; color: #e2e8f0; font-family: 'JetBrains Mono', monospace;
+    font-size: 12.5px;
+  }
+  .itos-input:focus { outline: none; border-color: #60a5fa; }
+  .itos-empty { color: #475569; font-style: italic; }
+
+  .tracking-empty {
+    text-align: center; padding: 48px 24px; color: #64748b; font-size: 13px;
+  }
+
+  .source-btn {
+    background: #172033; border: 1px solid #334155; color: #93c5fd;
+    width: 32px; height: 32px; border-radius: 8px; cursor: pointer;
+    font-size: 15px; display: inline-flex; align-items: center; justify-content: center;
+    transition: all .15s;
+  }
+  .source-btn:hover { border-color: #3b82f6; background: #1c2942; }
+  .source-dash { color: #475569; font-size: 13px; }
+
+  .row-actions { display: flex; gap: 6px; justify-content: flex-end; }
+  .row-action-btn {
+    background: #172033; border: 1px solid #334155; color: #94a3b8;
+    width: 30px; height: 30px; border-radius: 8px; cursor: pointer;
+    font-size: 13px; display: inline-flex; align-items: center; justify-content: center;
+    transition: all .15s;
+  }
+  .row-action-btn.revoke-btn:hover { border-color: #f59e0b; color: #fbbf24; background: #23180b; }
+  .row-action-btn.delete-btn:hover { border-color: #ef4444; color: #f87171; background: #2a1414; }
+
+  /* ── Lightbox ─────────────────────────────────────────── */
+  .lightbox-overlay {
+    display: none; position: fixed; inset: 0; background: rgba(3, 7, 18, 0.88);
+    z-index: 100; align-items: center; justify-content: center; padding: 24px;
+    backdrop-filter: blur(4px);
+  }
+  .lightbox-overlay.visible { display: flex; }
+  .lightbox-box {
+    width: 100%; max-width: 1100px; display: flex; flex-direction: column; gap: 10px;
+  }
+  .lightbox-topbar { display: flex; align-items: center; justify-content: space-between; }
+  .lightbox-counter {
+    color: #94a3b8; font-size: 12.5px; font-family: 'JetBrains Mono', monospace; font-weight: 600;
+  }
+  .lightbox-topbar-actions { display: flex; gap: 8px; }
+  .lightbox-icon-btn {
+    background: #1e293b; border: 1px solid #334155; color: #e2e8f0;
+    width: 34px; height: 34px; border-radius: 8px; cursor: pointer; font-size: 15px;
+    display: inline-flex; align-items: center; justify-content: center; transition: all .15s;
+  }
+  .lightbox-icon-btn:hover { border-color: #475569; background: #26334a; }
+
+  .lightbox-stage {
+    position: relative; display: flex; align-items: center; justify-content: center;
+    background: #0b1220; border: 1px solid #334155; border-radius: 14px;
+    min-height: 300px; max-height: 82vh; overflow: hidden;
+  }
+  #lightbox-img { max-width: 100%; max-height: 82vh; object-fit: contain; display: block; }
+  .lightbox-nav {
+    position: absolute; top: 50%; transform: translateY(-50%);
+    background: rgba(15, 23, 42, 0.75); border: 1px solid #334155; color: #fff;
+    width: 42px; height: 42px; border-radius: 50%; cursor: pointer; font-size: 22px;
+    display: flex; align-items: center; justify-content: center; transition: all .15s;
+  }
+  .lightbox-nav:hover { background: rgba(30, 41, 59, 0.9); border-color: #3b82f6; }
+  .lightbox-nav:disabled { opacity: .25; cursor: not-allowed; }
+  .lightbox-prev { left: 14px; }
+  .lightbox-next { right: 14px; }
+
+  /* ── Confirm dialog (replaces native confirm()) ──────────── */
+  .confirm-overlay {
+    display: none; position: fixed; inset: 0; background: rgba(3, 7, 18, 0.72);
+    z-index: 200; align-items: center; justify-content: center; padding: 24px;
+    backdrop-filter: blur(3px);
+  }
+  .confirm-overlay.visible { display: flex; }
+  .confirm-box {
+    width: 100%; max-width: 420px; background: #1e293b; border: 1px solid #334155;
+    border-radius: 14px; padding: 24px; animation: chip-in .15s ease-out;
+  }
+  .confirm-title { font-size: 15.5px; font-weight: 700; color: #f8fafc; margin-bottom: 10px; }
+  .confirm-message { font-size: 13.5px; color: #cbd5e1; line-height: 1.55; margin-bottom: 22px; }
+  .confirm-actions { display: flex; justify-content: flex-end; gap: 10px; }
+  .confirm-actions button {
+    border: 1px solid transparent; border-radius: 9px; padding: 9px 18px;
+    font-weight: 700; font-size: 13px; cursor: pointer; font-family: inherit; transition: all .15s;
+  }
+  .confirm-cancel-btn { background: transparent; border-color: #334155; color: #94a3b8; }
+  .confirm-cancel-btn:hover { border-color: #475569; color: #e2e8f0; }
+  .confirm-ok-btn { background: linear-gradient(135deg, #3b82f6, #2563eb); color: #fff; }
+  .confirm-ok-btn:hover { opacity: .92; }
+  .confirm-ok-btn.danger { background: linear-gradient(135deg, #ef4444, #dc2626); }
+
+  /* CSS-only "maximize" toggle — deliberately NOT the browser Fullscreen API
+     (element.requestFullscreen()): that call is silently blocked in a lot of
+     real deployment contexts (embedded/kiosk browser frames, restricted
+     permissions policies) with no visible error, which is exactly what made
+     the ⛶ button appear to do nothing. This just resizes elements we already
+     control, so it always works regardless of the surrounding browser setup. */
+  .lightbox-overlay.maximized { padding: 0; }
+  .lightbox-overlay.maximized .lightbox-box { max-width: 100%; height: 100%; }
+  .lightbox-overlay.maximized .lightbox-stage {
+    max-height: none; height: 100%; border-radius: 0; background: #000;
+  }
+  .lightbox-overlay.maximized #lightbox-img { max-height: 100vh; }
+  .lightbox-overlay.maximized .lightbox-topbar {
+    position: absolute; top: 12px; left: 12px; right: 12px; z-index: 1;
+  }
+
+  /* Card layout on narrow screens */
+  @media (max-width: 640px) {
+    table.tracking-table thead { display: none; }
+    table.tracking-table, table.tracking-table tbody, table.tracking-table tr, table.tracking-table td {
+      display: block; width: 100%;
+    }
+    table.tracking-table tr {
+      padding: 12px 14px; border-bottom: 1px solid #26334a;
+    }
+    table.tracking-table td {
+      border-bottom: none; padding: 5px 0; display: flex; justify-content: space-between; align-items: center;
+    }
+    table.tracking-table td::before {
+      content: attr(data-label); color: #64748b; font-size: 10.5px; text-transform: uppercase;
+      letter-spacing: .05em; font-weight: 700;
+    }
+    table.tracking-table td.checkbox-cell { justify-content: flex-start; gap: 8px; }
+    table.tracking-table td.checkbox-cell::before { content: "Select"; }
+  }
+</style>
 </head>
-
 <body>
-    <header>
-        <div class="brand">
-            <div class="mark">V</div>
-            <span>Vanmoer</span>
-        </div>
-        <button id="logout-btn">Log out</button>
-    </header>
+  <header>
+    <div class="brand">
+      <div class="mark">V</div>
+      <span>Vanmoer</span>
+    </div>
+    <div style="display:flex; align-items:center; gap:10px;">
+      <button id="tracking-btn">Screenshot</button>
+      <button id="logout-btn">Log out</button>
+    </div>
+  </header>
 
-    <div class="container">
-        <div class="page-header">
-            <h1>{{ label or "Vinmar — Outbound" }}</h1>
-            <p>Upload Delivery / Release Note PDF(s) → generate the output Excel</p>
-        </div>
-
-        <div id="upload-view">
-            <div class="dropzone" id="dropzone">
-                <span class="icon">📄</span>
-                <p>Drag &amp; drop PDF file(s) here, or click to browse</p>
-                <p class="hint">Accepts one or more Delivery / Release Note PDFs</p>
-                <input type="file" id="file-input" accept=".pdf" multiple style="display:none" />
-            </div>
-            <div id="file-list"></div>
-
-            <div class="field-group">
-                <label for="plannedDate">Planned Date <span class="required">*</span></label>
-                <input type="date" id="plannedDate" required onchange="checkReady()">
-            </div>
-
-            <button class="primary" id="submit-btn" disabled>
-                <span class="spinner"></span>
-                <span class="btn-label">Process &amp; Generate Excel</span>
-            </button>
-
-            <div id="status"></div>
-
-            <div id="results">
-                <div class="stats-row">
-                    <div class="stat-chip">
-                        <div class="value" id="stat-docs">0</div>
-                        <div class="label">Documents</div>
-                    </div>
-                    <div class="stat-chip">
-                        <div class="value" id="stat-rows">0</div>
-                        <div class="label">Rows Generated</div>
-                    </div>
-                </div>
-                <a id="download-link" href="#"><span>⬇</span> Download Excel</a>
-                <span class="reset-link" id="reset-link">← Process another batch</span>
-            </div>
-        </div>
+  <div class="container" id="upload-view">
+    <div class="page-header">
+      <h1>{{ label }}</h1>
+      <p>Upload Delivery / Release Note PDF(s) → generate the output Excel</p>
     </div>
 
-    <script>
-        VanmoerAuth.requireAuth();
-        document.getElementById("logout-btn").addEventListener("click", () => VanmoerAuth.logout());
+    <div class="dropzone" id="dropzone">
+      <span class="icon">📄</span>
+      <p>Drag &amp; drop PDF file(s) here, or click to browse</p>
+      <p class="hint">Accepts one or more Delivery / Release Note PDFs</p>
+      <input type="file" id="file-input" accept=".pdf" multiple style="display:none" />
+    </div>
+    <div id="file-list"></div>
 
-        const OUTPUT_FILENAME = "Vinmar_Outbound_Output.xlsx";
+    <div class="field-group">
+      <label for="plannedDate">Planned Date <span class="required">*</span></label>
+      <input type="date" id="plannedDate" required />
+    </div>
 
-        let selectedFiles = [];
-        const dropzone = document.getElementById("dropzone");
-        const fileInput = document.getElementById("file-input");
-        const fileList = document.getElementById("file-list");
-        const submitBtn = document.getElementById("submit-btn");
-        const btnLabel = submitBtn.querySelector(".btn-label");
-        const status = document.getElementById("status");
-        const results = document.getElementById("results");
-        const downloadLink = document.getElementById("download-link");
-        const plannedDateInput = document.getElementById("plannedDate");
+    <button class="primary" id="submit-btn" disabled>
+      <span class="spinner"></span>
+      <span class="btn-label">Process &amp; Generate Excel</span>
+    </button>
 
-        dropzone.addEventListener("click", () => fileInput.click());
-        dropzone.addEventListener("dragover", (e) => { e.preventDefault(); dropzone.classList.add("drag"); });
-        dropzone.addEventListener("dragleave", () => dropzone.classList.remove("drag"));
-        dropzone.addEventListener("drop", (e) => {
-            e.preventDefault();
-            dropzone.classList.remove("drag");
-            addFiles(e.dataTransfer.files);
-        });
-        fileInput.addEventListener("change", (e) => {
-            addFiles(e.target.files);
-            fileInput.value = "";
-        });
+    <div id="status"></div>
 
-        function addFiles(fileListObj) {
-            for (const f of fileListObj) {
-                if (f.name.toLowerCase().endsWith(".pdf")) selectedFiles.push(f);
-            }
-            renderFileList();
+    <div id="results">
+      <div class="stats-row">
+        <div class="stat-chip">
+          <div class="value" id="stat-docs">0</div>
+          <div class="label">Documents</div>
+        </div>
+        <div class="stat-chip">
+          <div class="value" id="stat-rows">0</div>
+          <div class="label">Rows Generated</div>
+        </div>
+      </div>
+      <a id="download-link" href="#"><span>⬇</span> Download Excel</a>
+      <span class="reset-link" id="reset-link">← Process another batch</span>
+    </div>
+  </div>
+
+  <div class="tracking-container" id="tracking-view" style="display:none;">
+    <button class="back-link" id="back-link">← Back to upload</button>
+    <div class="page-header">
+      <h1>Order Tracking</h1>
+      <p>One row per shipment reference — the ITOS number is an optional label; screenshots search by reference</p>
+    </div>
+
+    <div class="filter-bar">
+      <button class="filter-pill" data-period="today">Today</button>
+      <button class="filter-pill" data-period="week">This Week</button>
+      <button class="filter-pill" data-period="month">This Month</button>
+      <button class="filter-pill active" data-period="all">All</button>
+    </div>
+
+    <div class="table-toolbar">
+      <div class="search-wrap">
+        <span class="search-icon">🔍</span>
+        <input type="text" id="search-input" placeholder="Search by reference…" />
+      </div>
+      <div class="toolbar-actions">
+        <button type="button" id="request-btn" disabled>Request Screenshot</button>
+        <button type="button" id="approve-btn" disabled>Approve &amp; Send</button>
+        <button type="button" id="edit-all-btn">Edit</button>
+        <button type="button" id="save-all-btn">Save</button>
+      </div>
+    </div>
+
+    <div class="tracking-table-wrap">
+      <table class="tracking-table">
+        <thead>
+          <tr>
+            <th><input type="checkbox" class="select-all-checkbox" id="select-all" /></th>
+            <th>S.No</th>
+            <th>Reference</th>
+            <th>Date</th>
+            <th>ITOS</th>
+            <th>Source</th>
+            <th>Status</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="orders-tbody"></tbody>
+      </table>
+      <div class="tracking-empty" id="orders-empty" style="display:none;">No orders in this period yet.</div>
+    </div>
+  </div>
+
+  <div class="lightbox-overlay" id="lightbox-overlay">
+    <div class="lightbox-box" id="lightbox-box">
+      <div class="lightbox-topbar">
+        <span class="lightbox-counter" id="lightbox-counter"></span>
+        <div class="lightbox-topbar-actions">
+          <button type="button" class="lightbox-icon-btn" id="lightbox-fullscreen-btn" title="Toggle fullscreen">⛶</button>
+          <button type="button" class="lightbox-icon-btn" id="lightbox-close-btn" title="Close">✕</button>
+        </div>
+      </div>
+      <div class="lightbox-stage">
+        <button type="button" class="lightbox-nav lightbox-prev" id="lightbox-prev" title="Previous">‹</button>
+        <img id="lightbox-img" alt="Order screenshot" />
+        <button type="button" class="lightbox-nav lightbox-next" id="lightbox-next" title="Next">›</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="confirm-overlay" id="confirm-overlay">
+    <div class="confirm-box">
+      <div class="confirm-title" id="confirm-title">Are you sure?</div>
+      <div class="confirm-message" id="confirm-message"></div>
+      <div class="confirm-actions">
+        <button type="button" class="confirm-cancel-btn" id="confirm-cancel-btn">Cancel</button>
+        <button type="button" class="confirm-ok-btn" id="confirm-ok-btn">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const auth = VanmoerAuth.requireAuth();
+    document.getElementById("logout-btn").addEventListener("click", () => VanmoerAuth.logout());
+
+    // ── Styled confirm dialog (replaces the native browser confirm()) ────
+    const confirmOverlay = document.getElementById("confirm-overlay");
+    const confirmTitleEl = document.getElementById("confirm-title");
+    const confirmMessageEl = document.getElementById("confirm-message");
+    const confirmOkBtn = document.getElementById("confirm-ok-btn");
+    const confirmCancelBtn = document.getElementById("confirm-cancel-btn");
+
+    function showConfirm(message, { title = "Are you sure?", okLabel = "OK", danger = false } = {}) {
+      return new Promise((resolve) => {
+        confirmTitleEl.textContent = title;
+        confirmMessageEl.textContent = message;
+        confirmOkBtn.textContent = okLabel;
+        confirmOkBtn.classList.toggle("danger", danger);
+        confirmOverlay.classList.add("visible");
+
+        function cleanup(result) {
+          confirmOverlay.classList.remove("visible");
+          confirmOkBtn.removeEventListener("click", onOk);
+          confirmCancelBtn.removeEventListener("click", onCancel);
+          confirmOverlay.removeEventListener("click", onBackdrop);
+          document.removeEventListener("keydown", onKeydown);
+          resolve(result);
+        }
+        function onOk() { cleanup(true); }
+        function onCancel() { cleanup(false); }
+        function onBackdrop(e) { if (e.target === confirmOverlay) cleanup(false); }
+        function onKeydown(e) {
+          if (e.key === "Escape") cleanup(false);
+          else if (e.key === "Enter") cleanup(true);
         }
 
-        function removeFile(index) {
-            selectedFiles.splice(index, 1);
-            renderFileList();
-        }
+        confirmOkBtn.addEventListener("click", onOk);
+        confirmCancelBtn.addEventListener("click", onCancel);
+        confirmOverlay.addEventListener("click", onBackdrop);
+        document.addEventListener("keydown", onKeydown);
+      });
+    }
 
-        function renderFileList() {
-            fileList.innerHTML = selectedFiles.map((f, i) => `
+    let selectedFiles = [];
+    const dropzone = document.getElementById("dropzone");
+    const fileInput = document.getElementById("file-input");
+    const fileList = document.getElementById("file-list");
+    const submitBtn = document.getElementById("submit-btn");
+    const btnLabel = submitBtn.querySelector(".btn-label");
+    const status = document.getElementById("status");
+    const results = document.getElementById("results");
+    const downloadLink = document.getElementById("download-link");
+    const plannedDateInput = document.getElementById("plannedDate");
+    const OUTPUT_FILENAME = "Vinmar_Outbound_Output.xlsx";
+
+    function checkReady() {
+      submitBtn.disabled = !(selectedFiles.length > 0 && plannedDateInput.value);
+    }
+    plannedDateInput.addEventListener("change", checkReady);
+
+    dropzone.addEventListener("click", () => fileInput.click());
+    dropzone.addEventListener("dragover", (e) => { e.preventDefault(); dropzone.classList.add("drag"); });
+    dropzone.addEventListener("dragleave", () => dropzone.classList.remove("drag"));
+    dropzone.addEventListener("drop", (e) => {
+      e.preventDefault();
+      dropzone.classList.remove("drag");
+      addFiles(e.dataTransfer.files);
+    });
+    fileInput.addEventListener("change", (e) => {
+      addFiles(e.target.files);
+      fileInput.value = "";
+    });
+
+    function addFiles(fileListObj) {
+      for (const f of fileListObj) {
+        if (f.name.toLowerCase().endsWith(".pdf")) selectedFiles.push(f);
+      }
+      renderFileList();
+    }
+
+    function removeFile(index) {
+      selectedFiles.splice(index, 1);
+      renderFileList();
+    }
+
+    function renderFileList() {
+      fileList.innerHTML = selectedFiles.map((f, i) => `
         <div class="file-chip">
           <span class="file-icon">📄</span>
           <span class="file-name">${f.name}</span>
           <button type="button" class="file-remove" data-index="${i}">&times;</button>
         </div>
       `).join("");
-            fileList.querySelectorAll(".file-remove").forEach(btn => {
-                btn.addEventListener("click", () => removeFile(Number(btn.dataset.index)));
-            });
-            checkReady();
+      fileList.querySelectorAll(".file-remove").forEach(btn => {
+        btn.addEventListener("click", () => removeFile(Number(btn.dataset.index)));
+      });
+      checkReady();
+    }
+
+    submitBtn.addEventListener("click", async () => {
+      status.className = "";
+      status.style.display = "none";
+      results.classList.remove("visible");
+      submitBtn.disabled = true;
+      submitBtn.classList.add("loading");
+      btnLabel.textContent = "Processing…";
+
+      const fd = new FormData();
+      selectedFiles.forEach(f => fd.append("release_note", f));
+      // Native <input type="date"> always yields "YYYY-MM-DD" regardless of
+      // browser locale — the backend formats it into the OP column format.
+      fd.append("planned_date", plannedDateInput.value);
+
+      try {
+        const res = await VanmoerAuth.authFetch(window.location.pathname + "process", {
+          method: "POST",
+          body: fd,
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Processing failed");
+
+        document.getElementById("stat-docs").textContent = data.summary.documents_processed;
+        document.getElementById("stat-rows").textContent = (data.rows || []).length;
+        results.classList.add("visible");
+
+        downloadLink.onclick = async (e) => {
+          e.preventDefault();
+          await VanmoerAuth.downloadFile(data.download_url, OUTPUT_FILENAME);
+        };
+      } catch (err) {
+        VanmoerAuth.renderError(status, err);
+        status.className = "err";
+        status.style.display = "block";
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.classList.remove("loading");
+        btnLabel.textContent = "Process & Generate Excel";
+        checkReady();
+      }
+    });
+
+    document.getElementById("reset-link").addEventListener("click", () => {
+      selectedFiles = [];
+      renderFileList();
+      plannedDateInput.value = "";
+      checkReady();
+      results.classList.remove("visible");
+      status.style.display = "none";
+    });
+
+    // ── Order tracking panel ────────────────────────────────────────────
+    const uploadView = document.getElementById("upload-view");
+    const trackingView = document.getElementById("tracking-view");
+    const trackingBtn = document.getElementById("tracking-btn");
+    const backLink = document.getElementById("back-link");
+    const ordersTbody = document.getElementById("orders-tbody");
+    const ordersEmpty = document.getElementById("orders-empty");
+    const selectAllCheckbox = document.getElementById("select-all");
+    const searchInput = document.getElementById("search-input");
+    const editAllBtn = document.getElementById("edit-all-btn");
+    const saveAllBtn = document.getElementById("save-all-btn");
+    const requestBtn = document.getElementById("request-btn");
+    const approveBtn = document.getElementById("approve-btn");
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+    let currentPeriod = "all";
+    let orders = [];
+    let searchTerm = "";
+    let editMode = false;
+    // id -> in-progress ITOS value while editMode is on. Keyed separately
+    // from `orders` so a value typed for a row stays intact even if a
+    // search filter temporarily hides that row from the table.
+    let draftItos = {};
+    const checkedIds = new Set();
+    // Only runs while something is actually queued/processing — the common
+    // idle case never polls at all.
+    let pollTimer = null;
+
+    function showTracking() {
+      uploadView.style.display = "none";
+      trackingView.style.display = "block";
+      loadOrders();
+    }
+    function showUpload() {
+      trackingView.style.display = "none";
+      uploadView.style.display = "block";
+      exitEditMode();
+      stopPolling();
+    }
+    trackingBtn.addEventListener("click", showTracking);
+    backLink.addEventListener("click", showUpload);
+
+    document.querySelectorAll(".filter-pill").forEach(pill => {
+      pill.addEventListener("click", () => {
+        document.querySelectorAll(".filter-pill").forEach(p => p.classList.remove("active"));
+        pill.classList.add("active");
+        currentPeriod = pill.dataset.period;
+        exitEditMode();
+        loadOrders();
+      });
+    });
+
+    searchInput.addEventListener("input", () => {
+      searchTerm = searchInput.value.trim().toLowerCase();
+      renderOrders();
+    });
+
+    async function loadOrders() {
+      ordersTbody.innerHTML = "";
+      ordersEmpty.style.display = "none";
+      checkedIds.clear();
+      try {
+        await refreshOrders();
+      } catch (err) {
+        ordersEmpty.textContent = err.message;
+        ordersEmpty.style.display = "block";
+      }
+    }
+
+    // Re-fetches without disturbing edit mode/checkboxes — used both for the
+    // initial load and for the background poll while a screenshot run is
+    // in flight.
+    async function refreshOrders() {
+      const url = `${window.location.pathname}orders?period=${currentPeriod}&tz=${encodeURIComponent(tz)}`;
+      const res = await VanmoerAuth.authFetch(url);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to load orders");
+      orders = data.orders || [];
+      renderOrders();
+      updateRequestButton();
+      updateApproveButton();
+      syncPolling();
+    }
+
+    function syncPolling() {
+      const needsPoll = orders.some(o =>
+        o.screenshot_status === "queued" || o.screenshot_status === "processing"
+        || o.email_status === "queued" || o.email_status === "processing"
+      );
+      if (needsPoll && !pollTimer) {
+        pollTimer = setInterval(() => { refreshOrders().catch(() => {}); }, 3000);
+      } else if (!needsPoll && pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+    }
+
+    function stopPolling() {
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, c => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+      }[c]));
+    }
+
+    function formatDate(iso) {
+      const d = new Date(iso);
+      return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+    }
+
+    function visibleOrders() {
+      if (!searchTerm) return orders;
+      return orders.filter(o => o.reference.toLowerCase().includes(searchTerm));
+    }
+
+    function renderOrders() {
+      selectAllCheckbox.checked = false;
+      const rows = visibleOrders();
+      if (rows.length === 0) {
+        ordersTbody.innerHTML = "";
+        ordersEmpty.textContent = searchTerm ? "No references match your search." : "No orders in this period yet.";
+        ordersEmpty.style.display = "block";
+        return;
+      }
+      ordersEmpty.style.display = "none";
+      ordersTbody.innerHTML = rows.map((o, i) => {
+        const locked = o.screenshot_status === "queued" || o.screenshot_status === "processing";
+        const itosCell = (editMode && !locked)
+          ? `<input type="text" class="itos-input" data-id="${o.id}" value="${escapeHtml(draftItos[o.id] ?? (o.itos_number || ""))}" placeholder="ITOS number" />`
+          : (o.itos_number
+              ? `<span class="num-cell">${escapeHtml(o.itos_number)}</span>`
+              : `<span class="itos-empty">— not saved —</span>`);
+
+        let screenshotNote = "";
+        if (o.screenshot_status === "queued") {
+          screenshotNote = `<div class="screenshot-note queued">Screenshot queued…</div>`;
+        } else if (o.screenshot_status === "processing") {
+          screenshotNote = `<div class="screenshot-note processing">Capturing screenshot…</div>`;
+        } else if (o.screenshot_status === "failed") {
+          screenshotNote = `<div class="screenshot-note failed" title="${escapeHtml(o.screenshot_error || "")}">
+            Screenshot failed <button type="button" class="retry-link" data-id="${o.id}">Retry</button>
+          </div>`;
         }
 
-        function checkReady() {
-            submitBtn.disabled = !(selectedFiles.length > 0 && plannedDateInput.value);
+        let emailNote = "";
+        if (o.email_status === "queued") {
+          emailNote = `<div class="email-note queued">Email queued…</div>`;
+        } else if (o.email_status === "processing") {
+          emailNote = `<div class="email-note processing">Sending…</div>`;
+        } else if (o.email_status === "sent") {
+          emailNote = `<div class="email-note sent">✉ Sent</div>`;
+        } else if (o.email_status === "failed") {
+          emailNote = `<div class="email-note failed" title="${escapeHtml(o.email_error || "")}">
+            Email failed <button type="button" class="email-retry-link" data-id="${o.id}">Retry</button>
+          </div>`;
         }
 
-        submitBtn.addEventListener("click", async () => {
-            status.className = "";
-            status.style.display = "none";
-            results.classList.remove("visible");
-            submitBtn.disabled = true;
-            submitBtn.classList.add("loading");
-            btnLabel.textContent = "Processing…";
+        const sourceCell = o.status === "done"
+          ? `<button type="button" class="source-btn" data-id="${o.id}" title="View screenshots">🖼️</button>`
+          : `<span class="source-dash">—</span>`;
 
-            const fd = new FormData();
-            selectedFiles.forEach(f => fd.append("release_note", f));
-            // Native <input type="date"> always yields "YYYY-MM-DD" regardless
-            // of browser locale — the backend formats it into the OP's
-            // "YYYYMMDD 00:00:00" column format.
-            fd.append("planned_date", plannedDateInput.value);
+        const revokeBtn = o.status === "done"
+          ? `<button type="button" class="row-action-btn revoke-btn" data-id="${o.id}" title="Revert to Pending">↺</button>`
+          : "";
 
-            try {
-                const res = await VanmoerAuth.authFetch(window.location.pathname + "process", {
-                    method: "POST",
-                    body: fd,
-                });
-                const data = await res.json();
-                if (!res.ok) throw new Error(data.error || "Processing failed");
+        return `
+          <tr data-id="${o.id}">
+            <td class="checkbox-cell"><input type="checkbox" class="row-checkbox" data-id="${o.id}" ${checkedIds.has(o.id) ? "checked" : ""} /></td>
+            <td data-label="S.No">${i + 1}</td>
+            <td data-label="Reference" class="ref-cell">${escapeHtml(o.reference)}</td>
+            <td data-label="Date">${formatDate(o.date)}</td>
+            <td data-label="ITOS">${itosCell}</td>
+            <td data-label="Source">${sourceCell}</td>
+            <td data-label="Status">
+              <span class="status-badge ${o.status}">${o.status === "done" ? "Done" : "Pending"}</span>
+              ${screenshotNote}
+              ${emailNote}
+            </td>
+            <td data-label="">
+              <div class="row-actions">
+                ${revokeBtn}
+                <button type="button" class="row-action-btn delete-btn" data-id="${o.id}" title="Delete row">🗑</button>
+              </div>
+            </td>
+          </tr>
+        `;
+      }).join("");
 
-                document.getElementById("stat-docs").textContent = data.summary.documents_processed;
-                document.getElementById("stat-rows").textContent = (data.rows || []).length;
-                results.classList.add("visible");
-
-                downloadLink.onclick = async (e) => {
-                    e.preventDefault();
-                    await VanmoerAuth.downloadFile(data.download_url, OUTPUT_FILENAME);
-                };
-            } catch (err) {
-                VanmoerAuth.renderError(status, err);
-                status.className = "err";
-                status.style.display = "block";
-            } finally {
-                submitBtn.disabled = false;
-                submitBtn.classList.remove("loading");
-                btnLabel.textContent = "Process & Generate Excel";
-                checkReady();
-            }
+      if (editMode) {
+        ordersTbody.querySelectorAll(".itos-input").forEach(input => {
+          input.addEventListener("input", () => {
+            draftItos[Number(input.dataset.id)] = input.value;
+          });
         });
-
-        document.getElementById("reset-link").addEventListener("click", () => {
-            selectedFiles = [];
-            renderFileList();
-            plannedDateInput.value = "";
-            results.classList.remove("visible");
-            status.style.display = "none";
-            checkReady();
+      }
+      ordersTbody.querySelectorAll(".row-checkbox").forEach(cb => {
+        cb.addEventListener("change", () => {
+          const id = Number(cb.dataset.id);
+          if (cb.checked) checkedIds.add(id); else checkedIds.delete(id);
+          cb.closest("tr").classList.toggle("selected", cb.checked);
+          updateRequestButton();
+          updateApproveButton();
         });
-    </script>
+      });
+      ordersTbody.querySelectorAll(".retry-link").forEach(btn => {
+        btn.addEventListener("click", () => retryScreenshot(Number(btn.dataset.id)));
+      });
+      ordersTbody.querySelectorAll(".email-retry-link").forEach(btn => {
+        btn.addEventListener("click", () => retryEmail(Number(btn.dataset.id)));
+      });
+      ordersTbody.querySelectorAll(".source-btn").forEach(btn => {
+        btn.addEventListener("click", () => openLightbox(Number(btn.dataset.id)));
+      });
+      ordersTbody.querySelectorAll(".revoke-btn").forEach(btn => {
+        btn.addEventListener("click", () => revokeOrder(Number(btn.dataset.id)));
+      });
+      ordersTbody.querySelectorAll(".delete-btn").forEach(btn => {
+        btn.addEventListener("click", () => deleteOrder(Number(btn.dataset.id)));
+      });
+    }
+
+    selectAllCheckbox.addEventListener("change", () => {
+      ordersTbody.querySelectorAll(".row-checkbox").forEach(cb => {
+        cb.checked = selectAllCheckbox.checked;
+        const id = Number(cb.dataset.id);
+        if (cb.checked) checkedIds.add(id); else checkedIds.delete(id);
+        cb.closest("tr").classList.toggle("selected", cb.checked);
+      });
+      updateRequestButton();
+      updateApproveButton();
+    });
+
+    function updateRequestButton() {
+      const selected = orders.filter(o => checkedIds.has(o.id));
+      const eligible = selected.length > 0 && selected.every(o =>
+        o.screenshot_status !== "queued"
+        && o.screenshot_status !== "processing"
+        && o.screenshot_status !== "done"
+      );
+      requestBtn.disabled = !eligible;
+    }
+
+    function updateApproveButton() {
+      const selected = orders.filter(o => checkedIds.has(o.id));
+      const eligible = selected.length > 0 && selected.every(o =>
+        o.status === "done"
+        && o.email_status !== "queued"
+        && o.email_status !== "processing"
+        && o.email_status !== "sent"
+      );
+      approveBtn.disabled = !eligible;
+    }
+
+    async function requestScreenshots(ids) {
+      const res = await VanmoerAuth.authFetch(`${window.location.pathname}screenshots/request`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ order_tracking_ids: ids }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Request failed");
+      return data;
+    }
+
+    requestBtn.addEventListener("click", async () => {
+      const ids = Array.from(checkedIds);
+      if (ids.length === 0) return;
+
+      requestBtn.disabled = true;
+      requestBtn.textContent = "Requesting…";
+      try {
+        const data = await requestScreenshots(ids);
+        checkedIds.clear();
+        if (data.skipped && data.skipped.length > 0) {
+          const reasons = data.skipped.map(s => `#${s.id}: ${s.reason}`).join("\n");
+          alert(`${data.queued.length} queued.\nSkipped:\n${reasons}`);
+        }
+        await refreshOrders();
+      } catch (err) {
+        alert(err.message);
+      } finally {
+        requestBtn.textContent = "Request Screenshot";
+        updateRequestButton();
+      }
+    });
+
+    async function retryScreenshot(id) {
+      try {
+        await VanmoerAuth.authFetch(`${window.location.pathname}screenshots/retry`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ order_tracking_ids: [id] }),
+        });
+        await refreshOrders();
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
+    async function requestEmails(ids) {
+      const res = await VanmoerAuth.authFetch(`${window.location.pathname}emails/request`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ order_tracking_ids: ids }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Request failed");
+      return data;
+    }
+
+    approveBtn.addEventListener("click", async () => {
+      const ids = Array.from(checkedIds);
+      if (ids.length === 0) return;
+
+      const count = ids.length;
+      const confirmed = await showConfirm(
+        `This will forward ${count} email${count > 1 ? "s" : ""} with the captured screenshots ` +
+        `attached and send ${count > 1 ? "them" : "it"} immediately. This cannot be undone.`,
+        { title: "Send email?", okLabel: "Send", danger: true }
+      );
+      if (!confirmed) return;
+
+      approveBtn.disabled = true;
+      approveBtn.textContent = "Sending…";
+      try {
+        const data = await requestEmails(ids);
+        checkedIds.clear();
+        if (data.skipped && data.skipped.length > 0) {
+          const reasons = data.skipped.map(s => `#${s.id}: ${s.reason}`).join("\n");
+          alert(`${data.queued.length} queued.\nSkipped:\n${reasons}`);
+        }
+        await refreshOrders();
+      } catch (err) {
+        alert(err.message);
+      } finally {
+        approveBtn.textContent = "Approve & Send";
+        updateApproveButton();
+      }
+    });
+
+    async function retryEmail(id) {
+      try {
+        await VanmoerAuth.authFetch(`${window.location.pathname}emails/retry`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ order_tracking_ids: [id] }),
+        });
+        await refreshOrders();
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
+    async function revokeOrder(id) {
+      try {
+        const res = await VanmoerAuth.authFetch(`${window.location.pathname}orders/${id}/revoke`, {
+          method: "POST",
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Could not revert this row");
+        orders = orders.map(o => o.id === id ? data.order : o);
+        renderOrders();
+        updateRequestButton();
+        updateApproveButton();
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
+    async function deleteOrder(id) {
+      const confirmed = await showConfirm(
+        "This cannot be undone (captured screenshot files, if any, are kept on disk).",
+        { title: "Delete this row?", okLabel: "Delete", danger: true }
+      );
+      if (!confirmed) return;
+      try {
+        const res = await VanmoerAuth.authFetch(`${window.location.pathname}orders/${id}`, {
+          method: "DELETE",
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Could not delete this row");
+        orders = orders.filter(o => o.id !== id);
+        checkedIds.delete(id);
+        renderOrders();
+        updateRequestButton();
+        updateApproveButton();
+        syncPolling();
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
+    // ── Screenshot lightbox ──────────────────────────────────────────────
+    const lightboxOverlay = document.getElementById("lightbox-overlay");
+    const lightboxImg = document.getElementById("lightbox-img");
+    const lightboxCounter = document.getElementById("lightbox-counter");
+    const lightboxPrev = document.getElementById("lightbox-prev");
+    const lightboxNext = document.getElementById("lightbox-next");
+    const lightboxCloseBtn = document.getElementById("lightbox-close-btn");
+    const lightboxFullscreenBtn = document.getElementById("lightbox-fullscreen-btn");
+
+    let lightboxFiles = [];
+    let lightboxIndex = 0;
+
+    async function openLightbox(orderTrackingId) {
+      try {
+        const res = await VanmoerAuth.authFetch(`${window.location.pathname}screenshots/${orderTrackingId}/files`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Could not load screenshots");
+        if (!data.files || data.files.length === 0) {
+          alert("No screenshots found for this order.");
+          return;
+        }
+        lightboxFiles = data.files;
+        lightboxIndex = 0;
+        await renderLightboxImage();
+        lightboxOverlay.classList.add("visible");
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
+    // Images are served through an authenticated endpoint, not a plain URL,
+    // so <img src> can't be set directly — fetch the bytes and hand the
+    // <img> a local object URL instead.
+    async function renderLightboxImage() {
+      const file = lightboxFiles[lightboxIndex];
+      lightboxCounter.textContent = `${lightboxIndex + 1} / ${lightboxFiles.length}`;
+      lightboxPrev.disabled = lightboxIndex === 0;
+      lightboxNext.disabled = lightboxIndex === lightboxFiles.length - 1;
+
+      const res = await VanmoerAuth.authFetch(file.url);
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const previous = lightboxImg.src;
+      lightboxImg.src = objectUrl;
+      if (previous && previous.startsWith("blob:")) URL.revokeObjectURL(previous);
+    }
+
+    function closeLightbox() {
+      lightboxOverlay.classList.remove("visible", "maximized");
+      if (lightboxImg.src.startsWith("blob:")) URL.revokeObjectURL(lightboxImg.src);
+      lightboxImg.src = "";
+      lightboxFiles = [];
+    }
+
+    lightboxPrev.addEventListener("click", () => {
+      if (lightboxIndex > 0) { lightboxIndex--; renderLightboxImage(); }
+    });
+    lightboxNext.addEventListener("click", () => {
+      if (lightboxIndex < lightboxFiles.length - 1) { lightboxIndex++; renderLightboxImage(); }
+    });
+    lightboxCloseBtn.addEventListener("click", closeLightbox);
+    lightboxOverlay.addEventListener("click", (e) => {
+      if (e.target === lightboxOverlay) closeLightbox();
+    });
+    lightboxFullscreenBtn.addEventListener("click", () => {
+      lightboxOverlay.classList.toggle("maximized");
+    });
+    document.addEventListener("keydown", (e) => {
+      if (!lightboxOverlay.classList.contains("visible")) return;
+      if (e.key === "Escape") {
+        // First Escape exits the maximized view; a second closes the lightbox —
+        // matches how the native Fullscreen API used to layer these two states.
+        if (lightboxOverlay.classList.contains("maximized")) {
+          lightboxOverlay.classList.remove("maximized");
+        } else {
+          closeLightbox();
+        }
+      }
+      else if (e.key === "ArrowLeft") lightboxPrev.click();
+      else if (e.key === "ArrowRight") lightboxNext.click();
+    });
+
+    function enterEditMode() {
+      editMode = true;
+      draftItos = Object.fromEntries(orders.map(o => [o.id, o.itos_number || ""]));
+      editAllBtn.textContent = "Cancel";
+      editAllBtn.classList.add("editing");
+      saveAllBtn.classList.add("visible");
+      renderOrders();
+    }
+
+    function exitEditMode() {
+      editMode = false;
+      draftItos = {};
+      editAllBtn.textContent = "Edit";
+      editAllBtn.classList.remove("editing");
+      saveAllBtn.classList.remove("visible");
+      renderOrders();
+    }
+
+    editAllBtn.addEventListener("click", () => {
+      if (editMode) exitEditMode(); else enterEditMode();
+    });
+
+    saveAllBtn.addEventListener("click", async () => {
+      const updates = orders.map(o => ({
+        id: o.id,
+        itos_number: (draftItos[o.id] ?? o.itos_number ?? "").trim(),
+      }));
+
+      saveAllBtn.disabled = true;
+      saveAllBtn.textContent = "Saving…";
+      try {
+        const res = await VanmoerAuth.authFetch(`${window.location.pathname}orders`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ updates }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Save failed");
+
+        const updatedById = Object.fromEntries((data.orders || []).map(o => [o.id, o]));
+        orders = orders.map(o => updatedById[o.id] || o);
+        exitEditMode();
+      } catch (err) {
+        alert(err.message);
+      } finally {
+        saveAllBtn.disabled = false;
+        saveAllBtn.textContent = "Save";
+      }
+    });
+  </script>
 </body>
-
 </html>

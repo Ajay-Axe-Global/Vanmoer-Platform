@@ -8,9 +8,21 @@ import datetime
 
 from sqlalchemy import case, func, or_
 
+from sqlalchemy.orm import aliased
+
 from database.backup import backup_now
 from database.db import SessionLocal
-from database.models import Client, GeminiUsageLog, JobHistory, Task, User, UserTaskAccess
+from database.models import (
+    Client,
+    EmailJob,
+    GeminiUsageLog,
+    JobHistory,
+    OrderTracking,
+    ScreenshotJob,
+    Task,
+    User,
+    UserTaskAccess,
+)
 from helpers.crypto_utils import encrypt_secret
 from helpers.dates import period_range, resolve_tz, utc_iso
 from helpers.jwt_utils import hash_password
@@ -521,6 +533,209 @@ def productivity_by_user(since: datetime.datetime, until: datetime.datetime,
         )
         return [{"user_id": uid, "user_name": uname, "username": uusername, "count": count or 0}
                 for uid, uname, uusername, count in rows]
+    finally:
+        session.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ORDER TRACKING ACTIVITY (screenshots + emails) — same filter/query
+# conventions as jobs_summary()/productivity_by_user() above, applied to
+# ScreenshotJob/EmailJob instead of JobHistory. Generic across any
+# client/task, same as those tables themselves (see their docstrings in
+# database/models.py) — not scoped to Sabic Outbound specifically, even
+# though that's the only task using this pipeline today.
+
+
+def screenshot_summary_by_user(since: datetime.datetime, until: datetime.datetime,
+                                user_id: int | None = None, client_slug: str | None = None,
+                                task_slug: str | None = None, search: str | None = None) -> list[dict]:
+    """One row per (user, client, task) combo that has REQUESTED a
+    screenshot job in [since, until) — "success" is ScreenshotJob.status ==
+    "done" (matches the status the tracking panel itself shows), "pending"
+    covers queued/processing (still in flight, not yet a final outcome)."""
+    session = SessionLocal()
+    try:
+        done_count = func.sum(case((ScreenshotJob.status == "done", 1), else_=0))
+        failed_count = func.sum(case((ScreenshotJob.status == "failed", 1), else_=0))
+        pending_count = func.sum(case((ScreenshotJob.status.in_(["queued", "processing"]), 1), else_=0))
+        q = (
+            session.query(
+                User.id, User.name, User.username,
+                Client.name, Client.slug,
+                Task.name, Task.slug,
+                func.count(ScreenshotJob.id), done_count, failed_count, pending_count,
+                func.max(ScreenshotJob.requested_at),
+            )
+            .join(User, ScreenshotJob.requested_by == User.id)
+            .join(Client, ScreenshotJob.client_id == Client.id)
+            .join(Task, ScreenshotJob.task_id == Task.id)
+            .filter(ScreenshotJob.requested_at >= since, ScreenshotJob.requested_at < until)
+        )
+        if user_id is not None:
+            q = q.filter(User.id == user_id)
+        if client_slug:
+            q = q.filter(Client.slug == client_slug)
+        if task_slug:
+            q = q.filter(Task.slug == task_slug)
+        if search:
+            like = f"%{search.strip()}%"
+            q = q.filter(or_(
+                User.name.ilike(like), User.username.ilike(like),
+                Client.name.ilike(like), Task.name.ilike(like),
+            ))
+        rows = (
+            q.group_by(User.id, Client.id, Task.id)
+            .order_by(func.max(ScreenshotJob.requested_at).desc())
+            .all()
+        )
+        return [{
+            "user_id": uid, "user_name": uname, "username": uusername,
+            "client_name": cname, "client_slug": cslug,
+            "task_name": tname, "task_slug": tslug,
+            "count": count, "done_count": done or 0, "failed_count": fail or 0,
+            "pending_count": pending or 0,
+            "last_requested": _utc_iso(last) if last else None,
+        } for uid, uname, uusername, cname, cslug, tname, tslug, count, done, fail, pending, last in rows]
+    finally:
+        session.close()
+
+
+def email_summary_by_user(since: datetime.datetime, until: datetime.datetime,
+                           user_id: int | None = None, client_slug: str | None = None,
+                           task_slug: str | None = None, search: str | None = None) -> list[dict]:
+    """Same shape as screenshot_summary_by_user() but over EmailJob —
+    "success" is EmailJob.status == "sent"."""
+    session = SessionLocal()
+    try:
+        sent_count = func.sum(case((EmailJob.status == "sent", 1), else_=0))
+        failed_count = func.sum(case((EmailJob.status == "failed", 1), else_=0))
+        pending_count = func.sum(case((EmailJob.status.in_(["queued", "processing"]), 1), else_=0))
+        q = (
+            session.query(
+                User.id, User.name, User.username,
+                Client.name, Client.slug,
+                Task.name, Task.slug,
+                func.count(EmailJob.id), sent_count, failed_count, pending_count,
+                func.max(EmailJob.requested_at),
+            )
+            .join(User, EmailJob.requested_by == User.id)
+            .join(Client, EmailJob.client_id == Client.id)
+            .join(Task, EmailJob.task_id == Task.id)
+            .filter(EmailJob.requested_at >= since, EmailJob.requested_at < until)
+        )
+        if user_id is not None:
+            q = q.filter(User.id == user_id)
+        if client_slug:
+            q = q.filter(Client.slug == client_slug)
+        if task_slug:
+            q = q.filter(Task.slug == task_slug)
+        if search:
+            like = f"%{search.strip()}%"
+            q = q.filter(or_(
+                User.name.ilike(like), User.username.ilike(like),
+                Client.name.ilike(like), Task.name.ilike(like),
+            ))
+        rows = (
+            q.group_by(User.id, Client.id, Task.id)
+            .order_by(func.max(EmailJob.requested_at).desc())
+            .all()
+        )
+        return [{
+            "user_id": uid, "user_name": uname, "username": uusername,
+            "client_name": cname, "client_slug": cslug,
+            "task_name": tname, "task_slug": tslug,
+            "count": count, "sent_count": sent or 0, "failed_count": fail or 0,
+            "pending_count": pending or 0,
+            "last_requested": _utc_iso(last) if last else None,
+        } for uid, uname, uusername, cname, cslug, tname, tslug, count, sent, fail, pending, last in rows]
+    finally:
+        session.close()
+
+
+def order_tracking_activity(since: datetime.datetime | None = None, until: datetime.datetime | None = None,
+                             client_slug: str | None = None, task_slug: str | None = None,
+                             user_id: int | None = None, search: str | None = None,
+                             limit: int = 200) -> list[dict]:
+    """One row per OrderTracking reference, joined to its MOST RECENT
+    ScreenshotJob and EmailJob (if any) — answers "who requested the
+    screenshot / who sent the email for reference X". A reference can have
+    several ScreenshotJob/EmailJob rows over time (each "Request"/"Send"
+    click after a prior batch finished starts a new one — see their own
+    docstrings), so this always shows the latest one per reference, found
+    via a MAX(id) subquery per order_tracking_id (not MAX(requested_at):
+    id ordering is unambiguous even if two rows land in the same second).
+
+    `user_id` filters to references where that user requested EITHER the
+    screenshot or the email — this is a person-centric report ("what has
+    this user touched"), not scoped to one side of the pipeline."""
+    session = SessionLocal()
+    try:
+        latest_shot_ids = (
+            session.query(
+                ScreenshotJob.order_tracking_id.label("otid"),
+                func.max(ScreenshotJob.id).label("max_id"),
+            )
+            .group_by(ScreenshotJob.order_tracking_id)
+            .subquery()
+        )
+        latest_email_ids = (
+            session.query(
+                EmailJob.order_tracking_id.label("otid"),
+                func.max(EmailJob.id).label("max_id"),
+            )
+            .group_by(EmailJob.order_tracking_id)
+            .subquery()
+        )
+        ShotJob = aliased(ScreenshotJob)
+        EmailJobRow = aliased(EmailJob)
+        ShotUser = aliased(User)
+        EmailUser = aliased(User)
+
+        q = (
+            session.query(OrderTracking, Client, Task, ShotJob, ShotUser, EmailJobRow, EmailUser)
+            .join(Client, OrderTracking.client_id == Client.id)
+            .join(Task, OrderTracking.task_id == Task.id)
+            .outerjoin(latest_shot_ids, latest_shot_ids.c.otid == OrderTracking.id)
+            .outerjoin(ShotJob, ShotJob.id == latest_shot_ids.c.max_id)
+            .outerjoin(ShotUser, ShotUser.id == ShotJob.requested_by)
+            .outerjoin(latest_email_ids, latest_email_ids.c.otid == OrderTracking.id)
+            .outerjoin(EmailJobRow, EmailJobRow.id == latest_email_ids.c.max_id)
+            .outerjoin(EmailUser, EmailUser.id == EmailJobRow.requested_by)
+        )
+        if since is not None:
+            q = q.filter(OrderTracking.updated_at >= since)
+        if until is not None:
+            q = q.filter(OrderTracking.updated_at < until)
+        if client_slug:
+            q = q.filter(Client.slug == client_slug)
+        if task_slug:
+            q = q.filter(Task.slug == task_slug)
+        if user_id is not None:
+            q = q.filter(or_(ShotUser.id == user_id, EmailUser.id == user_id))
+        if search:
+            like = f"%{search.strip()}%"
+            q = q.filter(or_(
+                OrderTracking.reference.ilike(like),
+                OrderTracking.itos_number.ilike(like),
+            ))
+        rows = q.order_by(OrderTracking.updated_at.desc()).limit(limit).all()
+
+        return [{
+            "reference": row.reference,
+            "itos_number": row.itos_number,
+            "client_name": client.name, "client_slug": client.slug,
+            "task_name": task.name, "task_slug": task.slug,
+            "status": row.status,
+            "screenshot_status": shot.status if shot else row.screenshot_status,
+            "screenshot_requested_by": shot_user.name if shot_user else None,
+            "screenshot_requested_by_username": shot_user.username if shot_user else None,
+            "screenshot_error": (shot.last_error if shot else row.screenshot_error),
+            "email_status": email.status if email else row.email_status,
+            "email_requested_by": email_user.name if email_user else None,
+            "email_requested_by_username": email_user.username if email_user else None,
+            "email_error": (email.last_error if email else row.email_error),
+            "updated_at": _utc_iso(row.updated_at) if row.updated_at else None,
+        } for row, client, task, shot, shot_user, email, email_user in rows]
     finally:
         session.close()
 

@@ -512,6 +512,23 @@
       background: #2b1414;
     }
 
+    /* ScreenshotJob/EmailJob status badges — Activity tab's reference
+       drill-down table. "done"/"sent" reuse the same green as
+       status-success above; "queued"/"processing" are in-flight (neutral
+       accent, not yet a final outcome); "none" is the base .badge look
+       (no request has ever been made for that side of the pipeline). */
+    .badge.status-done,
+    .badge.status-sent {
+      color: var(--good);
+      background: #0f2b1c;
+    }
+
+    .badge.status-queued,
+    .badge.status-processing {
+      color: var(--accent);
+      background: #1a2233;
+    }
+
     .count-pill {
       display: inline-flex;
       gap: 6px;
@@ -1056,9 +1073,11 @@
       <div class="tabs">
         <button class="tab-btn active" data-tab="dashboard">Dashboard</button>
         <button class="tab-btn" data-tab="users">Users</button>
+        <button class="tab-btn" data-tab="activity">Screenshot &amp; Email Activity</button>
         <button class="tab-btn" data-tab="billing">Billing &amp; Usage</button>
       </div>
-      <button class="plain" id="backup-btn"><span class="btn-spinner"></span><span id="backup-btn-label">Backup DB</span></button>
+      <button class="plain" id="backup-btn"><span class="btn-spinner"></span><span id="backup-btn-label">Backup
+          DB</span></button>
       <button class="plain" id="logout-btn">Log out</button>
     </div>
   </header>
@@ -1208,6 +1227,99 @@
       </div>
     </div>
 
+    <!-- ═══════════════════ SCREENSHOT & EMAIL ACTIVITY TAB ═══════════════════ -->
+    <div class="tab-panel" id="tab-activity">
+      <div class="panel full" style="margin-bottom:20px">
+        <h2>Screenshot &amp; email activity</h2>
+        <p class="panel-sub">who requested screenshots/emails, and how many succeeded, per client/task</p>
+        <div class="filter-row">
+          <select id="activity-period">
+            <option value="today">Today</option>
+            <option value="week">This week</option>
+            <option value="month">This month</option>
+            <option value="custom">Custom</option>
+          </select>
+          <select id="activity-filter-user">
+            <option value="">All users</option>
+          </select>
+          <select id="activity-filter-client">
+            <option value="">All clients</option>
+          </select>
+          <select id="activity-filter-task">
+            <option value="">All tasks</option>
+          </select>
+          <input type="search" id="activity-search" class="search-input" placeholder="Search…" />
+        </div>
+        <div class="custom-range" id="activity-custom-range" style="display:none">
+          <input type="date" id="activity-since" />
+          <span class="range-sep">to</span>
+          <input type="date" id="activity-until" />
+          <button type="button" class="period-apply" id="activity-apply-btn">Apply</button>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="panel">
+          <h2>Screenshots by user</h2>
+          <p class="panel-sub">done vs. failed vs. still queued/processing</p>
+          <div class="table-scroll">
+            <table id="screenshot-summary-table">
+              <thead>
+                <tr>
+                  <th>User</th>
+                  <th>Client</th>
+                  <th>Task</th>
+                  <th>Requested</th>
+                  <th>Last requested</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>Emails by user</h2>
+          <p class="panel-sub">sent vs. failed vs. still queued/processing</p>
+          <div class="table-scroll">
+            <table id="email-summary-table">
+              <thead>
+                <tr>
+                  <th>User</th>
+                  <th>Client</th>
+                  <th>Task</th>
+                  <th>Requested</th>
+                  <th>Last requested</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel full" style="margin-top:20px">
+        <h2>Reference activity</h2>
+        <p class="panel-sub">who did what for each individual reference — reflects the filters above</p>
+        <div class="table-scroll">
+          <table id="reference-activity-table">
+            <thead>
+              <tr>
+                <th>Reference</th>
+                <th>ITOS number</th>
+                <th>Client</th>
+                <th>Task</th>
+                <th>Screenshot</th>
+                <th>Email</th>
+                <th>Last updated</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
     <!-- ═══════════════════ USERS TAB ═══════════════════ -->
     <div class="tab-panel" id="tab-users">
       <div class="grid-2">
@@ -1228,7 +1340,7 @@
 
           <div class="row">
             <div>
-              <label for="user-outlook-username">Outlook email <span class="hint">(for forward-with-screenshots)</span></label>
+              <label for="user-outlook-username">Outlook email</label>
               <input id="user-outlook-username" placeholder="name@vanmoer.com" />
             </div>
             <div>
@@ -1236,12 +1348,7 @@
               <input id="user-outlook-password" type="password" placeholder="" />
             </div>
           </div>
-          <p style="font-size:11px;color:var(--text-secondary);margin:8px 0 16px;line-height:1.5">
-            Drafts/sends for this user go through their own Outlook account. Leave both blank
-            if this user doesn't use the Outlook forward feature. The password is stored
-            encrypted — the automation only reuses it to refresh an expired session, which
-            still requires this user to answer a phone-call verification themselves.
-          </p>
+
 
           <div class="inline-client-row">
             <div class="field">
@@ -1254,10 +1361,6 @@
 
           <div id="assignment-block">
             <label>Client / task grants</label>
-            <p style="font-size:11px;color:var(--text-secondary);margin-bottom:6px">
-              Add one grant per client+task this user should access. One person needing
-              both Carpenter Inbound and Outbound gets two grants on the same login.
-            </p>
             <div class="grant-add-row">
               <div><select class="form-input" id="user-client"></select></div>
               <div><select class="form-input" id="user-task"></select></div>
@@ -1450,7 +1553,8 @@
           <h2>Cost per day</h2>
           <div id="billing-day-peak-label" style="font-size:12.5px;color:var(--text-secondary)">—</div>
         </div>
-        <p class="panel-sub">₹ spent on Gemini extraction per day · amber bar = the period's highest-cost day · hover a bar for its full breakdown</p>
+        <p class="panel-sub">₹ spent on Gemini extraction per day · amber bar = the period's highest-cost day · hover a
+          bar for its full breakdown</p>
         <div class="filter-row">
           <select id="billing-day-period">
             <option value="today">Today</option>
@@ -1467,14 +1571,16 @@
         </div>
         <div id="billing-chart-wrap" style="position:relative">
           <svg id="billing-chart-svg" width="100%" height="220" viewBox="0 0 1080 220" preserveAspectRatio="none"></svg>
-          <div id="billing-chart-tooltip" style="position:absolute;pointer-events:none;background:#0b0d12;border:1px solid var(--border-2);border-radius:8px;padding:8px 11px;font-size:12px;line-height:1.5;opacity:0;transition:opacity .1s;transform:translate(-50%,-100%);white-space:nowrap;z-index:5;box-shadow:0 8px 24px rgba(0,0,0,.4)"></div>
+          <div id="billing-chart-tooltip"
+            style="position:absolute;pointer-events:none;background:#0b0d12;border:1px solid var(--border-2);border-radius:8px;padding:8px 11px;font-size:12px;line-height:1.5;opacity:0;transition:opacity .1s;transform:translate(-50%,-100%);white-space:nowrap;z-index:5;box-shadow:0 8px 24px rgba(0,0,0,.4)">
+          </div>
         </div>
       </div>
 
       <!-- ── High demand days ── -->
       <div class="panel full" style="margin-bottom:20px">
         <h2>High demand days</h2>
-        <p class="panel-sub">the selected period's highest-cost days — same idea as a cloud console's peak-usage callout</p>
+        <p class="panel-sub">the selected period's highest-cost days</p>
         <div class="filter-row">
           <select id="billing-hd-period">
             <option value="today">Today</option>
@@ -1514,7 +1620,8 @@
             <button type="button" class="period-apply" id="billing-cbc-apply-btn">Apply</button>
           </div>
           <div id="billing-client-bar-wrap">
-            <svg id="billing-client-bar-svg" width="100%" height="220" viewBox="0 0 520 220" preserveAspectRatio="none"></svg>
+            <svg id="billing-client-bar-svg" width="100%" height="220" viewBox="0 0 520 220"
+              preserveAspectRatio="none"></svg>
           </div>
         </div>
 
@@ -1562,7 +1669,8 @@
             <button type="button" class="period-apply" id="billing-cbt-apply-btn">Apply</button>
           </div>
           <div id="billing-task-bar-wrap">
-            <svg id="billing-task-bar-svg" width="100%" height="220" viewBox="0 0 520 220" preserveAspectRatio="none"></svg>
+            <svg id="billing-task-bar-svg" width="100%" height="220" viewBox="0 0 520 220"
+              preserveAspectRatio="none"></svg>
           </div>
         </div>
 

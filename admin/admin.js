@@ -28,6 +28,7 @@
       btn.classList.add("active");
       document.getElementById(`tab-${btn.dataset.tab}`).classList.add("active");
       if (btn.dataset.tab === "billing") loadBillingTab();
+      if (btn.dataset.tab === "activity") loadActivityTab();
     });
   });
 
@@ -404,6 +405,29 @@
     userSel.value = prev.user;
     clientSel.value = prev.client;
     taskSel.value = prev.task;
+
+    populateActivityFilters();
+  }
+
+  // Same full-catalog convention as populateSummaryFilters() above, for the
+  // Activity tab's own independent filter row.
+  function populateActivityFilters() {
+    const userSel = document.getElementById("activity-filter-user");
+    const clientSel = document.getElementById("activity-filter-client");
+    const taskSel = document.getElementById("activity-filter-task");
+    if (!userSel || !clientSel || !taskSel) return; // not on this page build
+    const prev = { user: userSel.value, client: clientSel.value, task: taskSel.value };
+
+    userSel.innerHTML = `<option value="">All users</option>` +
+      usersCache.map(u => `<option value="${u.id}">${u.name}</option>`).join("");
+    clientSel.innerHTML = `<option value="">All clients</option>` +
+      clientsCache.map(c => `<option value="${c.slug}">${c.name}</option>`).join("");
+    taskSel.innerHTML = `<option value="">All tasks</option>` +
+      tasksCache.map(t => `<option value="${t.slug}">${t.name}</option>`).join("");
+
+    userSel.value = prev.user;
+    clientSel.value = prev.client;
+    taskSel.value = prev.task;
   }
 
   // Shared by loadSummary() and loadProductivity() — both read the exact
@@ -572,6 +596,133 @@
   });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeModal(); });
   function closeModal() { document.getElementById("modal-overlay").classList.remove("open"); }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // Screenshot & Email Activity tab — who requested what, success/failure
+  // counts by user, and a per-reference "who did it" drill-down. Loaded
+  // lazily on first tab open (same pattern as the Billing tab), then
+  // refreshed on any filter change.
+  // ═══════════════════════════════════════════════════════════════════
+  const activityState = { period: "today", since: null, until: null };
+
+  function buildActivityFilterParams() {
+    const params = periodParams(activityState);
+    if (!params) return null;
+    const userFilter = document.getElementById("activity-filter-user").value;
+    const clientFilter = document.getElementById("activity-filter-client").value;
+    const taskFilter = document.getElementById("activity-filter-task").value;
+    const search = document.getElementById("activity-search").value.trim();
+    if (userFilter) params.set("user_id", userFilter);
+    if (clientFilter) params.set("client_slug", clientFilter);
+    if (taskFilter) params.set("task_slug", taskFilter);
+    if (search) params.set("search", search);
+    return params;
+  }
+
+  function renderCountCell(doneOrSent, failed, pending) {
+    return `
+      <span class="count-pill">${doneOrSent}
+        ${failed > 0 ? `<span class="fail">· ${failed} failed</span>` : ""}
+        ${pending > 0 ? `<span>· ${pending} pending</span>` : ""}
+      </span>
+    `;
+  }
+
+  function renderScreenshotSummaryTable(rows) {
+    const tbody = document.querySelector("#screenshot-summary-table tbody");
+    if (rows.length === 0) {
+      tbody.innerHTML = `<tr class="empty-row"><td colspan="5">No screenshot requests match these filters.</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = rows.map(r => `
+      <tr>
+        <td>${r.user_name} <span class="mono">(${r.username})</span></td>
+        <td>${r.client_name}</td>
+        <td>${r.task_name}</td>
+        <td class="num">${renderCountCell(r.done_count, r.failed_count, r.pending_count)}</td>
+        <td class="mono">${r.last_requested ? fmtTimestamp(r.last_requested) : "—"}</td>
+      </tr>
+    `).join("");
+  }
+
+  function renderEmailSummaryTable(rows) {
+    const tbody = document.querySelector("#email-summary-table tbody");
+    if (rows.length === 0) {
+      tbody.innerHTML = `<tr class="empty-row"><td colspan="5">No email requests match these filters.</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = rows.map(r => `
+      <tr>
+        <td>${r.user_name} <span class="mono">(${r.username})</span></td>
+        <td>${r.client_name}</td>
+        <td>${r.task_name}</td>
+        <td class="num">${renderCountCell(r.sent_count, r.failed_count, r.pending_count)}</td>
+        <td class="mono">${r.last_requested ? fmtTimestamp(r.last_requested) : "—"}</td>
+      </tr>
+    `).join("");
+  }
+
+  function renderReferenceActivityTable(rows) {
+    const tbody = document.querySelector("#reference-activity-table tbody");
+    if (rows.length === 0) {
+      tbody.innerHTML = `<tr class="empty-row"><td colspan="7">No references match these filters.</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = rows.map(r => `
+      <tr>
+        <td class="mono">${r.reference}</td>
+        <td class="mono">${r.itos_number || "—"}</td>
+        <td>${r.client_name}</td>
+        <td>${r.task_name}</td>
+        <td>
+          <span class="badge status-${r.screenshot_status || "none"}">${r.screenshot_status || "—"}</span>
+          ${r.screenshot_requested_by ? `<div class="panel-sub" style="margin:2px 0 0">by ${r.screenshot_requested_by}</div>` : ""}
+        </td>
+        <td>
+          <span class="badge status-${r.email_status || "none"}">${r.email_status || "—"}</span>
+          ${r.email_requested_by ? `<div class="panel-sub" style="margin:2px 0 0">by ${r.email_requested_by}</div>` : ""}
+        </td>
+        <td class="mono">${r.updated_at ? fmtTimestamp(r.updated_at) : "—"}</td>
+      </tr>
+    `).join("");
+  }
+
+  async function loadScreenshotActivity() {
+    const params = buildActivityFilterParams();
+    if (!params) return;
+    const res = await VanmoerAuth.authFetch(`/api/admin/activity/screenshots?${params}`);
+    renderScreenshotSummaryTable(await res.json());
+  }
+
+  async function loadEmailActivity() {
+    const params = buildActivityFilterParams();
+    if (!params) return;
+    const res = await VanmoerAuth.authFetch(`/api/admin/activity/emails?${params}`);
+    renderEmailSummaryTable(await res.json());
+  }
+
+  async function loadReferenceActivity() {
+    const params = buildActivityFilterParams();
+    if (!params) return;
+    const res = await VanmoerAuth.authFetch(`/api/admin/activity/references?${params}`);
+    renderReferenceActivityTable(await res.json());
+  }
+
+  async function refreshActivityViews() {
+    await Promise.all([loadScreenshotActivity(), loadEmailActivity(), loadReferenceActivity()]);
+  }
+
+  const debouncedRefreshActivityViews = debounce(refreshActivityViews, 300);
+
+  ["activity-filter-user", "activity-filter-client", "activity-filter-task"].forEach(id => {
+    document.getElementById(id).addEventListener("change", refreshActivityViews);
+  });
+  document.getElementById("activity-search").addEventListener("input", debouncedRefreshActivityViews);
+
+  async function loadActivityTab() {
+    populateActivityFilters();
+    await refreshActivityViews();
+  }
 
   // ═══════════════════════════════════════════════════════════════════
   // Users tab (behavior unchanged from before, just re-scoped)
@@ -1312,6 +1463,7 @@
     initPeriodFilter();
     wireDropdownPeriodFilter("client-bar-period", "client-bar-custom-range", "client-bar-since", "client-bar-until", "client-bar-apply-btn", clientBarState, loadClientBarChart);
     wireDropdownPeriodFilter("client-pie-period", "client-pie-custom-range", "client-pie-since", "client-pie-until", "client-pie-apply-btn", clientPieState, loadClientPieChart);
+    wireDropdownPeriodFilter("activity-period", "activity-custom-range", "activity-since", "activity-until", "activity-apply-btn", activityState, refreshActivityViews);
 
     // Billing tab — one independent period picker per chart (see the
     // "Billing & Usage tab" section above for why).

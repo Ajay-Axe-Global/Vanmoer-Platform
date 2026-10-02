@@ -80,6 +80,17 @@ DATE_FROM_YEARS_BACK = int(os.getenv("ITOS_DATE_FROM_YEARS_BACK", "5"))
 
 
 
+# Per-client iTOS tab clicks. shot 1: tab opened on the order screen before
+# the overview shot; shot 2: tab opened after Order Items > first item tile.
+# Both are matched by visible tab text. Shot 3 (Stock Info > Transport) is
+# the same for every client. Sabic: Attachments / Addresses; Vinmar:
+# Addresses / References.
+CLIENT_TABS = {
+    "sabic": ("Attachments", "Addresses"),
+    "vinmar": ("Addresses", "References"),
+}
+
+
 class ScreenshotAutomationError(Exception):
     """Raised on any automation failure, with a human-readable reason so the
     worker can log a real last_error and decide whether to retry."""
@@ -396,8 +407,19 @@ def _prepare_index_page(wait_for_load=False):
     return True
 
 
+def _click_tab_js(tab_text: str) -> str:
+    return f"""
+        (function() {{
+            var tab = [...document.querySelectorAll('a.header.ui-tabs-anchor')]
+                .find(el => el.textContent.trim() === '{tab_text}');
+            if (tab) {{ tab.click(); }}
+        }})();
+    """
+
+
 def _process_single_order(
-    order_number: str, order_folder: Path, search_value: str, on_shot1_captured=None
+    order_number: str, order_folder: Path, search_value: str, on_shot1_captured=None,
+    client_slug: str = "sabic",
 ) -> list[Path]:
     """3-screenshot flow for one order. Console must be open with paste
     enabled when called; console is CLOSED when this returns.
@@ -414,6 +436,7 @@ def _process_single_order(
     instead of adding its own latency after this function returns. Any
     exception it raises is swallowed (it must never break the screenshot
     flow); this module still has no idea what the callback does."""
+    shot1_tab, shot2_tab = CLIENT_TABS.get(client_slug, CLIENT_TABS["sabic"])
     shot1 = order_folder / f"{order_number}_01_order.png"
     shot2 = order_folder / f"{order_number}_02_addresses.png"
     shot3 = order_folder / f"{order_number}_03_transport.png"
@@ -448,14 +471,8 @@ def _process_single_order(
     }})();
     """, 4)
 
-    # Click the Attachments tab before capturing the order overview shot.
-    _console_run("""
-        (function() {
-            var tab = [...document.querySelectorAll('a.header.ui-tabs-anchor')]
-                .find(el => el.textContent.trim() === 'Attachments');
-            if (tab) { tab.click(); }
-        })();
-    """, 2)
+    # Click the client's tab before capturing the order overview shot.
+    _console_run(_click_tab_js(shot1_tab), 2)
     _take_screenshot(shot1, "Order overview")
     if on_shot1_captured is not None:
         try:
@@ -471,13 +488,16 @@ def _process_single_order(
             if (tile) { tile.click(); }
         })();
     """, 2)
-    _console_run("""
-        (function() {
-            var tab = document.querySelector('#detailTabs a[href="#addressesTab"]');
-            if (tab) { tab.click(); }
-        })();
-    """, 2)
-    _take_screenshot(shot2, "Addresses")
+    if shot2_tab == "Addresses":
+        _console_run("""
+            (function() {
+                var tab = document.querySelector('#detailTabs a[href="#addressesTab"]');
+                if (tab) { tab.click(); }
+            })();
+        """, 2)
+    else:
+        _console_run(_click_tab_js(shot2_tab), 2)
+    _take_screenshot(shot2, shot2_tab)
 
     # ── SCREENSHOT 3 — Stock Info → Transport ─────────
     _console_run("""
@@ -521,7 +541,8 @@ def _process_single_order(
 # ═══════════════════════════════════════════════════════════
 
 def capture_order_screenshots(
-    order_number: str, output_dir: Path, search_value: str | None = None, on_shot1_captured=None
+    order_number: str, output_dir: Path, search_value: str | None = None, on_shot1_captured=None,
+    client_slug: str = "sabic",
 ) -> list[Path]:
     """
     Ensures Edge/iTOS is ready (reusing an existing session if one's already
@@ -557,7 +578,7 @@ def capture_order_screenshots(
         raise ScreenshotAutomationError("Could not prepare the iTOS index page (console/date filter).")
 
     try:
-        paths = _process_single_order(order_number, output_dir, search_value, on_shot1_captured)
+        paths = _process_single_order(order_number, output_dir, search_value, on_shot1_captured, client_slug)
     except ScreenshotAutomationError:
         raise
     except Exception as e:

@@ -11,6 +11,7 @@ so calling it from a Flask request handler returns in milliseconds.
 """
 
 import datetime
+import re
 import uuid
 from pathlib import Path
 
@@ -21,8 +22,16 @@ from database.models import Client, OrderTracking, ScreenshotJob, Task
 SCREENSHOTS_DIR = Path(__file__).parent.parent / "screenshots"
 
 
+def reference_dirname(reference: str) -> str:
+    """Filesystem-safe form of a business reference, used for both the
+    screenshot folder and the PNG filename prefix. Vinmar references look
+    like "SR123/80012345" — a raw "/" would nest folders and break file
+    names. Plain numeric references (Sabic) pass through unchanged."""
+    return re.sub(r"[^\w.\-]+", "_", reference.strip()).strip("._") or "reference"
+
+
 def screenshot_dir_for(client_slug: str, reference: str) -> Path:
-    d = SCREENSHOTS_DIR / client_slug / reference
+    d = SCREENSHOTS_DIR / client_slug / reference_dirname(reference)
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -32,7 +41,7 @@ def list_screenshot_files(client_slug: str, reference: str) -> list[str]:
     against screenshot_dir_for() itself so a caller can't smuggle a path via
     reference. Sorted so the 3-shot sequence (_01_order, _02_addresses,
     _03_transport) always displays in the order they were captured."""
-    d = SCREENSHOTS_DIR / client_slug / reference
+    d = SCREENSHOTS_DIR / client_slug / reference_dirname(reference)
     if not d.exists():
         return []
     return sorted(p.name for p in d.iterdir() if p.is_file() and p.suffix.lower() == ".png")

@@ -4,15 +4,31 @@ Screenshot/outlook.js.
 
 Unlike helpers/itos_automation.py (which drives an on-screen remote-desktop
 Edge window via literal mouse/keyboard simulation), this launches its OWN
-isolated Chrome instance via Playwright and talks to Outlook Web over the
-DOM/CDP — it never touches the physical desktop, so it does not compete
-with the ITOS automation for the screen. Its single-concurrency constraint
-is different: the persistent browser profile directory (OUTLOOK_PROFILE_DIR)
-can only be held open by one process at a time, which is what
-helpers/email_worker.py's single dedicated worker thread serializes against.
+isolated Chrome instance per user via Playwright and talks to Outlook Web
+over the DOM/CDP — it never touches the physical desktop, so it does not
+compete with the ITOS automation for the screen. Its single-concurrency
+constraint is different: each user's own persistent browser profile
+directory (see profile_dir_for_user) can only be held open by one process
+at a time — a hard OS/Chrome constraint (SingletonLock), not a design
+choice — which is what helpers/email_worker.py's per-user locking
+serializes against, while still letting DIFFERENT users' sessions run
+concurrently.
+
+open_outlook_session()/close_outlook_session() split the browser's
+lifecycle out from send_forwarded_screenshots() precisely so
+helpers/email_worker.py can open ONE session per user and reuse it across
+every queued job that user has, instead of relaunching Chrome (and
+re-checking login) per job — the login/MFA check only has to happen once
+per batch, not once per order.
 
 Uses Playwright's SYNC API (not asyncio) to match this codebase's
 synchronous style (helpers/screenshot_worker.py is a plain blocking loop).
+This is also why true PARALLEL multi-tab execution within one user's
+session isn't implemented here: the sync API isn't safe to drive from
+multiple OS threads against the same browser connection at once, so
+multiple tabs for one user would need Playwright's async API instead — a
+separate, bigger change than the sequential session-reuse this module
+currently does.
 
 Login uses Microsoft's phone-call MFA challenge — genuinely requires a human
 to answer a call and press # every ~20 days or whenever the saved session
@@ -54,7 +70,20 @@ PROFILE_BASE_DIR = Path(os.getenv("OUTLOOK_PROFILE_BASE_DIR", str(Path(__file__)
 # Chrome.
 CHROME_PATH = os.getenv("OUTLOOK_CHROME_PATH", r"C:\Program Files\Google\Chrome\Application\chrome.exe")
 OUTLOOK_URL = "https://outlook.office.com/mail/"
-FORWARD_TO = [addr.strip() for addr in os.getenv("OUTLOOK_FORWARD_TO", "").split(",") if addr.strip()]
+def _parse_addresses(raw: str) -> list[str]:
+    return [addr.strip() for addr in raw.split(",") if addr.strip()]
+
+
+FORWARD_TO = _parse_addresses(os.getenv("OUTLOOK_FORWARD_TO", ""))
+# Optional per-client recipient override (e.g. OUTLOOK_FORWARD_TO_VINMAR);
+# a client without one falls back to the shared OUTLOOK_FORWARD_TO.
+_FORWARD_TO_BY_CLIENT = {
+    "vinmar": _parse_addresses(os.getenv("OUTLOOK_FORWARD_TO_VINMAR", "")),
+}
+
+
+def forward_to_for(client_slug: str) -> list[str]:
+    return _FORWARD_TO_BY_CLIENT.get(client_slug) or FORWARD_TO
 MFA_MAX_RETRIES = int(os.getenv("OUTLOOK_MFA_MAX_RETRIES", "3"))
 # Testing switch: runs every real step (search, open thread, Forward, fill
 # To, paste all 3 screenshots inline) but stops short of clicking Send —
@@ -507,6 +536,62 @@ def _open_update_in_cts_folder(page):
     raise EmailAutomationError('Could not find the "UPDATE in CTS" folder in the folder pane.')
 
 
+def _open_vinmar_creation_label_folder(page):
+    """Navigates to CT-Vinmar outbound > CREATION, ported from
+    Screenshot/vinmar.js's navigateVinmarCreation (verified working there):
+    clicking the shared mailbox root twice is what reliably opens it, then
+    the folder is clicked inside that mailbox's own tree group so a
+    same-named folder in another mailbox is never matched. Falls back to
+    Outlook's "Go to folder" dialog (Ctrl+Y) if the tree click fails."""
+    time.sleep(5)
+
+    try:
+        vinmar_root = page.get_by_text("CT-Vinmar outbound", exact=True).first
+        vinmar_root.wait_for(state="visible", timeout=15000)
+        vinmar_root.click()
+        time.sleep(1)
+        vinmar_root.click()
+        time.sleep(3)
+    except Exception:
+        logger.warning('Could not find/click "CT-Vinmar outbound" in the folder pane.')
+
+    group = page.get_by_role("group", name="CT-Vinmar outbound")
+    for exact in (True, False):
+        try:
+            item = group.get_by_text("CREATION", exact=exact).first
+            item.wait_for(state="visible", timeout=8000)
+            item.click()
+            time.sleep(3)
+            return
+        except Exception:
+            continue
+
+    logger.warning('"CREATION" not found in the tree — trying "Go to folder" (Ctrl+Y).')
+    # "CREATIO" (truncated) mirrors the prototype's fallback.
+    for name in ("CREATION", "CREATIO"):
+        if _try_go_to_folder(page, name):
+            time.sleep(3)
+            return
+
+    raise EmailAutomationError('Could not find the "CREATION" folder under CT-Vinmar outbound.')
+
+
+def _open_client_folder(page, client_slug: str):
+    if client_slug == "vinmar":
+        _open_vinmar_creation_label_folder(page)
+    else:
+        _open_update_in_cts_folder(page)
+
+
+def _search_term_for(client_slug: str, reference: str) -> str:
+    """What to type into Outlook's search box. Vinmar references are stored
+    as "ReleaseNo/DeliveryNo" but the mailbox threads are findable by the
+    Release No alone, so only the part before the slash is searched."""
+    if client_slug == "vinmar":
+        return reference.split("/", 1)[0].strip() or reference
+    return reference
+
+
 _GO_TO_FOLDER_JS = """
 (folderName) => {
     const input = document.querySelector('[role="dialog"] input[placeholder="Type a folder name"]');
@@ -806,6 +891,34 @@ def _set_subject(page, reference: str, itos_number: str | None):
     time.sleep(0.5)
 
 
+def _append_itos_to_subject(page, itos_number: str | None):
+    """Vinmar keeps Outlook's pre-filled "Fw: <original subject>" untouched
+    and only appends " / <itos_number>" to the end. Skipped entirely (not a
+    trailing " / ") when the row has no ITOS number yet."""
+    subject_field = page.locator('input[aria-label="Subject"]')
+    subject_field.wait_for(state="visible", timeout=10000)
+    if not itos_number:
+        return
+
+    # Outlook fills the "Fw: ..." prefix a moment after the field appears —
+    # wait for it so the append doesn't land on an empty value and then get
+    # overwritten.
+    current = ""
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        current = subject_field.input_value()
+        if current.strip():
+            break
+        time.sleep(0.3)
+
+    suffix = f" / {itos_number}"
+    if current.endswith(suffix):
+        return
+    if not page.evaluate(_SET_SUBJECT_JS, current.rstrip() + suffix):
+        raise EmailAutomationError("Could not find the Subject field on the forward compose window.")
+    time.sleep(0.5)
+
+
 _INSERT_LINES_JS = """
 (lines) => {
     const body = document.querySelector(
@@ -962,26 +1075,38 @@ def _click_send(page):
     time.sleep(3)
 
 
-def send_forwarded_screenshots(reference: str, screenshot_paths: list[Path],
-                                *, user_id: int, email: str | None, password: str | None,
-                                itos_number: str | None = None) -> None:
-    """
-    Opens THIS USER's own persistent Outlook profile (profile_dir_for_user
-    (user_id)), confirms the saved session is still valid, navigates to
-    CT-SabicOutbound > UPDATE in CTS, searches `reference` (the
-    OrderTracking business reference, e.g. a SABIC dispatch shipment
-    number — the same value already shown in the tracking panel's
-    Reference column), opens the latest ("All results") matching thread,
-    forwards it to OUTLOOK_FORWARD_TO. Before attaching anything, replaces
-    Outlook's auto-filled "Fw: ..." subject with "SABIC OUTBOUND Please
-    arrange dispatch for shipment: {reference}[/ {itos_number}]" (see
-    _set_subject), then pastes each of `screenshot_paths` inline (in the
-    given order) via the clipboard-write + Ctrl+V technique, with a fixed
-    "Hi, / This order was completed {reference}." intro line placed above
-    the images (see _insert_order_intro), and sends.
+class OutlookSession:
+    """A live, logged-in Playwright session against one user's own
+    persistent Outlook Chrome profile — opened once via open_outlook_session
+    and reused across every queued job for that user in one pass (see
+    helpers/email_worker.py's worker loop), instead of relaunching Chrome
+    and re-checking login per job. Not thread-safe to share across threads
+    (Playwright's sync API isn't safe to drive from multiple OS threads at
+    once) — exactly one worker thread ever touches one OutlookSession's page
+    at a time, which is already guaranteed by email_worker.py's per-user
+    locking (the same user's jobs never run on two threads simultaneously)."""
 
-    `itos_number` is OrderTracking.itos_number for this row (may be None if
-    not yet detected) — used only in the subject line.
+    def __init__(self, playwright, context, page, user_id: int, client_slug: str = "sabic"):
+        self.playwright = playwright
+        self.context = context
+        self.page = page
+        self.user_id = user_id
+        # Which client's mailbox folder the page is currently sitting in —
+        # send_forwarded_screenshots switches it if the next job differs.
+        self.client_slug = client_slug
+
+
+def open_outlook_session(user_id: int, email: str | None, password: str | None,
+                          client_slug: str = "sabic") -> OutlookSession:
+    """Launches THIS USER's own persistent Outlook profile
+    (profile_dir_for_user(user_id)), confirms/completes login (the one
+    place a human might need to answer the MFA phone call — see
+    _wait_for_outlook_or_raise), and navigates into the client's folder
+    once (Sabic: CT-SabicOutbound > UPDATE in CTS; Vinmar: CT-Vinmar
+    outbound > CREATION). The returned OutlookSession is meant to be reused
+    for every queued job belonging to this user in the current pass — see
+    send_forwarded_screenshots — and closed exactly once afterward via
+    close_outlook_session.
 
     `email`/`password` are this user's own Outlook credentials (decrypted
     by the caller from User.outlook_password just before this call, never
@@ -990,22 +1115,10 @@ def send_forwarded_screenshots(reference: str, screenshot_paths: list[Path],
     with a still-valid session never touch them.
 
     Raises EmailAutomationError (or its LoginRequiredError subtype) with a
-    human-readable reason on any failure — never silently no-ops. Safe to
-    run concurrently for DIFFERENT user_ids (separate profile dirs, no
-    shared lock); helpers/email_worker.py still processes jobs one at a
-    time regardless, since a handful of users doesn't need real
-    concurrency here.
-
-    When OUTLOOK_SEND_ENABLED is not set to true (the default), every step
-    up through pasting the images runs for real, but Send is never clicked
-    — the caller (helpers/email_worker.py) still marks the row "sent" for
-    testing purposes, since the point of dry-run mode is to verify the
-    search/forward/paste mechanics, not to simulate a failure.
-    """
-    if not FORWARD_TO:
-        raise EmailAutomationError("OUTLOOK_FORWARD_TO is not configured — no recipients to send to.")
-    if not screenshot_paths:
-        raise EmailAutomationError(f"No screenshot files to attach for reference {reference}.")
+    human-readable reason on any failure, cleaning up any partially-opened
+    browser/driver before raising — callers must NOT call
+    close_outlook_session() after a raise from here, there's nothing left
+    to close."""
     if not email:
         raise EmailAutomationError(
             "This user has no Outlook account connected — set an Outlook username/password "
@@ -1013,8 +1126,8 @@ def send_forwarded_screenshots(reference: str, screenshot_paths: list[Path],
         )
 
     profile_dir = profile_dir_for_user(user_id)
-
-    with sync_playwright() as playwright:
+    playwright = sync_playwright().start()
+    try:
         context = playwright.chromium.launch_persistent_context(
             profile_dir,
             headless=False,
@@ -1022,32 +1135,106 @@ def send_forwarded_screenshots(reference: str, screenshot_paths: list[Path],
             viewport={"width": 1366, "height": 768},
             args=["--disable-blink-features=AutomationControlled"],
         )
-        try:
-            page = context.pages[0] if context.pages else context.new_page()
-            page.goto(OUTLOOK_URL, wait_until="domcontentloaded", timeout=60000)
+    except Exception:
+        playwright.stop()
+        raise
 
-            if _needs_login(page):
-                _perform_login(page, email, password)
-                _wait_for_outlook_or_raise(page)
+    try:
+        page = context.pages[0] if context.pages else context.new_page()
+        page.goto(OUTLOOK_URL, wait_until="domcontentloaded", timeout=60000)
 
-            _open_update_in_cts_folder(page)
-            _search_and_open_latest(page, reference)
-            _click_forward(page)
-            _fill_recipients(page, FORWARD_TO)
-            _set_subject(page, reference, itos_number)
-            _paste_screenshots_inline(page, screenshot_paths)
-            _insert_order_intro(page, reference)
+        if _needs_login(page):
+            _perform_login(page, email, password)
+            _wait_for_outlook_or_raise(page)
 
-            if SEND_ENABLED:
-                _click_send(page)
-            else:
-                time.sleep(5)
-                saved = _save_draft_and_confirm(page)
-                logger.warning(
-                    "OUTLOOK_SEND_ENABLED is off — DRY RUN for reference %s: search/forward/paste "
-                    "completed, Send was NOT clicked. Draft save %s. Set OUTLOOK_SEND_ENABLED=true "
-                    "in .env for real sends.",
-                    reference, "confirmed" if saved else "was attempted but not confirmed",
-                )
-        finally:
-            context.close()
+        _open_client_folder(page, client_slug)
+    except Exception:
+        context.close()
+        playwright.stop()
+        raise
+
+    return OutlookSession(playwright, context, page, user_id, client_slug)
+
+
+def close_outlook_session(session: OutlookSession) -> None:
+    """Closes the browser and stops the Playwright driver connection opened
+    by open_outlook_session. Call exactly once per open — after the user's
+    queued batch is fully drained, or after an unrecoverable per-job
+    failure the caller decides not to keep retrying against."""
+    try:
+        session.context.close()
+    finally:
+        session.playwright.stop()
+
+
+def send_forwarded_screenshots(session: OutlookSession, reference: str, screenshot_paths: list[Path],
+                                *, itos_number: str | None = None, client_slug: str = "sabic") -> None:
+    """
+    Runs ONE forward-with-screenshots send against an already-open,
+    already-logged-in `session` (see open_outlook_session) — searches
+    `reference` (the OrderTracking business reference, e.g. a SABIC
+    dispatch shipment number — the same value already shown in the
+    tracking panel's Reference column), opens the latest ("All results")
+    matching thread, forwards it to OUTLOOK_FORWARD_TO. Before attaching
+    anything, replaces Outlook's auto-filled "Fw: ..." subject with "SABIC
+    OUTBOUND Please arrange dispatch for shipment: {reference}[/
+    {itos_number}]" (see _set_subject), then pastes each of
+    `screenshot_paths` inline (in the given order) via the clipboard-write
+    + Ctrl+V technique, with a fixed "Hi, / This order was completed
+    {reference}." intro line placed above the images (see
+    _insert_order_intro), and sends.
+
+    `itos_number` is OrderTracking.itos_number for this row (may be None if
+    not yet detected) — used only in the subject line.
+
+    `client_slug` selects the mailbox folder, search term and subject
+    handling: "sabic" (default, as described above) or "vinmar" (CT-Vinmar
+    outbound > CREATION, searches the Release No only, and keeps
+    Outlook's "Fw: ..." subject, just appending " / {itos_number}").
+
+    Raises EmailAutomationError with a human-readable reason on any
+    failure — never silently no-ops. Does NOT open, log into, or close the
+    browser — the caller (helpers/email_worker.py) owns the OutlookSession
+    lifecycle, opening it once and reusing it across every queued job for
+    this user before closing it.
+
+    When OUTLOOK_SEND_ENABLED is not set to true (the default), every step
+    up through pasting the images runs for real, but Send is never clicked
+    — the caller (helpers/email_worker.py) still marks the row "sent" for
+    testing purposes, since the point of dry-run mode is to verify the
+    search/forward/paste mechanics, not to simulate a failure.
+    """
+    recipients = forward_to_for(client_slug)
+    if not recipients:
+        raise EmailAutomationError("OUTLOOK_FORWARD_TO is not configured — no recipients to send to.")
+    if not screenshot_paths:
+        raise EmailAutomationError(f"No screenshot files to attach for reference {reference}.")
+
+    page = session.page
+    if session.client_slug != client_slug:
+        # Same user, different client's batch than the folder this session
+        # opened into — switch mailbox folders before searching.
+        _open_client_folder(page, client_slug)
+        session.client_slug = client_slug
+
+    _search_and_open_latest(page, _search_term_for(client_slug, reference))
+    _click_forward(page)
+    _fill_recipients(page, recipients)
+    if client_slug == "vinmar":
+        _append_itos_to_subject(page, itos_number)
+    else:
+        _set_subject(page, reference, itos_number)
+    _paste_screenshots_inline(page, screenshot_paths)
+    _insert_order_intro(page, reference)
+
+    if SEND_ENABLED:
+        _click_send(page)
+    else:
+        time.sleep(5)
+        saved = _save_draft_and_confirm(page)
+        logger.warning(
+            "OUTLOOK_SEND_ENABLED is off — DRY RUN for reference %s: search/forward/paste "
+            "completed, Send was NOT clicked. Draft save %s. Set OUTLOOK_SEND_ENABLED=true "
+            "in .env for real sends.",
+            reference, "confirmed" if saved else "was attempted but not confirmed",
+        )

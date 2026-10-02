@@ -210,6 +210,67 @@ def get_stats_by_client():
     return jsonify(service.files_by_client(since, until, task_slug=request.args.get("task_slug") or None))
 
 
+@bp.route("/activity/screenshots", methods=["GET"])
+@role_required("admin")
+def get_activity_screenshots():
+    period = request.args.get("period", "today")
+    try:
+        since, until = service.period_range(
+            period, request.args.get("since"), request.args.get("until"),
+            tz_name=request.args.get("tz"),
+        )
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify(service.screenshot_summary_by_user(
+        since=since, until=until,
+        user_id=request.args.get("user_id", type=int),
+        client_slug=request.args.get("client_slug") or None,
+        task_slug=request.args.get("task_slug") or None,
+        search=request.args.get("search") or None,
+    ))
+
+
+@bp.route("/activity/emails", methods=["GET"])
+@role_required("admin")
+def get_activity_emails():
+    period = request.args.get("period", "today")
+    try:
+        since, until = service.period_range(
+            period, request.args.get("since"), request.args.get("until"),
+            tz_name=request.args.get("tz"),
+        )
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify(service.email_summary_by_user(
+        since=since, until=until,
+        user_id=request.args.get("user_id", type=int),
+        client_slug=request.args.get("client_slug") or None,
+        task_slug=request.args.get("task_slug") or None,
+        search=request.args.get("search") or None,
+    ))
+
+
+@bp.route("/activity/references", methods=["GET"])
+@role_required("admin")
+def get_activity_references():
+    period = request.args.get("period", "today")
+    try:
+        since, until = service.period_range(
+            period, request.args.get("since"), request.args.get("until"),
+            tz_name=request.args.get("tz"),
+        )
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify(service.order_tracking_activity(
+        since=since, until=until,
+        user_id=request.args.get("user_id", type=int),
+        client_slug=request.args.get("client_slug") or None,
+        task_slug=request.args.get("task_slug") or None,
+        search=request.args.get("search") or None,
+        limit=request.args.get("limit", default=200, type=int),
+    ))
+
+
 @bp.route("/backup", methods=["POST"])
 @role_required("admin")
 def post_backup():

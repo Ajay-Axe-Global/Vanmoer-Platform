@@ -32,7 +32,7 @@ from database.db import SessionLocal
 from database.models import OrderTracking, ScreenshotJob
 from helpers.itos_automation import ScreenshotAutomationError, capture_order_screenshots
 from helpers.itos_number_extractor import extract_itos_number
-from helpers.screenshot_queue import screenshot_dir_for
+from helpers.screenshot_queue import reference_dirname, screenshot_dir_for
 
 logger = logging.getLogger("screenshot_worker")
 
@@ -143,7 +143,14 @@ def _process_job(session, job: ScreenshotJob):
         itos_future = _itos_extract_executor.submit(extract_itos_number, shot1_path)
 
     try:
-        capture_order_screenshots(job.reference, output_dir, on_shot1_captured=_on_shot1_captured)
+        # order_number only names the PNG files, so it must be filesystem-safe
+        # (Vinmar references contain "/"); the raw reference is what gets
+        # typed into iTOS's External ID box.
+        capture_order_screenshots(
+            reference_dirname(job.reference), output_dir,
+            search_value=job.reference, on_shot1_captured=_on_shot1_captured,
+            client_slug=client_slug,
+        )
     except ScreenshotAutomationError as e:
         _handle_failure(session, job, row, str(e))
         return

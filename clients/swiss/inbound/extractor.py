@@ -54,6 +54,7 @@ and MT/KG conversion are shared with Sabic/Vinmar/Emvia/Continental Inbound
 via helpers/doc_common.py.
 """
 
+import math
 import re
 
 from helpers.doc_common import (
@@ -122,17 +123,30 @@ at the actual glyph shape before deciding between visually similar pairs:
 "O"/"0", "I"/"1", "S"/"5", "B"/"8", "Z"/"2" — transcribe exactly what is
 printed, do not default to whichever reads more like a "normal" number."""
 
+# Per-container bags / gross weight are only needed when the Packing List
+# lacks them (Certificate-of-Analysis layout, see PKG_LIST_PROMPT) — optional
+# for every other layout, left at 0 when not printed.
+BAGS_GROSS_RULE = """
+⚠️ BAGS & GROSS WEIGHT — if this document prints a bag count and/or a gross
+weight for each container (usually in that container's own row, e.g. "880
+BAG" and "22587.000 KGS"), capture them as that container's "bags" (integer)
+and "gross_weight_kg" (number, in KGS, exactly as printed). Never use a
+shipment-wide total for these. If a value isn't printed per container, leave
+it 0 — never guess or compute it yourself."""
+
 RETURN_SCHEMA = """
 @@OCR_DISAMBIGUATION_RULE@@
+@@BAGS_GROSS_RULE@@
 
 Return:
 {
   "mbl_no": "string", "port_of_loading": "string",
   "container_type": "string",
   "containers": [
-    {"id": "string", "seal": "string", "type": "string"}
+    {"id": "string", "seal": "string", "type": "string", "bags": 0,
+     "gross_weight_kg": 0}
   ]
-}""".replace("@@OCR_DISAMBIGUATION_RULE@@", OCR_DISAMBIGUATION_RULE)
+}""".replace("@@OCR_DISAMBIGUATION_RULE@@", OCR_DISAMBIGUATION_RULE).replace("@@BAGS_GROSS_RULE@@", BAGS_GROSS_RULE)
 
 
 CMA_CGM_MBL_PROMPT = """You are a shipping-document data extractor. Extract data from this CMA CGM \
@@ -440,6 +454,19 @@ Nos., Marks and Nos." column. Each block is shaped like:
 seal value — leave it out of "seal" entirely. The seal is only ever the
 single token that appears directly on the same line as the "SEALS :" label.
 
+ALTERNATE LAYOUT (US-origin shipments) — each container is ONE line plus a
+seal line, listed under a shipment-wide "N CNTRS ... BAG" description, and the
+list can continue on a later page ("Page 3 / 3", same B/L-No.) — read every
+page:
+  <CONTAINER ID, often with a space e.g. "TLLU 5957162"> <TYPE e.g. 40'HC>
+  SLAC*:<BAGS COUNT> BAG   <GROSS WEIGHT> KGS
+  SEAL: <SEAL NUMBER>
+  Example: "TLLU 5957162 40'HC SLAC*:880 BAG 22587.000 KGS" then "SEAL:
+  UL-1141204" -> id "TLLU5957162", type "40'HC", seal "UL-1141204", bags 880,
+  gross_weight_kg 22587.
+Here "SLAC*" is a stowage marker, not part of the seal or type. The B/L-No.
+is the value next to "B/L-No.:" (e.g. "HLCUBSC2609APEX0").
+
 Read every container block on every page — do not stop after the first one.
 @@RETURN_SCHEMA@@"""
 
@@ -561,8 +588,30 @@ PKG_LIST_PROMPT = """You are a shipping-document data extractor. Extract all dat
 Packing List PDF and return ONLY a JSON object, no markdown, no explanation.
 @@OCR_DISAMBIGUATION_RULE@@
 
-This document uses ONE of two layouts. Identify which one FIRST from the
+This document uses ONE of three layouts. Identify which one FIRST from the
 detection cues below, then apply ONLY that layout's rules.
+
+══════════════════════════════════════════
+LAYOUT COA — "Certificate of Analysis" pages (e.g. Formosa Plastics), ONE
+PAGE PER CONTAINER/LOT
+══════════════════════════════════════════
+How to detect: title "Certificate of Analysis"; no table — each page has a
+header block with "LOT NO", "WEIGHT (LB)" and "CONTAINER #". The PDF repeats
+the same one-page certificate once per container/lot — read every page.
+
+Return ONE line item per page:
+- "container_id": the "CONTAINER #" value.
+- "product": the "PRODUCT" value (e.g. "Formolene E924").
+- "lot_no": the "LOT NO" value exactly as printed (e.g. "26G2549").
+- "net_weight_lb": the "WEIGHT (LB)" value exactly as printed (e.g. 48501) —
+  POUNDS; do NOT convert it, code does that. Leave "net_weight_mt" 0.
+- "gross_weight_mt": 0, "bags": 0, "pallets": 0 (none printed here — they
+  are filled in from the Bill of Lading afterwards).
+Header totals ("customer", "total_*") are not printed on this layout — use
+"" / 0.
+⚠️ The same container can have TWO pages with different LOT NO / weights
+(one container carrying two lots) — output BOTH as separate line items,
+never merge or skip either one.
 
 ══════════════════════════════════════════
 LAYOUT SIDPEC — Sidi Kerir Petrochemicals Co. ("Sidpec")
@@ -738,7 +787,8 @@ Return:
   "total_pallets": 0,
   "containers": [
     {"container_id": "string", "product": "string", "lot_no": "string",
-     "net_weight_mt": 0, "gross_weight_mt": 0, "bags": 0, "pallets": 0}
+     "net_weight_mt": 0, "net_weight_lb": 0, "gross_weight_mt": 0, "bags": 0,
+     "pallets": 0}
   ]
 }""".replace("@@OCR_DISAMBIGUATION_RULE@@", OCR_DISAMBIGUATION_RULE)
 
@@ -924,6 +974,9 @@ def _fuzzy_match_container(cid: str, mbl_cids: set[str], threshold: int = 2) -> 
         return best_match
     return cid
 
+LB_TO_KG = 0.45359237
+
+
 def extract_packing_list_pdf(pdf_path: str, mbl_container_ids: list[str] = None) -> dict:
     """PDF Packing List path (SIDPEC or ETHYDCO layout, self-detected in the
     prompt — see PKG_LIST_PROMPT). Optionally accepts MBL container IDs as a
@@ -967,6 +1020,7 @@ is clearly different from ALL reference IDs (4+ characters different)."""
             "product":          s(row.get("product")).strip(),
             "lot_no":           s(row.get("lot_no")).strip(),
             "net_weight_mt":    num(row.get("net_weight_mt"), 0),
+            "net_weight_lb":    num(row.get("net_weight_lb"), 0),
             "gross_weight_mt":  num(row.get("gross_weight_mt"), 0),
             "bags":             num(row.get("bags"), 0),
             "pallets":          num(row.get("pallets"), 0),
@@ -993,12 +1047,17 @@ is clearly different from ALL reference IDs (4+ characters different)."""
             if matched != cid:
                 print(f"  [PKG] Fuzzy-matched container {cid} → {matched}")
                 cid = matched
+        # Certificate-of-Analysis layout states net weight in POUNDS — convert
+        # to whole KG (e.g. 48,501 LB = 22,000 KG; split-lot rows still sum
+        # back to the container total).
+        net_weight_lb = num(row.get("net_weight_lb"), 0)
+        net_weight_kg = round(net_weight_lb * LB_TO_KG) if net_weight_lb else to_kg(net_weight_mt, "MT")
         containers.append({
             "container_id":     cid,
             "seal_no":          "",
             "product":          row.get("product", ""),
             "lot_no":           row.get("lot_no", ""),
-            "net_weight_kg":    to_kg(net_weight_mt, "MT"),
+            "net_weight_kg":    net_weight_kg,
             "gross_weight_kg":  to_kg(gross_weight_mt, "MT"),
             "bags":             num(row.get("bags"), 0),
             "pallets":          num(row.get("pallets"), 0),
@@ -1006,6 +1065,10 @@ is clearly different from ALL reference IDs (4+ characters different)."""
 
     data["containers"] = containers
     data["packing_list_source"] = "pdf"
+    if any(num(r.get("net_weight_lb"), 0) for r in fixed):
+        # Bags / gross / pallets aren't on this layout — build_rows() fills
+        # them from the MBL (see _apply_coa_allocation()).
+        data["packing_list_layout"] = "COA"
     total_gross = num(data.get("total_gross_weight_mt"), 0)
 
     # Fix swapped/missing net vs gross totals — Gemini sometimes puts the
@@ -1104,6 +1167,17 @@ def validate(mbl: dict, pkl: dict) -> list[str]:
                         f"({pkl.get('packing_list_source', '?')} source)")
     else:
         results.append("[X]  LINE ITEMS — no rows extracted from the Packing List")
+
+    if pkl.get("packing_list_layout") == "COA":
+        if any(num(c.get("gross_weight_kg"), 0) for c in mbl.get("containers", [])):
+            results.append("[OK] COA LAYOUT — bags & gross weight taken from the MBL per container and split "
+                            "across lots by net weight; pallets = bags / 40 (rounded up per container)")
+        else:
+            results.append("[!]  COA LAYOUT — the MBL did not state gross weight per container — Gross Weight "
+                            "column will be 0")
+        if not any(num(c.get("bags"), 0) for c in mbl.get("containers", [])):
+            results.append("[!]  COA LAYOUT — the MBL did not state bags per container — Bags and Pallet Qty "
+                            "will be 0")
 
     # build_rows() only emits a row when its container matches on BOTH
     # documents (see its own "no MBL match" skip) — spelled out here so the
@@ -1254,6 +1328,64 @@ def validate_product_references(rows: list[dict], inbound_advice_count: int) -> 
     return results
 
 
+# Certificate-of-Analysis Packing List layout: no bags / gross / pallets on
+# the document itself. Bags and gross come from the MBL (per container), then
+# are split across that container's lots in proportion to each lot's net
+# weight; pallets = container bags / COA_BAGS_PER_PALLET (rounded up once per
+# container, then shared across its lots) so a split container never exceeds
+# its own pallet total.
+COA_BAGS_PER_PALLET = 40
+
+
+def _split_int(total: int, weights: list[float]) -> list[int]:
+    """Largest-remainder split of an integer total across weights — always
+    sums back to `total` exactly."""
+    if not weights:
+        return []
+    wsum = sum(weights)
+    if not wsum:
+        out = [0] * len(weights)
+        out[-1] = total
+        return out
+    shares = [total * w / wsum for w in weights]
+    floors = [math.floor(x) for x in shares]
+    leftover = int(round(total - sum(floors)))
+    for i in sorted(range(len(weights)), key=lambda i: shares[i] - floors[i], reverse=True)[:max(0, leftover)]:
+        floors[i] += 1
+    return floors
+
+
+def _apply_coa_allocation(rows: list[dict], mbl_map: dict) -> list[dict]:
+    # Keep a container's lots adjacent (source pages for a split container
+    # can be far apart): containers in order of first appearance, lots in
+    # document order within a container.
+    first_seen = {}
+    for r in rows:
+        first_seen.setdefault(r["container_no"], len(first_seen))
+    rows = sorted(rows, key=lambda r: first_seen[r["container_no"]])  # stable
+
+    by_container: dict[str, list[dict]] = {}
+    for r in rows:
+        by_container.setdefault(r["container_no"], []).append(r)
+
+    for cid, crows in by_container.items():
+        entry = mbl_map.get(cid, {})
+        nets = [num(r.get("net_weight"), 0) for r in crows]
+        mbl_bags = int(entry.get("bags", 0) or 0)
+        mbl_gross = entry.get("gross", 0) or 0
+
+        bags = _split_int(mbl_bags, nets) if mbl_bags else [0] * len(crows)
+        gross = _split_int(int(round(mbl_gross)), nets) if mbl_gross else [0] * len(crows)
+        total_pallets = math.ceil(mbl_bags / COA_BAGS_PER_PALLET) if mbl_bags else 0
+        pallets = (_split_int(total_pallets, [b / COA_BAGS_PER_PALLET for b in bags])
+                   if total_pallets else [0] * len(crows))
+
+        for r, b, g, p in zip(crows, bags, gross, pallets):
+            r["bags"], r["gross_weight"], r["pallet_qty"] = b, g, p
+
+    return rows
+
+
 def build_rows(mbl: dict, pkl: dict, reference: str = "", eta_date: str = "",
                 ship_name: str = "", product_reference_map: dict[str, str] = None) -> list[dict]:
     reference = s(reference).strip()
@@ -1273,6 +1405,8 @@ def build_rows(mbl: dict, pkl: dict, reference: str = "", eta_date: str = "",
         mbl_map[c["id"]] = {
             "type": s(c.get("type")).strip(),
             "seal": s(c.get("seal")).strip(),
+            "bags": num(c.get("bags"), 0),
+            "gross": num(c.get("gross_weight_kg"), 0),
         }
     shipment_container_type = normalize_container_type(mbl.get("container_type", "")) if s(mbl.get("container_type")).strip() else ""
 
@@ -1285,6 +1419,8 @@ def build_rows(mbl: dict, pkl: dict, reference: str = "", eta_date: str = "",
         mbl_map[c["id"]] = {
             "type": s(c.get("type")).strip(),
             "seal": s(c.get("seal")).strip(),
+            "bags": num(c.get("bags"), 0),
+            "gross": num(c.get("gross_weight_kg"), 0),
         }
     mbl_cids = set(mbl_map.keys())
 
@@ -1338,6 +1474,9 @@ def build_rows(mbl: dict, pkl: dict, reference: str = "", eta_date: str = "",
             "ship_name":      ship_name,
             "eta_date":       eta_date,
         })
+
+    if pkl.get("packing_list_layout") == "COA":
+        rows = _apply_coa_allocation(rows, mbl_map)
 
     if skipped_no_mbl_match:
         print(f"  [ROWS] Excluded {len(skipped_no_mbl_match)} Packing List row(s) with no matching MBL "

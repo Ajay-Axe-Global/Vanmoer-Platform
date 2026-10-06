@@ -23,7 +23,7 @@ def seed():
     init_db()
     session = SessionLocal()
     try:
-        for name in ("Carpenter", "Sabic", "Vinmar", "Emvia", "Continental", "Swiss", "Hanwha", "VMR Clients", "Sunrise"):
+        for name in ("Carpenter", "Sabic", "Vinmar", "Emvia", "Continental", "Swiss", "Hanwha", "VMR Clients", "Sunrise", "EDF"):
             slug = name.strip().lower().replace(" ", "_")
             if not session.query(Client).filter_by(slug=slug).first():
                 session.add(Client(name=name, slug=slug))

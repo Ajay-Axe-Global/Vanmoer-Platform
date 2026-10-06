@@ -1289,6 +1289,29 @@ def extract_inbound_advice(pdf_path: str) -> dict:
     }
 
 
+def lookup_product_reference(product: str, product_reference_map: dict[str, str]) -> str:
+    """Product Reference for a Packing List product. Exact code match first
+    (e.g. "1801-AAB"); otherwise, for grades with no "<digits>-<letters>" code
+    (e.g. a COA's "Formolene E924" vs the advice's "HDPE-HMW Formolene E924"),
+    fall back to a containment match on the alphanumeric-only text — either
+    side contained in the other — accepted only when exactly one advice
+    matches, so an ambiguous product is left blank rather than guessed."""
+    code = extract_product_code(product)
+    if code in product_reference_map:
+        return product_reference_map[code]
+
+    def squash(x: str) -> str:
+        return re.sub(r"[^A-Z0-9]", "", s(x).upper())
+
+    key = squash(product)
+    if len(key) < 4:
+        return ""
+    hits = {ref for advice_code, ref in product_reference_map.items()
+            if len(squash(advice_code)) >= 4
+            and (key in squash(advice_code) or squash(advice_code) in key)}
+    return hits.pop() if len(hits) == 1 else ""
+
+
 def build_product_reference_map(inbound_advices: list[dict]) -> dict[str, str]:
     """[{reference, material}, ...] (one per uploaded Inbound file) -> {product
     code: reference}, keyed by extract_product_code(material). If two
@@ -1453,7 +1476,7 @@ def build_rows(mbl: dict, pkl: dict, reference: str = "", eta_date: str = "",
         # back to the global Reference only when it isn't (never left with
         # a dangling "/" for an unmatched product).
         row_product = s(row.get("product")).strip()
-        product_reference = product_reference_map.get(extract_product_code(row_product), "") if row_product else ""
+        product_reference = lookup_product_reference(row_product, product_reference_map) if row_product else ""
 
         rows.append({
             "reference":         reference,

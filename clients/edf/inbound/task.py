@@ -26,7 +26,7 @@ from helpers.excel_writer import write_excel
 from helpers.jobs import build_reference, job_output_path, log_job, new_job_dir
 
 from .excel_extractor import extract_packing_list_excel
-from .extractor import SHIPPING_LINE_OPTIONS, build_rows, validate
+from .extractor import SHIPPING_LINE_OPTIONS, build_rows, carrier_display, validate
 
 CLIENT_SLUG = "edf"
 TASK_SLUG = "inbound"
@@ -116,9 +116,10 @@ def process():
     if not reference:
         return jsonify({"error": "Reference is required."}), 400
 
-    shipping_line = (request.form.get("shipping_line") or "").strip()
-    if shipping_line not in SHIPPING_LINE_OPTIONS:
+    shipping_line_alias = (request.form.get("shipping_line") or "").strip()
+    if shipping_line_alias not in SHIPPING_LINE_OPTIONS:
         return jsonify({"error": "Select a valid Shipping Line."}), 400
+    shipping_line = carrier_display(shipping_line_alias)  # alias -> full OP spelling
 
     ship_name = (request.form.get("ship_name") or "").strip()
     if not ship_name:

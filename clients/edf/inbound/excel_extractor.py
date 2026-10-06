@@ -14,7 +14,8 @@ POSITION, not name, because this sheet repeats/blanks header cells.
   B/L                 -> bl_no
   CNT number          -> container
   CNT type            -> container_type
-  Product             -> product
+  Article number      -> product (primary)
+  Product             -> product (fallback when no Article number column/value)
   Number of bags      -> bags
   Lot Nr. 2           -> lot   (ONLY this lot column — "Lot Nr. 1" is ignored)
   Quantity (MT) per FCL / Sugar product (25kg-50kg-BB)   [optional, only
@@ -47,6 +48,7 @@ HEADER_ALIASES: dict[str, list[str]] = {
     "bl_no":          ["b l", "bl", "b l no", "bl no", "b l number", "bl number"],
     "container":      ["cnt number", "cnt no", "container no", "container number", "container"],
     "container_type": ["cnt type", "container type"],
+    "article":        ["article number", "article no", "article nr", "article"],
     "product":        ["product"],
     "bags":           ["number of bags", "no of bags", "bags", "bags qty"],
     "lot":            ["lot nr 2", "lot no 2", "lot number 2", "lot 2"],
@@ -54,7 +56,10 @@ HEADER_ALIASES: dict[str, list[str]] = {
     "bag_size":       ["sugar product 25kg 50 kg bb", "sugar product"],
 }
 
-REQUIRED_FIELDS = ("bl_no", "container", "container_type", "product", "bags", "lot")
+# Product is taken from "Article number" first; the "Product" column is only
+# the fallback (see extract_packing_list_excel), so neither is individually
+# required — at least ONE of the two must exist (checked below).
+REQUIRED_FIELDS = ("bl_no", "container", "container_type", "bags", "lot")
 
 HEADER_SCAN_ROWS = 40
 
@@ -75,10 +80,12 @@ def _find_header_row(raw: pd.DataFrame) -> tuple[int, dict[str, int]]:
                     match[field] = pos
         if len(match) > len(best):
             best_idx, best = i, match
-        if all(f in match for f in REQUIRED_FIELDS):
+        if all(f in match for f in REQUIRED_FIELDS) and ("article" in match or "product" in match):
             return i, match
 
     missing = [f for f in REQUIRED_FIELDS if f not in best]
+    if "article" not in best and "product" not in best:
+        missing.append("article/product")
     raise ValueError(
         f"Packing List Excel — couldn't find a header row with column(s): {', '.join(missing)}. "
         f"Best-matching row (row {best_idx + 1}): {list(raw.iloc[best_idx]) if best_idx >= 0 else 'none'}. "
@@ -169,7 +176,9 @@ def extract_packing_list_excel(path: str) -> dict:
             "bl_no":          s(cell(row, "bl_no")).strip(),
             "container_id":   cid,
             "container_type": s(cell(row, "container_type")).strip(),
-            "product":        s(cell(row, "product")).strip(),
+            # Article number is the primary value; Product column only when
+            # there is no Article number column (or this row's cell is blank).
+            "product":        s(cell(row, "article")).strip() or s(cell(row, "product")).strip(),
             "bags":           total_bags,
             "lots":           lots,
             "quantity_mt":    _parse_number(cell(row, "quantity_mt")),

@@ -13,10 +13,13 @@ several "lot - N bags" entries produces several rows, each with its own lot
 and bag count. Seal No is left blank (not on the sheet).
 """
 
-from clients.swiss.inbound.extractor import CARRIER_DISPLAY_MAP
+from clients.swiss.inbound.extractor import CARRIER_DISPLAY_MAP, carrier_display
 from helpers.doc_common import normalize_container_type, s
 
-SHIPPING_LINE_OPTIONS = list(CARRIER_DISPLAY_MAP.values()) + ["Other"]
+# The UI dropdown shows the short alias only (MSC, HMM, HAPAG-LLOYD, ...); the
+# output Excel's Shipping Line column gets the full display string for that
+# alias via carrier_display() — identical to every other client's output.
+SHIPPING_LINE_OPTIONS = list(CARRIER_DISPLAY_MAP.keys()) + ["Other"]
 
 # Sanity tolerance for bags x bag-size vs "Quantity (MT) per FCL".
 QUANTITY_TOLERANCE = 0.02

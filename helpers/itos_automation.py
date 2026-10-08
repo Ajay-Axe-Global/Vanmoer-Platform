@@ -31,6 +31,7 @@ if sys.platform == "win32":
                 ctypes.windll.user32.SetProcessDPIAware()
             except Exception:
                 pass
+import logging
 import os
 import subprocess
 
@@ -52,6 +53,9 @@ APPS_TAB_Y = int(os.getenv("ITOS_APPS_TAB_Y", "347"))
 CARD_X = int(os.getenv("ITOS_CARD_X", "410"))
 CARD_Y = int(os.getenv("ITOS_CARD_Y", "457"))
 MAX_EDGE_LAUNCH_RETRIES = int(os.getenv("ITOS_MAX_LAUNCH_RETRIES", "2"))
+EDGE_SCAN_ATTEMPTS = int(os.getenv("ITOS_EDGE_SCAN_ATTEMPTS", "4"))
+
+logger = logging.getLogger("itos_automation")
 DATE_FROM_YEARS_BACK = int(os.getenv("ITOS_DATE_FROM_YEARS_BACK", "5"))
 
 
@@ -121,16 +125,32 @@ def _find_edge_wrapper():
     already-working session — see _ensure_edge_ready()). Catching per-window
     instead means one bad .window_text() call is skipped, not fatal to the
     whole search."""
-    try:
-        windows = Desktop(backend="uia").windows()
-    except Exception:
-        return None
-    for w in windows:
+    # Retried (not one-shot): a single empty/failed UIA enumeration used to be
+    # read as "no Edge open" and sent the caller down the launch-fresh path,
+    # opening a second Edge via Windows App. Every miss is now logged with the
+    # exception or the titles actually seen, so a false negative is diagnosable
+    # from the log alone.
+    last_titles = []
+    for attempt in range(1, EDGE_SCAN_ATTEMPTS + 1):
+        last_titles = []
         try:
-            if _is_edge_title(w.window_text()):
-                return w
-        except Exception:
+            windows = Desktop(backend="uia").windows()
+        except Exception as e:
+            logger.warning("Edge scan %d/%d: Desktop().windows() failed: %r",
+                           attempt, EDGE_SCAN_ATTEMPTS, e)
+            time.sleep(1)
             continue
+        for w in windows:
+            try:
+                title = w.window_text()
+                last_titles.append(title)
+                if _is_edge_title(title):
+                    return w
+            except Exception:
+                continue
+        time.sleep(1)
+    logger.warning("Edge not found after %d scans. Window titles seen: %s",
+                   EDGE_SCAN_ATTEMPTS, last_titles)
     return None
 
 

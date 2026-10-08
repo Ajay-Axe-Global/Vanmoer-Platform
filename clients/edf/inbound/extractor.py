@@ -10,7 +10,9 @@ identical across clients.
 
 One output row per (container, lot): a container whose "Lot Nr. 2" holds
 several "lot - N bags" entries produces several rows, each with its own lot
-and bag count. Seal No is left blank (not on the sheet).
+and bag count. Seal No is not on the Excel sheet: it comes from the optional
+Arrival Notice PDF (see arrival_notice.py), matched by container number, and
+is blank for any container the notice doesn't list.
 """
 
 from clients.swiss.inbound.extractor import CARRIER_DISPLAY_MAP, carrier_display
@@ -64,9 +66,34 @@ def validate(packing_list: dict) -> list[str]:
     return results
 
 
+def validate_seals(packing_list: dict, arrival_notice: dict | None) -> list[str]:
+    """Seal cross-check between the Packing List's containers and the Arrival
+    Notice. A container with no seal in the notice is a warning (blank Seal
+    No), never a failure — the notice is optional and the Excel still
+    generates."""
+    if arrival_notice is None:
+        return ["[!]  SEAL — no Arrival Notice uploaded, Seal No left blank"]
+
+    seals = arrival_notice["seals"]
+    results = list(arrival_notice.get("warnings", []))
+    packing_ids = [c["container_id"] for c in packing_list.get("containers", [])]
+
+    matched = [cid for cid in packing_ids if cid in seals]
+    if matched:
+        results.append(f"[OK] SEAL — {len(matched)}/{len(packing_ids)} container(s) matched to the Arrival Notice")
+    for cid in packing_ids:
+        if cid not in seals:
+            results.append(f"[!]  SEAL — {cid}: not found in the Arrival Notice, Seal No left blank")
+    for cid in seals:
+        if cid not in packing_ids:
+            results.append(f"[!]  SEAL — {cid}: in the Arrival Notice but not in the Packing List")
+    return results
+
+
 def build_rows(packing_list: dict, reference: str, shipping_line: str, ship_name: str,
-               eta_date: str) -> list[dict]:
+               eta_date: str, seals: dict | None = None) -> list[dict]:
     reference = s(reference).strip()
+    seals = seals or {}
     rows = []
     for c in packing_list.get("containers", []):
         cid = c["container_id"]
@@ -78,7 +105,7 @@ def build_rows(packing_list: dict, reference: str, shipping_line: str, ship_name
                 "reference":     reference,
                 "container_no":  cid,
                 "mbl_container": mbl_container,
-                "seal_no":       "",
+                "seal_no":       seals.get(cid, ""),
                 "container_type": container_type,
                 "shipping_line": shipping_line,
                 "ship_name":     ship_name,

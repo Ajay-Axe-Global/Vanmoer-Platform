@@ -25,8 +25,9 @@ from helpers.decorators import task_access_required
 from helpers.excel_writer import write_excel
 from helpers.jobs import build_reference, job_output_path, log_job, new_job_dir
 
+from .arrival_notice import extract_seals
 from .excel_extractor import extract_packing_list_excel
-from .extractor import SHIPPING_LINE_OPTIONS, build_rows, carrier_display, validate
+from .extractor import SHIPPING_LINE_OPTIONS, build_rows, carrier_display, validate, validate_seals
 
 CLIENT_SLUG = "edf"
 TASK_SLUG = "inbound"
@@ -64,6 +65,9 @@ class EdfInboundTask(BaseTask):
 
     required_documents = [
         {"key": "packing_list", "label": "Packing List (Excel)", "accept": ".xlsx,.xls", "multiple": False},
+        # Optional: only source of the Seal No column.
+        {"key": "arrival_notice", "label": "Arrival Notice (PDF)", "accept": ".pdf", "multiple": False,
+         "required": False},
     ]
 
     column_config = COLUMN_CONFIG
@@ -72,8 +76,10 @@ class EdfInboundTask(BaseTask):
     def process(self, files: dict, output_path: str | None = None, reference: str = "",
                 shipping_line: str = "", ship_name: str = "", eta_date: str = "") -> dict:
         packing_list = extract_packing_list_excel(files["packing_list"])
-        validation = validate(packing_list)
-        rows = build_rows(packing_list, reference, shipping_line, ship_name, eta_date)
+        arrival_notice = extract_seals(files["arrival_notice"]) if files.get("arrival_notice") else None
+        validation = validate(packing_list) + validate_seals(packing_list, arrival_notice)
+        rows = build_rows(packing_list, reference, shipping_line, ship_name, eta_date,
+                          seals=arrival_notice["seals"] if arrival_notice else None)
 
         summary = {
             "reference":        reference,
@@ -112,6 +118,11 @@ def process():
     if not f.filename.lower().endswith((".xlsx", ".xls")):
         return jsonify({"error": "Packing List must be an Excel file (.xlsx / .xls)."}), 400
 
+    an = request.files.get("arrival_notice")
+    has_an = bool(an and an.filename)
+    if has_an and not an.filename.lower().endswith(".pdf"):
+        return jsonify({"error": "Arrival Notice must be a PDF file."}), 400
+
     reference = (request.form.get("reference") or "").strip()
     if not reference:
         return jsonify({"error": "Reference is required."}), 400
@@ -139,8 +150,14 @@ def process():
         path = str(job_dir / secure_filename(f.filename))
         f.save(path)
 
+        files = {"packing_list": path}
+        if has_an:
+            an_path = str(job_dir / secure_filename(an.filename))
+            an.save(an_path)
+            files["arrival_notice"] = an_path
+
         output_path = str(job_output_path(job_id))
-        result = _task.process({"packing_list": path}, output_path, reference=reference,
+        result = _task.process(files, output_path, reference=reference,
                                 shipping_line=shipping_line, ship_name=ship_name, eta_date=eta_date)
 
         rows = result["rows"]

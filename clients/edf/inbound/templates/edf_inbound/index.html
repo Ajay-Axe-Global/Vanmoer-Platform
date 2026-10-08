@@ -400,7 +400,7 @@
     <div class="container">
         <div class="page-header">
             <h1>EDF Inbound</h1>
-            <p>Upload Packing List (Excel) → Generate Outcome Excel</p>
+            <p>Upload Packing List (Excel) + Arrival Notice (PDF, for Seal No) → Generate Outcome Excel</p>
         </div>
 
         <!-- Upload Section -->
@@ -413,6 +413,14 @@
                     <input type="file" id="pklFile" accept=".xlsx,.xls" onchange="onFileSelect(this, 'pklName')">
                     <button class="remove-btn"
                         onclick="event.stopPropagation(); clearFile('pklFile', 'pklName')">&times;</button>
+                </div>
+                <div class="upload-card" onclick="this.querySelector('input').click()">
+                    <span class="icon">🚢</span>
+                    <div class="label">Arrival Notice (PDF) <span style="color:#64748b;font-weight:400">— optional</span></div>
+                    <div class="filename" id="anName" data-empty="Click to upload PDF (for Seal No)">Click to upload PDF (for Seal No)</div>
+                    <input type="file" id="anFile" accept=".pdf" onchange="onFileSelect(this, 'anName')">
+                    <button class="remove-btn"
+                        onclick="event.stopPropagation(); clearFile('anFile', 'anName')">&times;</button>
                 </div>
             </div>
 
@@ -491,7 +499,7 @@
                 nameEl.classList.add('active');
                 card.classList.add('has-file');
             } else {
-                nameEl.textContent = 'Click to upload Excel';
+                nameEl.textContent = nameEl.dataset.empty || 'Click to upload Excel';
                 nameEl.classList.remove('active');
                 card.classList.remove('has-file');
             }
@@ -517,6 +525,7 @@
 
         const LOADER_STEPS = [
             'Reading Packing List…',
+            'Matching seals from Arrival Notice…',
             'Splitting lots…',
             'Validating bag counts…',
             'Building outcome rows…',
@@ -544,6 +553,8 @@
         async function generate() {
             const fd = new FormData();
             fd.append('packing_list', document.getElementById('pklFile').files[0]);
+            const anFile = document.getElementById('anFile').files[0];
+            if (anFile) fd.append('arrival_notice', anFile);
             fd.append('shipping_line', document.getElementById('shippingLine').value);
             fd.append('reference', document.getElementById('referenceInput').value.trim());
             fd.append('ship_name', document.getElementById('shipNameInput').value.trim());
@@ -636,6 +647,7 @@
             document.getElementById('results').classList.remove('visible');
             document.getElementById('errorMsg').classList.remove('visible');
             clearFile('pklFile', 'pklName');
+            clearFile('anFile', 'anName');
             document.getElementById('shippingLine').value = '';
             document.getElementById('referenceInput').value = '';
             document.getElementById('shipNameInput').value = '';

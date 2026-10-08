@@ -1048,8 +1048,11 @@ def extract_packing_list(pdf_path: str, mbl: dict = None) -> dict:
         rows = data.get("rows", [])
         row_bag_sum = sum(_num(r.get("bags"), 0) for r in rows)
         doc_total_bags = _num(data.get("total_bags"), 0)
-        diff = abs(row_bag_sum - doc_total_bags) if doc_total_bags else 0
- 
+        # row_bag_sum == 0 means the layout has no per-row bags column at all
+        # (e.g. SABIC-direct/US export) — nothing to reconcile here; bags are
+        # derived later from the MBL's per-container counts (see build_rows).
+        diff = abs(row_bag_sum - doc_total_bags) if (doc_total_bags and row_bag_sum) else 0
+
         print(f"  [EXTRACT] Attempt {attempt + 1} (temp={temperature}): "
               f"row-sum bags={row_bag_sum} vs document total={doc_total_bags} "
               f"(diff={diff})")
@@ -1143,6 +1146,10 @@ def extract_packing_list(pdf_path: str, mbl: dict = None) -> dict:
 
 def extract_invoice(pdf_path: str) -> dict:
     data = call_gemini(INVOICE_PROMPT, pdf_path=pdf_path)
+    # Gemini sometimes wraps the object in a list (e.g. [{...}]) — the
+    # prompt asks for a single object, so unwrap to the first dict.
+    if isinstance(data, list):
+        data = next((d for d in data if isinstance(d, dict)), {})
     _dump_json(pdf_path, "invoice.json", data)
     return data
 
@@ -1197,6 +1204,29 @@ def repair_container_ids_via_mbl(mbl: dict, pkl: dict) -> dict:
 
     def is_complete(cid) -> bool:
         return bool(cid) and bool(_CONTAINER_RE.match(str(cid)))
+
+    # Pass 0 — a well-formed id that isn't on the MBL at all is a misread
+    # (typically a page-break split like "HAMU132" / "8513" stitched into
+    # "HAMU1132851" instead of "HAMU1328513"). Snap it to the single MBL id
+    # within 2 edits; if none or several qualify, leave it alone.
+    def _edit_distance(a: str, b: str) -> int:
+        prev = list(range(len(b) + 1))
+        for x, ca in enumerate(a, 1):
+            cur = [x]
+            for y, cb in enumerate(b, 1):
+                cur.append(min(prev[y] + 1, cur[y - 1] + 1, prev[y - 1] + (ca != cb)))
+            prev = cur
+        return prev[-1]
+
+    snapped = 0
+    for ln in lines:
+        cid = str(ln.get("container_id") or "").strip().upper()
+        if is_complete(cid) and cid not in mbl_ids:
+            near = [m for m in mbl_ids if _edit_distance(cid, m) <= 2]
+            if len(near) == 1:
+                print(f"  [ID REPAIR] {cid} not on MBL — snapped to {near[0]}")
+                ln["container_id"] = near[0]
+                snapped += 1
 
     claimed = {ln["container_id"] for ln in lines if is_complete(ln.get("container_id"))}
     broken = [

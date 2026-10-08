@@ -85,6 +85,9 @@ _FORWARD_TO_BY_CLIENT = {
 def forward_to_for(client_slug: str) -> list[str]:
     return _FORWARD_TO_BY_CLIENT.get(client_slug) or FORWARD_TO
 MFA_MAX_RETRIES = int(os.getenv("OUTLOOK_MFA_MAX_RETRIES", "3"))
+# Ceiling for Outlook search results to appear (shared-mailbox search can be
+# slow); the wait returns as soon as they render, this is only the max.
+SEARCH_RESULTS_TIMEOUT_MS = int(os.getenv("OUTLOOK_SEARCH_TIMEOUT_MS", "20000"))
 # Testing switch: runs every real step (search, open thread, Forward, fill
 # To, paste all 3 screenshots inline) but stops short of clicking Send —
 # lets the search/forward/paste mechanics be verified without actually
@@ -756,19 +759,54 @@ def _search_and_open_latest(page, reference: str):
     search_box.fill(reference)
     search_box.press("Enter")
 
-    time.sleep(5)
-
+    # Event-driven instead of the old fixed 5s + 2s + 3s sleeps: wait for the
+    # "All results" group header (only present once search results have
+    # rendered), expand it if collapsed, then click the first result the
+    # moment it exists. Same overall timeout ceiling as before, but returns
+    # as soon as Outlook is actually ready.
+    all_results = page.locator("#groupHeaderAll\\ results")
     try:
-        all_results = page.locator("#groupHeaderAll\\ results")
+        all_results.wait_for(state="visible", timeout=SEARCH_RESULTS_TIMEOUT_MS)
+        time.sleep(0.7)  # let the result list settle so we don't click a stale row
         if all_results.get_attribute("aria-expanded") == "false":
             all_results.click()
-            time.sleep(2)
+            time.sleep(0.7)
     except Exception:
-        pass
+        pass  # header not seen — the click loop below still tries, then raises
 
-    if not _click_first_result(page):
+    deadline = time.time() + SEARCH_RESULTS_TIMEOUT_MS / 1000
+    clicked = False
+    while time.time() < deadline:
+        if _click_first_result(page):
+            clicked = True
+            break
+        time.sleep(0.4)
+    if not clicked:
         raise EmailAutomationError(f'No Outlook results found for reference "{reference}".')
-    time.sleep(3)
+    _wait_for_forward_ready(page)
+
+
+def _forward_button_ready(page) -> bool:
+    try:
+        return bool(page.evaluate(
+            """() => !!(document.querySelector('div[role="menuitem"][aria-label="Forward"]')
+                       || document.querySelector('button[aria-label="Forward"]'))"""
+        ))
+    except Exception:
+        return False
+
+
+def _wait_for_forward_ready(page, timeout_seconds: int = 10):
+    """Replaces the old blind 3s sleep after opening the thread: returns as
+    soon as the reading pane's Forward control has rendered (that's what
+    Shift+F / the click needs), or after the timeout so a changed Outlook
+    layout degrades to the old behavior instead of failing."""
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        if _forward_button_ready(page):
+            time.sleep(0.3)
+            return
+        time.sleep(0.3)
 
 
 _CLICK_FORWARD_JS = """
@@ -792,6 +830,19 @@ def _compose_is_open(page) -> bool:
         return False
 
 
+def _wait_for_compose_body(page, timeout_seconds: int = 8):
+    """Replaces the fixed 3s sleep after the Forward compose opens: waits for
+    the message body (with the forwarded thread loaded into it) to be
+    editable, then a short settle. Falls through on timeout."""
+    try:
+        page.locator(
+            'div[role="textbox"][aria-label="Message body"][contenteditable="true"]'
+        ).wait_for(state="visible", timeout=timeout_seconds * 1000)
+    except Exception:
+        pass
+    time.sleep(0.8)
+
+
 def _click_forward(page, timeout_seconds: int = 15):
     """Primary: Outlook Web's Shift+F keyboard shortcut for Forward —
     faster and skips the toolbar-rendering race entirely, since it doesn't
@@ -811,7 +862,7 @@ def _click_forward(page, timeout_seconds: int = 15):
     deadline = time.time() + 5
     while time.time() < deadline:
         if _compose_is_open(page):
-            time.sleep(3)
+            _wait_for_compose_body(page)
             return
         time.sleep(0.3)
 
@@ -819,7 +870,7 @@ def _click_forward(page, timeout_seconds: int = 15):
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
         if page.evaluate(_CLICK_FORWARD_JS):
-            time.sleep(3)
+            _wait_for_compose_body(page)
             return
         time.sleep(0.5)
     raise EmailAutomationError("Forward button not found on the opened message (keyboard shortcut and button both failed).")

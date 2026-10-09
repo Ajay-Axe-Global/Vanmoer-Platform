@@ -15,6 +15,7 @@ Moer Kallo — a Loading Info page carrying a fixed "IMPORTANT !!!!****...
 ****!!!" warning line. One set of regexes below handles all 3 layouts.
 """
 
+import json
 import re
 from datetime import datetime
 
@@ -149,6 +150,22 @@ def _remark(t: str) -> str:
     return re.sub(r"\s+", " ", m.group(1)).strip()
 
 
+# "Type of Containers / Trucks" box on the shipment table drives the Operation
+# column: DRY BULK -> bulk loading from bags (and the fixed SILO text below);
+# Full Truck Load -> plain truck loading. Anything else is left blank.
+OPERATION_BULK = "Loading Bulk/Vrac from Bag"
+OPERATION_TRUCK = "Loading into truck"
+SILO_BULK_TEXT = "BULK-REINIGINGSCERTIFICAAT-WEGEN / EX CONT.:   EX LOC."
+
+
+def _operation(t: str) -> str:
+    if re.search(r"DRY\s+BULK", t, re.IGNORECASE):
+        return OPERATION_BULK
+    if re.search(r"Full\s+Truck\s+Load", t, re.IGNORECASE):
+        return OPERATION_TRUCK
+    return ""
+
+
 # HTML <input type="date"> always submits "YYYY-MM-DD" regardless of browser
 # locale; the OP column reads "YYYYMMDD 00:00:00" (same convention as Sabic
 # Outbound's planned_date / Vinmar Inbound's eta_date).
@@ -183,6 +200,9 @@ class VinmarOutboundTask(BaseTask):
         {"header": "Public ID",    "field_key": "public_id",    "width": 34},
         {"header": "Remarks",      "field_key": "remark",       "width": 40},
         {"header": "Country Code", "field_key": "country_code", "width": 12},
+        {"header": "Operation",    "field_key": "operation",    "width": 28},
+        {"header": "SILO",         "field_key": "silo",         "width": 50},
+        {"header": "T-TYPE",       "field_key": "t_type",       "width": 14},
     ]
 
     def _extract_rows(self, text: str, planned_date: str) -> list[dict]:
@@ -195,6 +215,9 @@ class VinmarOutboundTask(BaseTask):
         public_id = _trucker_name(text)
         remark = _remark(text)
         country_code = _country_code(text)
+        operation = _operation(text)
+        silo = SILO_BULK_TEXT if operation == OPERATION_BULK else ""
+        t_type = "Silo-Truck" if operation == OPERATION_BULK else "Truck"
 
         # Grouped by product name — batch/PO number is deliberately NOT part
         # of the grouping key: the same product split across several batches
@@ -220,6 +243,9 @@ class VinmarOutboundTask(BaseTask):
             "public_id": public_id,
             "remark": remark,
             "country_code": country_code,
+            "operation": operation,
+            "silo": silo,
+            "t_type": t_type,
         }]
 
     # ── BaseTask entry point ────────────────────────────────────────────────
@@ -254,20 +280,14 @@ def index():
 @bp.route("/process", methods=["POST"])
 @task_access_required(CLIENT_SLUG, TASK_SLUG)
 def process():
+    """Step 1: extract everything except the Planned Date. The rows are parked
+    in the job dir and returned so the user can pick a date per reference in
+    the UI; the Excel is only written by /finalize once they confirm."""
     files = request.files.getlist("release_note")
     if not files:
         return jsonify({"error": "At least one Delivery / Release Note PDF is required."}), 400
 
-    planned_date_raw = (request.form.get("planned_date") or "").strip()
-    if not planned_date_raw:
-        return jsonify({"error": "Planned Date is required."}), 400
-    try:
-        planned_date = format_planned_date(planned_date_raw)
-    except ValueError:
-        return jsonify({"error": "Invalid Planned Date."}), 400
-
     job_id, job_dir = new_job_dir()
-    session = SessionLocal()
     try:
         saved_paths = []
         for f in files:
@@ -280,22 +300,64 @@ def process():
         if not saved_paths:
             return jsonify({"error": "No valid PDF files uploaded."}), 400
 
-        result = _task.process({"release_note": saved_paths}, planned_date=planned_date)
-        write_excel(result["rows"], _task.column_config, str(job_output_path(job_id)))
+        result = _task.process({"release_note": saved_paths})
+        if not result["rows"]:
+            return jsonify({"error": "No shipment rows could be extracted from the uploaded PDF(s)."}), 400
 
-        reference, reference_count = build_reference(r.get("reference") for r in result["rows"])
-        source_filename = ", ".join(f.filename for f in files if f.filename.lower().endswith(".pdf"))
-        job = log_job(session, g.user["user_id"], CLIENT_SLUG, TASK_SLUG, f"{job_id}/output.xlsx", "success",
-                      reference=reference, source_filename=source_filename, row_count=len(result["rows"]),
-                      reference_count=reference_count)
-        upsert_order_tracking(session, CLIENT_SLUG, TASK_SLUG,
-                               (r.get("reference") for r in result["rows"]), job.id)
+        (job_dir / "rows.json").write_text(
+            json.dumps({
+                "user_id": g.user["user_id"],
+                "rows": result["rows"],
+                "source_filename": ", ".join(f.filename for f in files if f.filename.lower().endswith(".pdf")),
+            }), encoding="utf-8")
 
         return jsonify({
             "success": True,
             "job_id": job_id,
             "summary": result["summary"],
-            "rows": result["rows"],
+            "rows": [{"reference": r["reference"]} for r in result["rows"]],
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@bp.route("/finalize/<job_id>", methods=["POST"])
+@task_access_required(CLIENT_SLUG, TASK_SLUG)
+def finalize(job_id):
+    """Step 2: apply the per-reference Planned Dates, write the Excel."""
+    if not re.fullmatch(r"[0-9a-f]{32}", job_id):
+        return jsonify({"error": "Not found"}), 404
+    rows_file = job_output_path(job_id).parent / "rows.json"
+    if not rows_file.exists():
+        return jsonify({"error": "Not found"}), 404
+    saved = json.loads(rows_file.read_text(encoding="utf-8"))
+    if g.user["role"] != "admin" and saved["user_id"] != g.user["user_id"]:
+        return jsonify({"error": "Not found"}), 404
+
+    rows = saved["rows"]
+    dates = (request.get_json(silent=True) or {}).get("dates") or []
+    if len(dates) != len(rows):
+        return jsonify({"error": "A Planned Date is required for every reference."}), 400
+    try:
+        for row, raw in zip(rows, dates):
+            row["planned_date"] = format_planned_date(raw or "")
+    except ValueError:
+        return jsonify({"error": "Invalid Planned Date."}), 400
+
+    session = SessionLocal()
+    try:
+        write_excel(rows, _task.column_config, str(job_output_path(job_id)))
+
+        reference, reference_count = build_reference(r.get("reference") for r in rows)
+        job = log_job(session, g.user["user_id"], CLIENT_SLUG, TASK_SLUG, f"{job_id}/output.xlsx", "success",
+                      reference=reference, source_filename=saved["source_filename"], row_count=len(rows),
+                      reference_count=reference_count)
+        upsert_order_tracking(session, CLIENT_SLUG, TASK_SLUG, (r.get("reference") for r in rows), job.id)
+
+        return jsonify({
+            "success": True,
+            "job_id": job_id,
+            "rows": rows,
             "download_url": f"/app/{CLIENT_SLUG}/{TASK_SLUG}/download/{job_id}",
         })
     except Exception as e:

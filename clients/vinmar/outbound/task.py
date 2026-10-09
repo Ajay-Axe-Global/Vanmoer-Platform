@@ -217,6 +217,8 @@ class VinmarOutboundTask(BaseTask):
         country_code = _country_code(text)
         operation = _operation(text)
         silo = SILO_BULK_TEXT if operation == OPERATION_BULK else ""
+        if operation == OPERATION_BULK:
+            remark = ""  # bulk loads from bag carry no slip-mat/loading remark
         t_type = "Silo-Truck" if operation == OPERATION_BULK else "Truck"
 
         # Grouped by product name — batch/PO number is deliberately NOT part

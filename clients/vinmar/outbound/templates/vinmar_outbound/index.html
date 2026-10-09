@@ -100,6 +100,24 @@
   }
   .field-group input[type="date"]:focus { border-color: #3b82f6; }
 
+  /* ── Per-reference Planned Date review ────────────────── */
+  #date-step { display: none; margin-top: 22px; }
+  #date-step.visible { display: block; animation: chip-in .2s ease-out; }
+  #date-step h2 { font-size: 15px; font-weight: 700; color: #f8fafc; margin-bottom: 4px; }
+  #date-step .sub { font-size: 12.5px; color: #64748b; margin-bottom: 14px; }
+  .apply-all { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; font-size: 12.5px; color: #94a3b8; }
+  .date-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    background: #1e293b; border: 1px solid #334155; border-radius: 10px;
+    padding: 10px 12px; margin-bottom: 8px;
+  }
+  .date-row .ref { font-family: 'JetBrains Mono', monospace; font-size: 12.5px; color: #e2e8f0; word-break: break-all; }
+  .date-row input[type="date"], .apply-all input[type="date"] {
+    padding: 8px 10px; font-size: 13px; font-family: inherit; color: #e2e8f0;
+    background: #0f172a; border: 1px solid #334155; border-radius: 8px; color-scheme: dark;
+  }
+  #confirm-dates-btn { margin-top: 8px; }
+
   /* ── Primary button ───────────────────────────────────── */
   button.primary {
     width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px;
@@ -402,7 +420,7 @@
   <div class="container" id="upload-view">
     <div class="page-header">
       <h1>{{ label }}</h1>
-      <p>Upload Delivery / Release Note PDF(s) → generate the output Excel</p>
+      <p>Upload Delivery / Release Note PDF(s) → set Planned Date per reference → generate the output Excel</p>
     </div>
 
     <div class="dropzone" id="dropzone">
@@ -413,17 +431,26 @@
     </div>
     <div id="file-list"></div>
 
-    <div class="field-group">
-      <label for="plannedDate">Planned Date <span class="required">*</span></label>
-      <input type="date" id="plannedDate" required />
-    </div>
-
     <button class="primary" id="submit-btn" disabled>
       <span class="spinner"></span>
-      <span class="btn-label">Process &amp; Generate Excel</span>
+      <span class="btn-label">Process</span>
     </button>
 
     <div id="status"></div>
+
+    <div id="date-step">
+      <h2>Set Planned Date</h2>
+      <p class="sub">Pick the Planned Date for each reference, then confirm to generate the Excel.</p>
+      <div class="apply-all">
+        <span>Apply one date to all:</span>
+        <input type="date" id="apply-all-date" />
+      </div>
+      <div id="date-rows"></div>
+      <button class="primary" id="confirm-dates-btn" disabled>
+        <span class="spinner"></span>
+        <span class="btn-label">Confirm &amp; Generate Excel</span>
+      </button>
+    </div>
 
     <div id="results">
       <div class="stats-row">
@@ -567,13 +594,17 @@
     const status = document.getElementById("status");
     const results = document.getElementById("results");
     const downloadLink = document.getElementById("download-link");
-    const plannedDateInput = document.getElementById("plannedDate");
+    const dateStep = document.getElementById("date-step");
+    const dateRows = document.getElementById("date-rows");
+    const applyAllDate = document.getElementById("apply-all-date");
+    const confirmDatesBtn = document.getElementById("confirm-dates-btn");
+    const confirmBtnLabel = confirmDatesBtn.querySelector(".btn-label");
+    let pendingJob = null;
     const OUTPUT_FILENAME = "Vinmar_Outbound_Output.xlsx";
 
     function checkReady() {
-      submitBtn.disabled = !(selectedFiles.length > 0 && plannedDateInput.value);
+      submitBtn.disabled = selectedFiles.length === 0;
     }
-    plannedDateInput.addEventListener("change", checkReady);
 
     dropzone.addEventListener("click", () => fileInput.click());
     dropzone.addEventListener("dragover", (e) => { e.preventDefault(); dropzone.classList.add("drag"); });
@@ -614,19 +645,27 @@
       checkReady();
     }
 
+    function dateInputs() { return Array.from(dateRows.querySelectorAll("input[type=date]")); }
+    function checkDatesReady() {
+      confirmDatesBtn.disabled = !(dateInputs().length > 0 && dateInputs().every(i => i.value));
+    }
+    applyAllDate.addEventListener("change", () => {
+      if (!applyAllDate.value) return;
+      dateInputs().forEach(i => { i.value = applyAllDate.value; });
+      checkDatesReady();
+    });
+
     submitBtn.addEventListener("click", async () => {
       status.className = "";
       status.style.display = "none";
       results.classList.remove("visible");
+      dateStep.classList.remove("visible");
       submitBtn.disabled = true;
       submitBtn.classList.add("loading");
       btnLabel.textContent = "Processing…";
 
       const fd = new FormData();
       selectedFiles.forEach(f => fd.append("release_note", f));
-      // Native <input type="date"> always yields "YYYY-MM-DD" regardless of
-      // browser locale — the backend formats it into the OP column format.
-      fd.append("planned_date", plannedDateInput.value);
 
       try {
         const res = await VanmoerAuth.authFetch(window.location.pathname + "process", {
@@ -636,8 +675,48 @@
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Processing failed");
 
-        document.getElementById("stat-docs").textContent = data.summary.documents_processed;
+        pendingJob = data;
+        applyAllDate.value = "";
+        // Native <input type="date"> always yields "YYYY-MM-DD" regardless of
+        // browser locale — the backend formats it into the OP column format.
+        dateRows.innerHTML = data.rows.map((r, i) => `
+          <div class="date-row">
+            <span class="ref">${escapeHtml(r.reference || "(no reference)")}</span>
+            <input type="date" data-index="${i}" required />
+          </div>`).join("");
+        dateInputs().forEach(i => i.addEventListener("change", checkDatesReady));
+        checkDatesReady();
+        dateStep.classList.add("visible");
+      } catch (err) {
+        VanmoerAuth.renderError(status, err);
+        status.className = "err";
+        status.style.display = "block";
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.classList.remove("loading");
+        btnLabel.textContent = "Process";
+        checkReady();
+      }
+    });
+
+    confirmDatesBtn.addEventListener("click", async () => {
+      if (!pendingJob) return;
+      status.style.display = "none";
+      confirmDatesBtn.disabled = true;
+      confirmDatesBtn.classList.add("loading");
+      confirmBtnLabel.textContent = "Generating…";
+      try {
+        const res = await VanmoerAuth.authFetch(`${window.location.pathname}finalize/${pendingJob.job_id}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ dates: dateInputs().map(i => i.value) }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Generation failed");
+
+        document.getElementById("stat-docs").textContent = pendingJob.summary.documents_processed;
         document.getElementById("stat-rows").textContent = (data.rows || []).length;
+        dateStep.classList.remove("visible");
         results.classList.add("visible");
 
         downloadLink.onclick = async (e) => {
@@ -649,17 +728,17 @@
         status.className = "err";
         status.style.display = "block";
       } finally {
-        submitBtn.disabled = false;
-        submitBtn.classList.remove("loading");
-        btnLabel.textContent = "Process & Generate Excel";
-        checkReady();
+        confirmDatesBtn.classList.remove("loading");
+        confirmBtnLabel.textContent = "Confirm & Generate Excel";
+        checkDatesReady();
       }
     });
 
     document.getElementById("reset-link").addEventListener("click", () => {
       selectedFiles = [];
       renderFileList();
-      plannedDateInput.value = "";
+      pendingJob = null;
+      dateStep.classList.remove("visible");
       checkReady();
       results.classList.remove("visible");
       status.style.display = "none";

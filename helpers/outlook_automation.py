@@ -1181,7 +1181,7 @@ def open_outlook_session(user_id: int, email: str | None, password: str | None,
     try:
         context = playwright.chromium.launch_persistent_context(
             profile_dir,
-            headless=False,
+            headless=True,
             executable_path=CHROME_PATH,
             viewport={"width": 1366, "height": 768},
             args=["--disable-blink-features=AutomationControlled"],

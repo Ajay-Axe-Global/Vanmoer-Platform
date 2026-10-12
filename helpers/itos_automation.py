@@ -53,6 +53,9 @@ APPS_TAB_Y = int(os.getenv("ITOS_APPS_TAB_Y", "347"))
 CARD_X = int(os.getenv("ITOS_CARD_X", "410"))
 CARD_Y = int(os.getenv("ITOS_CARD_Y", "457"))
 MAX_EDGE_LAUNCH_RETRIES = int(os.getenv("ITOS_MAX_LAUNCH_RETRIES", "2"))
+# Seconds to wait after navigating before touching the page. The date-filter
+# script polls for jQuery itself, so this only needs to cover the bare load.
+PAGE_LOAD_WAIT = float(os.getenv("ITOS_PAGE_LOAD_WAIT", "3.5"))
 EDGE_SCAN_ATTEMPTS = int(os.getenv("ITOS_EDGE_SCAN_ATTEMPTS", "4"))
 
 logger = logging.getLogger("itos_automation")
@@ -209,15 +212,47 @@ def _ensure_edge_focused():
 # CORE ACTIONS
 # ═══════════════════════════════════════════════════════════
 
+def _slow_hotkey(*keys):
+    """pyautogui.hotkey presses and releases modifiers with no delay, which
+    a RemoteApp/RDP session can drop (the modifier is missed, so Ctrl+A
+    never selects anything). Hold each key explicitly with a short gap."""
+    for k in keys:
+        pyautogui.keyDown(k)
+        time.sleep(0.08)
+    time.sleep(0.08)
+    for k in reversed(keys):
+        pyautogui.keyUp(k)
+        time.sleep(0.08)
+
+
 def _navigate_via_addressbar(url):
+    """Open `url` in a FRESH tab, then close the old one.
+
+    Replacing text in the existing address bar is unreliable inside the
+    RemoteApp session: select-all (Alt+D / Ctrl+L / Ctrl+A / Shift+Home)
+    keeps failing to register, so the paste APPENDED to the old URL and
+    stacked up into a 404. A new tab's address bar is always empty, so
+    there is nothing to select or clear. A new tab also starts with the
+    dev console closed, which keeps the Ctrl+Shift+J toggle state known."""
     if not _ensure_edge_focused():
         return False
-    pyautogui.hotkey('alt', 'd')
-    time.sleep(0.3)
-    pyperclip.copy(url)
-    pyautogui.hotkey('ctrl', 'v')
+    pyautogui.press('escape')
     time.sleep(0.2)
+    _slow_hotkey('ctrl', 't')
+    time.sleep(1)
+    pyperclip.copy(url)
+    _slow_hotkey('ctrl', 'v')
+    time.sleep(0.4)
     pyautogui.press('enter')
+    # Let the page load before the caller opens the console and pastes JS —
+    # otherwise the keystrokes hit a still-loading page / the address bar.
+    time.sleep(PAGE_LOAD_WAIT)
+    # New tabs open to the right of the current one, so the previous tab is
+    # the old (stale/broken) one — close it, leaving only the fresh tab.
+    _slow_hotkey('ctrl', 'shift', 'tab')
+    time.sleep(0.5)
+    _slow_hotkey('ctrl', 'w')
+    time.sleep(1)
     return True
 
 
@@ -257,7 +292,7 @@ def _take_screenshot(path: Path, label=""):
     """Close console, wait for a clean frame, screenshot, reopen console.
     Console is OPEN both before and after this call."""
     pyautogui.hotkey('ctrl', 'shift', 'j')
-    time.sleep(2)
+    time.sleep(1)
     pyautogui.screenshot(str(path))
     pyautogui.hotkey('ctrl', 'shift', 'j')
     time.sleep(0.5)
@@ -492,7 +527,7 @@ def _process_single_order(
     """, 4)
 
     # Click the client's tab before capturing the order overview shot.
-    _console_run(_click_tab_js(shot1_tab), 2)
+    _console_run(_click_tab_js(shot1_tab), 1.5)
     _take_screenshot(shot1, "Order overview")
     if on_shot1_captured is not None:
         try:
@@ -501,22 +536,22 @@ def _process_single_order(
             pass
 
     # ── SCREENSHOT 2 — Order Items → tile → Addresses ─
-    _console_run("""document.getElementById("orderItemsTab").click();""", 2)
+    _console_run("""document.getElementById("orderItemsTab").click();""", 1.5)
     _console_run("""
         (function() {
             var tile = document.querySelector("#orderItemsView .tile.orderItem");
             if (tile) { tile.click(); }
         })();
-    """, 2)
+    """, 1.5)
     if shot2_tab == "Addresses":
         _console_run("""
             (function() {
                 var tab = document.querySelector('#detailTabs a[href="#addressesTab"]');
                 if (tab) { tab.click(); }
             })();
-        """, 2)
+        """, 1.5)
     else:
-        _console_run(_click_tab_js(shot2_tab), 2)
+        _console_run(_click_tab_js(shot2_tab), 1.5)
     _take_screenshot(shot2, shot2_tab)
 
     # ── SCREENSHOT 3 — Stock Info → Transport ─────────
@@ -525,7 +560,7 @@ def _process_single_order(
             var tab = document.querySelector('#detailTabs a[href="#stockInfoTab"]');
             if (tab) { tab.click(); }
         })();
-    """, 2)
+    """, 1.5)
     _console_run("""
         (function() {
             var externalId = (document.querySelector('input[data-bind*="ExternalId"]') || {}).value;
@@ -605,7 +640,7 @@ def capture_order_screenshots(
         raise ScreenshotAutomationError(f"Automation failed for order {order_number}: {e}") from e
 
     # Navigate back to index so the next queued job starts from a known state.
+    # (_navigate_via_addressbar already waits for the page to load.)
     _navigate_via_addressbar(INDEX_URL)
-    time.sleep(6)
 
     return paths

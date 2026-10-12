@@ -158,10 +158,24 @@ OPERATION_TRUCK = "Loading into truck"
 SILO_BULK_TEXT = "BULK-REINIGINGSCERTIFICAAT-WEGEN / EX CONT.:   EX LOC."
 
 
+# Aliases seen in the "Type of Containers / Trucks" box. LTL = Less Than
+# Truckload, FTL = Full Truckload — both are plain truck loading.
+_BULK_RE = re.compile(r"\bDRY\s+BULK\b", re.IGNORECASE)
+_TRUCK_RE = re.compile(
+    r"\b(?:LTL|FTL|(?:Full|Less\s+than|Part)\s+Truck\s*-?\s*Load|Truck\s*-?\s*Load|Curtain\s*sider|Tautliner)\b",
+    re.IGNORECASE,
+)
+_TYPE_LABEL_RE = re.compile(r"Type\s+of\s+Containers\s*/\s*Trucks", re.IGNORECASE)
+
+
 def _operation(t: str) -> str:
-    if re.search(r"DRY\s+BULK", t, re.IGNORECASE):
+    if _BULK_RE.search(t):
         return OPERATION_BULK
-    if re.search(r"Full\s+Truck\s+Load", t, re.IGNORECASE):
+    if _TRUCK_RE.search(t):
+        return OPERATION_TRUCK
+    # The box exists but carries a type we don't recognise: anything that is
+    # not DRY BULK is loaded into a truck, so that is the best fit.
+    if _TYPE_LABEL_RE.search(t):
         return OPERATION_TRUCK
     return ""
 

@@ -89,7 +89,10 @@ use this exact spelling): "CMA CGM", "MSC", "HAPAG-LLOYD", "OOCL", "MAERSK", \
 "COSCO", "ONE", "EVERGREEN", "YANG MING", "ZIM", "HMM", "PIL", "GRIMALDI", \
 "LX PANTOS", "BORCHARD LINES".
 
-Aliases to watch for: a logo/branding of "ONE" with the text "Ocean Network \
+Aliases to watch for: "COSCO SHIPPING LINES CO., LTD." / "COSCO SHIPPING" (a \
+B/L numbered "COSU...") -> "COSCO" — even when the cover letter or courier \
+label in the same PDF names a freight forwarder or another vessel operator. \
+A logo/branding of "ONE" with the text "Ocean Network \
 Express" printed nearby -> return "ONE". "HMM CO., LTD." -> "HMM". "Orient \
 Overseas Container Line" -> "OOCL". "Mediterranean Shipping Company" / "MSC \
 Mediterranean Shipping Company S.A." -> "MSC". "Maersk A/S" / "Maersk Line" \
@@ -562,8 +565,42 @@ LIST" notice — read every page and only extract rows matching the real
 @@RETURN_SCHEMA@@"""
 
 
+COSCO_MBL_PROMPT = """You are a shipping-document data extractor. Extract data from this COSCO \
+SHIPPING LINES "Port to Port or Combined Transport Bill of Lading" PDF (it \
+may start with a courier label and a cover letter before the real B/L, and \
+the B/L itself spans 2 pages — read all of them) and return ONLY a JSON \
+object, no markdown, no explanation.
+
+- "mbl_no": the "Bill of Lading No." value (top right of the B/L, 4 letters
+  + digits, e.g. "COSU6507985810") — NOT the "Booking No." printed right
+  next to it (the same digits WITHOUT the "COSU" prefix), and not the
+  "Service Contract" number.
+- "port_of_loading": the "Port of Loading" value (box 7, e.g. "HOUSTON, USA").
+- "container_type": leave empty — every container row states its own type
+  (see below).
+
+CONTAINER LIST — the front page only shows a shipment-wide summary ("4400
+BAGS", "131,770.851 KGS TOTAL GROSS WEIGHT", "SAY FIVE CONTAINERS TOTAL",
+"TO BE CONTINUED ON ATTACHED LIST") — that summary is NOT a container. The
+real list is on "PAGE: 2 OF 2", under the "Marks & Nos. Container / Seal No."
+header, ONE line per container, shaped like:
+  <CONTAINER ID> /<SEAL> / <BAGS> BAGS /FCL/FCL /<TYPE>/<GROSS WEIGHT>KGS
+  Example: "CSNU6617617 /UL-1141548 / 880 BAGS /FCL/FCL /40HQ/26388.643KGS"
+  -> id "CSNU6617617", seal "UL-1141548", bags 880, type "40HQ",
+  gross_weight_kg 26388.643.
+The seal is printed split by a vertical table line ("UL-" then "1141548") —
+join it back into one value, "UL-1141548". Each container's gross weight
+differs slightly (e.g. 26388.643 vs 26288.853) — copy each row's OWN value,
+never average or reuse one. Read EVERY row — the count must equal the
+"SAY ... CONTAINERS TOTAL" statement on page 1. Each id is 4 letters + 7
+digits, no spaces; keep the 4-letter owner prefix (CSNU, FFAU, TIIU, FCIU).
+Also add one extra key to the JSON: "container_pages": the list of 1-based
+page numbers of THIS PDF on which you read the container lines (e.g. [4]).
+@@RETURN_SCHEMA@@"""
+
+
 for _name in (
-    "CMA_CGM_MBL_PROMPT", "YANG_MING_MBL_PROMPT", "HMM_MBL_PROMPT", "ONE_MBL_PROMPT",
+    "COSCO_MBL_PROMPT", "CMA_CGM_MBL_PROMPT", "YANG_MING_MBL_PROMPT", "HMM_MBL_PROMPT", "ONE_MBL_PROMPT",
     "OOCL_MBL_PROMPT", "MAERSK_MBL_PROMPT", "GRIMALDI_MBL_PROMPT", "LX_PANTOS_MBL_PROMPT",
     "HAPAG_LLOYD_MBL_PROMPT", "MSC_MBL_PROMPT", "BORCHARD_LINES_MBL_PROMPT", "GENERIC_MBL_PROMPT",
 ):
@@ -572,6 +609,7 @@ for _name in (
 
 CARRIER_MBL_PROMPTS = {
     "CMA CGM":        CMA_CGM_MBL_PROMPT,
+    "COSCO":          COSCO_MBL_PROMPT,
     "YANG MING":      YANG_MING_MBL_PROMPT,
     "HMM":            HMM_MBL_PROMPT,
     "ONE":            ONE_MBL_PROMPT,
@@ -801,12 +839,154 @@ Return:
 # EXTRACTION FUNCTIONS
 # ═══════════════════════════════════════════════════════════════════════════
 
+ZOOM_ROW_PROMPT = """This image is a horizontal strip of a scanned shipping document, zoomed in. \
+Transcribe EVERY line whose first token is a container number (4 letters + 7 \
+digits, e.g. "CSNU6617617") and return ONLY a JSON object, no markdown.
+
+Copy each character exactly as printed, one at a time — do NOT infer, "fix", \
+reorder or reuse digits from another row; every row's numbers differ (ids, \
+seals and weights all differ slightly row to row, copy each row's OWN). A \
+container number is always exactly 11 characters. Vertical table lines may \
+cut through the text ("UL-" | "1141548", "40" | "HQ") — join the pieces back \
+together ("UL-1141548", "40HQ"). If the strip has no container rows return \
+an empty list.
+
+{"rows": [{"id": "string", "seal": "string", "bags": 0, "type": "string like 40HQ", "gross_weight_kg": 0}]}"""
+
+# Carriers whose scanned MBL lists one container per line in small
+# monospaced print. A whole-page read of such a scan misreads digits (ids,
+# seals, weights) and, worse, differently on every run — so for these the
+# container lines are read from zoomed strips as the PRIMARY source, each
+# read at least twice and cross-checked (see read_container_lines_zoomed()).
+# Opt-in: other carriers' layouts are not one-line-per-container.
+ZOOM_READ_CARRIERS = {"COSCO"}
+ZOOM_MAX_READS = 4
+
+
+def _zoomed_strips(pdf_path: str, pages: list[int], zoom: float = 3.0,
+                    band_pt: float = 200, overlap_pt: float = 30) -> list[bytes]:
+    import pymupdf
+    strips = []
+    with pymupdf.open(pdf_path) as doc:
+        for pno in pages:
+            if not 1 <= pno <= len(doc):
+                continue
+            page = doc[pno - 1]
+            if page.get_text().strip():
+                continue  # real text layer — nothing to re-read
+            y = 0.0
+            while y < page.rect.height:
+                clip = pymupdf.Rect(0, y, page.rect.width, min(y + band_pt, page.rect.height))
+                strips.append(page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), clip=clip).tobytes("png"))
+                y += band_pt - overlap_pt
+    return strips
+
+
+def _read_strips_once(strips: list[bytes]) -> list[dict]:
+    rows, seen = [], set()
+    for png in strips:
+        out = call_gemini(ZOOM_ROW_PROMPT, pdf_bytes=png, mime_type="image/png", max_output_tokens=2048)
+        for r in (out.get("rows") or []):
+            rid = re.sub(r"[\s\-]", "", s(r.get("id")).upper())
+            seal = re.sub(r"\s", "", s(r.get("seal")))
+            key = seal or rid
+            if rid and key not in seen:  # strips overlap — a row can appear twice
+                seen.add(key)
+                rows.append({"id": rid, "seal": seal, "bags": int(num(r.get("bags"), 0)),
+                             "type": re.sub(r"[\s/]", "", s(r.get("type")).upper()),
+                             "gross_weight_kg": num(r.get("gross_weight_kg"), 0)})
+    return rows
+
+
+_ZOOM_FIELDS = ("id", "seal", "bags", "type", "gross_weight_kg")
+
+
+def _vote_rows(reads: list[list[dict]]) -> tuple[list[dict], list[str]]:
+    """Per-field majority across the reads that agree on the row count. A
+    field with no majority (every read differs) falls back, for the id, to the
+    first value passing the ISO 6346 check digit, and is reported as
+    unverified."""
+    from collections import Counter
+    n = Counter(len(r) for r in reads).most_common(1)[0][0]
+    same = [r for r in reads if len(r) == n]
+    rows, unverified = [], []
+    for i in range(n):
+        row = {}
+        for f in _ZOOM_FIELDS:
+            vals = [r[i][f] for r in same]
+            val, cnt = Counter(vals).most_common(1)[0]
+            if cnt < 2 and len(same) > 1:
+                if f == "id":
+                    val = next((v for v in vals if is_valid_container_id(v)), vals[0])
+                unverified.append(f"{f} of row {i + 1}")
+            row[f] = val
+        rows.append(row)
+    return rows, unverified
+
+
+def read_container_lines_zoomed(pdf_path: str, data: dict) -> list[str]:
+    """PRIMARY read of a scanned MBL's container lines: replaces
+    data["containers"] with rows read from zoomed strips. Read twice and
+    accepted as soon as two consecutive reads are identical and every id
+    passes the ISO 6346 check digit; otherwise up to ZOOM_MAX_READS reads are
+    majority-voted per field. Returns [!] notes only for what could NOT be
+    verified."""
+    first = data.get("containers", [])
+    pages = [p for p in (data.get("container_pages") or []) if isinstance(p, int)]
+    if not pages:
+        import pymupdf
+        with pymupdf.open(pdf_path) as doc:
+            pages = list(range(1, len(doc) + 1))
+    strips = _zoomed_strips(pdf_path, pages)
+    if not strips:
+        return []  # not a scan — the whole-page (text-layer) read stands
+
+    reads = [_read_strips_once(strips), _read_strips_once(strips)]
+    while (reads[-1] != reads[-2] or not all(is_valid_container_id(r["id"]) for r in reads[-1])) \
+            and len(reads) < ZOOM_MAX_READS:
+        reads.append(_read_strips_once(strips))
+    dump_json(pdf_path, "mbl_zoom_reads.json", reads)
+
+    agreed = reads[-1] == reads[-2]
+    rows, unverified = (reads[-1], []) if agreed else _vote_rows(reads)
+    if not rows:
+        return ["[!]  MBL ZOOM READ — no container lines found in the zoomed read; whole-page read kept — "
+                "verify container ids, seals and weights on the MBL"]
+
+    for i, r in enumerate(rows):
+        # "type" cut off / missing in the strip -> fall back to the whole-page read
+        if not re.fullmatch(r"\d{2}[A-Z]{1,2}", r["type"]) and i < len(first):
+            r["type"] = s(first[i].get("type")).strip()
+
+    notes = []
+    if unverified:
+        notes.append(f"[!]  MBL ZOOM READ — {len(reads)} reads disagreed on: {', '.join(unverified)} — "
+                     f"majority value used, verify against the MBL")
+    bad = [r["id"] for r in rows if not is_valid_container_id(r["id"])]
+    if bad:
+        notes.append(f"[!]  MBL ZOOM READ — container id(s) {', '.join(bad)} fail the ISO 6346 check digit "
+                     f"in every read — verify against the MBL")
+    if first and len(rows) != len(first):
+        notes.append(f"[!]  MBL ZOOM READ — {len(rows)} container line(s) read vs {len(first)} in the "
+                     f"whole-page read — verify the container count on the MBL")
+    data["containers"] = rows
+    return notes
+
+
 def extract_mbl(pdf_path: str) -> dict:
     carrier = identify_carrier(pdf_path)
     prompt = CARRIER_MBL_PROMPTS.get(carrier, GENERIC_MBL_PROMPT)
 
     data = call_gemini(prompt, pdf_path=pdf_path, max_output_tokens=16384)
     dump_json(pdf_path, "mbl_raw.json", data)
+
+    data["_refine_notes"] = []
+    if carrier in ZOOM_READ_CARRIERS:
+        try:
+            data["_refine_notes"] = read_container_lines_zoomed(pdf_path, data)
+        except Exception as e:  # keep the whole-page read rather than fail the job
+            data["_refine_notes"] = [f"[!]  MBL ZOOM READ — failed ({e}); whole-page read used — verify "
+                                      f"container ids, seals and weights on the MBL"]
 
     for c in data.get("containers", []):
         cid, seal = fix_container_id(c.get("id", ""), c.get("seal", ""))
@@ -1106,6 +1286,98 @@ is clearly different from ALL reference IDs (4+ characters different)."""
 # CROSS-DOCUMENT VALIDATION
 # ═══════════════════════════════════════════════════════════════════════════
 
+def merge_packing_lists(pkls: list[dict]) -> dict:
+    """Combine 1-3 separately uploaded Packing Lists (one per PO/reference of
+    the same shipment) into the single dict validate()/build_rows() expect.
+    Rows are concatenated in upload order; document totals are summed. Each
+    row of a COA-layout file is tagged `coa` so MBL bags/gross allocation
+    only touches those rows when layouts are mixed."""
+    containers = []
+    for p in pkls:
+        is_coa = p.get("packing_list_layout") == "COA"
+        for c in p.get("containers", []):
+            containers.append({**c, "coa": is_coa})
+
+    sources = {p.get("packing_list_source", "") for p in pkls} - {""}
+    merged = {
+        "containers": containers,
+        "packing_list_source": sources.pop() if len(sources) == 1 else "mixed",
+        "total_bags": sum(num(p.get("total_bags"), 0) for p in pkls),
+        "total_pallets": sum(num(p.get("total_pallets"), 0) for p in pkls),
+        "total_net_weight_mt": round(sum(num(p.get("total_net_weight_mt"), 0) for p in pkls), 3),
+        "total_gross_weight_mt": round(sum(num(p.get("total_gross_weight_mt"), 0) for p in pkls), 3),
+        "_split_fix_warnings": [w for p in pkls for w in p.get("_split_fix_warnings", [])],
+        "_file_count": len(pkls),
+    }
+    if any(c["coa"] for c in containers):
+        merged["packing_list_layout"] = "COA"
+
+    # The same container + lot in two files is a duplicate upload, not a split.
+    seen, dupes = set(), set()
+    for c in containers:
+        key = (c.get("container_id"), c.get("lot_no"), c.get("net_weight_kg"))
+        if key in seen:
+            dupes.add(c.get("container_id"))
+        seen.add(key)
+    if dupes:
+        merged["_split_fix_warnings"].append(
+            f"[!]  PACKING LISTS — container(s) {', '.join(sorted(dupes))} appear with identical lot/weight "
+            f"in more than one uploaded Packing List — check for a duplicate file")
+    return merged
+
+
+_ISO6346_VALUES = {}
+_n = 10
+for _ch in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+    if _n % 11 == 0:
+        _n += 1
+    _ISO6346_VALUES[_ch] = _n
+    _n += 1
+
+
+def is_valid_container_id(cid: str) -> bool:
+    """ISO 6346: 4 letters + 6 digits + a check digit computed from them. A
+    misread digit on a scanned MBL almost always breaks it, so it tells a
+    real id from a misread one."""
+    if not re.fullmatch(r"[A-Z]{4}\d{7}", cid or ""):
+        return False
+    total = sum((_ISO6346_VALUES[ch] if i < 4 else int(ch)) * 2 ** i for i, ch in enumerate(cid[:10]))
+    return total % 11 % 10 == int(cid[10])
+
+
+def reconcile_misread_mbl_ids(mbl: dict, pkl: dict) -> list[str]:
+    """An MBL id that is in neither document-matched set AND fails the ISO 6346
+    check digit is a scan misread (e.g. CSNU7325939 read as CSNU0732539). It
+    is replaced by the closest unmatched Packing List id that has a VALID
+    check digit and the same owner prefix — one-to-one, best match first —
+    and always reported so it can be eyeballed."""
+    from difflib import SequenceMatcher
+
+    pkl_ids = {c.get("container_id") for c in pkl.get("containers", []) if c.get("container_id")}
+    mbl_ids = {c.get("id") for c in mbl.get("containers", []) if c.get("id")}
+    bad = [i for i in mbl_ids - pkl_ids if not is_valid_container_id(i)]
+    free = [i for i in pkl_ids - mbl_ids if is_valid_container_id(i)]
+
+    pairs = sorted(((SequenceMatcher(None, b, p).ratio(), b, p)
+                    for b in bad for p in free if b[:4] == p[:4]), reverse=True)
+    notes, used_b, used_p = [], set(), set()
+    for ratio, b, p in pairs:
+        if ratio < 0.55 or b in used_b or p in used_p:
+            continue
+        used_b.add(b)
+        used_p.add(p)
+        for c in mbl["containers"]:
+            if c.get("id") == b:
+                c["id"] = p
+        notes.append(f"[!]  CONTAINER — MBL id {b} fails the ISO 6346 check digit (scan misread); "
+                     f"replaced by Packing List id {p} — verify against the MBL")
+    for b in bad:
+        if b not in used_b:
+            notes.append(f"[!]  CONTAINER — MBL id {b} fails the ISO 6346 check digit and has no close "
+                         f"Packing List match — likely misread, verify against the MBL")
+    return notes
+
+
 def repair_mbl_container_prefixes(mbl: dict, pkl: dict) -> list[str]:
     """Restore the 4-letter owner prefix on MBL container IDs the model
     returned as bare 7 digits (e.g. Hapag-Lloyd's "HAMU 4353443" read as
@@ -1133,7 +1405,7 @@ def repair_mbl_container_prefixes(mbl: dict, pkl: dict) -> list[str]:
         else:
             notes.append(f"[!]  CONTAINER — MBL id {raw} has no owner prefix and could not be "
                          f"matched to a unique Packing List container")
-    return notes
+    return notes + reconcile_misread_mbl_ids(mbl, pkl)
 
 
 def validate(mbl: dict, pkl: dict) -> list[str]:
@@ -1485,6 +1757,7 @@ def build_rows(mbl: dict, pkl: dict, reference: str = "", eta_date: str = "",
         }
     mbl_cids = set(mbl_map.keys())
 
+    coa_flags = []
     for row in pkl.get("containers", []):
         cid = row.get("container_id", "")
 
@@ -1535,9 +1808,18 @@ def build_rows(mbl: dict, pkl: dict, reference: str = "", eta_date: str = "",
             "ship_name":      ship_name,
             "eta_date":       eta_date,
         })
+        # A single-file pkl (no merge) has no per-row flag: fall back to the
+        # document-level layout.
+        coa_flags.append(bool(row.get("coa", pkl.get("packing_list_layout") == "COA")))
 
-    if pkl.get("packing_list_layout") == "COA":
-        rows = _apply_coa_allocation(rows, mbl_map)
+    if any(coa_flags):
+        coa_rows = _apply_coa_allocation([r for r, f in zip(rows, coa_flags) if f], mbl_map)
+        rows = [r for r, f in zip(rows, coa_flags) if not f] + coa_rows
+
+    # Final order follows the MBL's container list (a container's lots stay
+    # adjacent, in their original order — sort is stable).
+    mbl_order = {c["id"]: i for i, c in enumerate(mbl.get("containers", []))}
+    rows.sort(key=lambda r: mbl_order.get(r["container_no"], len(mbl_order)))
 
     if skipped_no_mbl_match:
         print(f"  [ROWS] Excluded {len(skipped_no_mbl_match)} Packing List row(s) with no matching MBL "

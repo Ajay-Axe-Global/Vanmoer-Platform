@@ -417,9 +417,9 @@
 
                 <div class="upload-card" onclick="this.querySelector('input').click()">
                     <span class="icon">📦</span>
-                    <div class="label">Packing List</div>
-                    <div class="filename" id="pklName">Click to upload PDF or Excel</div>
-                    <input type="file" id="pklFile" accept=".pdf,.xlsx,.xls" onchange="onFileSelect(this, 'pklName')">
+                    <div class="label">Packing List(s) (up to 3)</div>
+                    <div class="filename" id="pklName">Click to upload PDF or Excel — select several if the order has more than one</div>
+                    <input type="file" id="pklFile" accept=".pdf,.xlsx,.xls" multiple onchange="onFileSelect(this, 'pklName')">
                     <button class="remove-btn"
                         onclick="event.stopPropagation(); clearFile('pklFile', 'pklName')">&times;</button>
                 </div>
@@ -525,12 +525,18 @@
         function onFileSelect(input, nameId) {
             const nameEl = document.getElementById(nameId);
             const card = input.closest('.upload-card');
+            if (input.id === 'pklFile' && input.files.length > 3) {
+                alert('Maximum 3 Packing Lists allowed.');
+                input.value = '';
+                onFileSelect(input, nameId);
+                return;
+            }
             if (input.files.length) {
-                nameEl.textContent = input.files[0].name;
+                nameEl.textContent = Array.from(input.files).map(f => f.name).join(', ');
                 nameEl.classList.add('active');
                 card.classList.add('has-file');
             } else {
-                nameEl.textContent = nameId === 'pklName' ? 'Click to upload PDF or Excel' : 'Click to upload PDF';
+                nameEl.textContent = nameId === 'pklName' ? 'Click to upload PDF or Excel — select several if the order has more than one' : 'Click to upload PDF';
                 nameEl.classList.remove('active');
                 card.classList.remove('has-file');
             }
@@ -584,7 +590,9 @@
         async function generate() {
             const fd = new FormData();
             fd.append('mbl', document.getElementById('mblFile').files[0]);
-            fd.append('packing_list', document.getElementById('pklFile').files[0]);
+            for (const f of document.getElementById('pklFile').files) {
+                fd.append('packing_list', f);
+            }
             fd.append('reference', document.getElementById('referenceInput').value.trim());
             fd.append('ship_name', document.getElementById('shipNameInput').value.trim());
             for (const f of document.getElementById('inboundFiles').files) {
@@ -644,7 +652,7 @@
                 { value: (s.total_bags || 0).toLocaleString(), label: 'Total Bags' },
                 { value: (s.total_pallets || 0).toLocaleString(), label: 'Total Pallets' },
                 { value: (s.total_net_weight || 0) + ' KG', label: 'Net Weight' },
-                { value: s.packing_list_source === 'excel' ? 'Excel' : 'PDF', label: 'Pkg List Source' },
+                { value: {excel: 'Excel', pdf: 'PDF', mixed: 'PDF + Excel'}[s.packing_list_source] || 'PDF', label: 'Pkg List Source' },
                 { value: s.inbound_files_count || 0, label: 'Inbound Files' },
             ];
             chips.forEach(c => {

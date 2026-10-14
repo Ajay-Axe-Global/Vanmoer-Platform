@@ -114,7 +114,9 @@ def identify_carrier(pdf_path: str) -> str:
 # ═══════════════════════════════════════════════════════════════════════════
 OCR_DISAMBIGUATION_RULE = """
 ⚠️ CHARACTER DISAMBIGUATION — a container ID is ALWAYS exactly 4 LETTERS
-followed by 7 DIGITS: a character you're unsure is "O" (letter) or "0"
+followed by 7 DIGITS — NEVER drop the 4-letter owner prefix, even when it is
+separated from the digits by a space or sits in its own column ("HAMU
+4353443" -> "HAMU4353443"). A character you're unsure is "O" (letter) or "0"
 (digit) is the LETTER "O" if it falls in the first 4 characters, and the
 DIGIT "0" if it falls in the remaining 7 — never the other way round.
 Seal numbers and lot/batch numbers have no fixed letter/digit pattern to
@@ -464,6 +466,9 @@ page:
   Example: "TLLU 5957162 40'HC SLAC*:880 BAG 22587.000 KGS" then "SEAL:
   UL-1141204" -> id "TLLU5957162", type "40'HC", seal "UL-1141204", bags 880,
   gross_weight_kg 22587.
+⚠️ ALWAYS include the 4-LETTER owner prefix (HAMU, HLBU, DRYU, UETU, GCXU,
+TGSU, ...) — it is printed right before the 7 digits, so "HAMU 4353443" ->
+"HAMU4353443", NEVER the bare "4353443". Every id is 4 letters + 7 digits.
 Here "SLAC*" is a stowage marker, not part of the seal or type. The B/L-No.
 is the value next to "B/L-No.:" (e.g. "HLCUBSC2609APEX0").
 
@@ -1101,6 +1106,36 @@ is clearly different from ALL reference IDs (4+ characters different)."""
 # CROSS-DOCUMENT VALIDATION
 # ═══════════════════════════════════════════════════════════════════════════
 
+def repair_mbl_container_prefixes(mbl: dict, pkl: dict) -> list[str]:
+    """Restore the 4-letter owner prefix on MBL container IDs the model
+    returned as bare 7 digits (e.g. Hapag-Lloyd's "HAMU 4353443" read as
+    "4353443"). fix_container_id() also turns a '0' in the first 4 chars into
+    'O' (so "2590528" became "259O528"), hence the O->0 undo here. The prefix
+    is recovered from the Packing List container with the same 7 digits —
+    only when that match is unique."""
+    pkl_by_digits: dict[str, set[str]] = {}
+    for c in pkl.get("containers", []):
+        cid = c.get("container_id") or ""
+        if re.fullmatch(r"[A-Z]{4}\d{7}", cid):
+            pkl_by_digits.setdefault(cid[4:], set()).add(cid)
+
+    notes = []
+    for c in mbl.get("containers", []):
+        raw = c.get("id") or ""
+        digits = raw.replace("O", "0")
+        if not re.fullmatch(r"\d{7}", digits):
+            continue
+        candidates = pkl_by_digits.get(digits, set())
+        if len(candidates) == 1:
+            fixed = next(iter(candidates))
+            notes.append(f"[OK] CONTAINER — MBL id {raw} had no owner prefix, restored as {fixed}")
+            c["id"] = fixed
+        else:
+            notes.append(f"[!]  CONTAINER — MBL id {raw} has no owner prefix and could not be "
+                         f"matched to a unique Packing List container")
+    return notes
+
+
 def validate(mbl: dict, pkl: dict) -> list[str]:
     results = []
 
@@ -1119,6 +1154,9 @@ def validate(mbl: dict, pkl: dict) -> list[str]:
 
     mbl_cids = {c["id"] for c in mbl.get("containers", []) if c.get("id")}
     pkl_cids = {c["container_id"] for c in pkl.get("containers", []) if c.get("container_id")}
+    for bad in sorted(i for i in mbl_cids | pkl_cids if not re.fullmatch(r"[A-Z]{4}\d{7}", i)):
+        results.append(f"[X]  CONTAINER — '{bad}' is not a valid ID (4 letters + 7 digits) — "
+                       f"owner prefix missing or misread, check the source document")
     common = mbl_cids & pkl_cids
     only_mbl = mbl_cids - pkl_cids
     only_pkl = pkl_cids - mbl_cids

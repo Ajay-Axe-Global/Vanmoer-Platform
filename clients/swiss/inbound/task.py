@@ -61,6 +61,8 @@ from .extractor import (
     extract_inbound_advice,
     extract_mbl,
     extract_packing_list_pdf,
+    is_valid_container_id,
+    merge_packing_lists,
     repair_mbl_container_prefixes,
     validate,
     validate_product_references,
@@ -72,6 +74,7 @@ CLIENT_SLUG = "swiss"
 TASK_SLUG = "inbound"
 
 MAX_INBOUND_FILES = 15
+MAX_PACKING_LISTS = 3
 
 # ═══════════════════════════════════════════════════════════════════════════
 # COLUMN CONFIG
@@ -122,7 +125,7 @@ class SwissInboundTask(BaseTask):
 
     required_documents = [
         {"key": "mbl",          "label": "MBL (Bill of Lading)", "accept": ".pdf", "multiple": False},
-        {"key": "packing_list", "label": "Packing List",         "accept": ".pdf,.xlsx,.xls", "multiple": False},
+        {"key": "packing_list", "label": "Packing List(s)",      "accept": ".pdf,.xlsx,.xls", "multiple": True},
     ]
 
     column_config = COLUMN_CONFIG
@@ -136,12 +139,22 @@ class SwissInboundTask(BaseTask):
         # extractor.extract_mbl().
         mbl_data = extract_mbl(files["mbl"])
 
-        pkl_path = files["packing_list"]
-        if Path(pkl_path).suffix.lower() in EXCEL_EXTENSIONS:
-            pkl_data = extract_packing_list_excel(pkl_path)
-        else:
-            mbl_container_ids = [c["id"] for c in mbl_data.get("containers", []) if c.get("id")]
-            pkl_data = extract_packing_list_pdf(pkl_path, mbl_container_ids=mbl_container_ids)
+        # 1-3 Packing Lists (an order can ship against several POs, each with
+        # its own list) — each extracted on its own, then merged into one.
+        pkl_paths = files["packing_list"]
+        if isinstance(pkl_paths, str):
+            pkl_paths = [pkl_paths]
+        # Only check-digit-valid MBL ids serve as the Packing List's "correct"
+        # reference — a misread MBL id must never pull a good PL id toward it.
+        mbl_container_ids = [c["id"] for c in mbl_data.get("containers", [])
+                             if c.get("id") and is_valid_container_id(c["id"])]
+        pkl_parts = []
+        for pkl_path in pkl_paths:
+            if Path(pkl_path).suffix.lower() in EXCEL_EXTENSIONS:
+                pkl_parts.append(extract_packing_list_excel(pkl_path))
+            else:
+                pkl_parts.append(extract_packing_list_pdf(pkl_path, mbl_container_ids=mbl_container_ids))
+        pkl_data = merge_packing_lists(pkl_parts)
 
         # Optional per-product Inbound advice PDFs — one Gemini call each,
         # {reference, material} extracted independently, then collapsed
@@ -158,7 +171,7 @@ class SwissInboundTask(BaseTask):
         # (per row) comes from product_reference_map, built above.
 
         prefix_notes = repair_mbl_container_prefixes(mbl_data, pkl_data)
-        validation = prefix_notes + validate(mbl_data, pkl_data)
+        validation = mbl_data.get("_refine_notes", []) + prefix_notes + validate(mbl_data, pkl_data)
         rows = build_rows(mbl_data, pkl_data, reference, eta_date, ship_name, product_reference_map)
         validation += validate_product_references(rows, len(inbound_advices))
 
@@ -211,9 +224,12 @@ def index():
 @task_access_required(CLIENT_SLUG, TASK_SLUG)
 def process():
     for doc in _task.required_documents:
-        f = request.files.get(doc["key"])
-        if not f or not f.filename:
+        uploads = [f for f in request.files.getlist(doc["key"]) if f and f.filename]
+        if not uploads:
             return jsonify({"error": f"Missing document: {doc['label']}"}), 400
+        if doc["multiple"] and len(uploads) > MAX_PACKING_LISTS:
+            return jsonify({"error": f"Maximum {MAX_PACKING_LISTS} Packing Lists allowed "
+                                      f"({len(uploads)} uploaded)."}), 400
 
     reference = (request.form.get("reference") or "").strip()
     if not reference:
@@ -244,10 +260,13 @@ def process():
         # ── Save uploaded files ─────────────────────────────────────
         saved = {}
         for doc in _task.required_documents:
-            f = request.files[doc["key"]]
-            path = str(job_dir / secure_filename(f.filename))
-            f.save(path)
-            saved[doc["key"]] = path
+            paths = []
+            for i, f in enumerate(f for f in request.files.getlist(doc["key"]) if f and f.filename):
+                # index prefix: two uploads can share a filename
+                path = str(job_dir / f"{doc['key']}_{i}_{secure_filename(f.filename)}")
+                f.save(path)
+                paths.append(path)
+            saved[doc["key"]] = paths if doc["multiple"] else paths[0]
 
         inbound_paths = []
         for i, f in enumerate(inbound_uploads):
@@ -273,7 +292,7 @@ def process():
         # ── Log the job ─────────────────────────────────────────────
         reference_val, reference_count = build_reference([summary.get("reference") or ""])
         source_filename = ", ".join(
-            request.files[doc["key"]].filename for doc in _task.required_documents
+            f.filename for doc in _task.required_documents for f in request.files.getlist(doc["key"])
         )
         log_job(session, g.user["user_id"], CLIENT_SLUG, TASK_SLUG, f"{job_id}/output.xlsx", "success",
                 reference=reference_val, source_filename=source_filename,

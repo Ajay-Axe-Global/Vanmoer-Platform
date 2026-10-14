@@ -78,6 +78,12 @@ def _fix_ocr_digit_letter_confusion(cleaned: str) -> str:
     7, so this is always safe to apply, never just a guess."""
     if len(cleaned) < 4:
         return cleaned
+    # A bare serial with no owner prefix (7 digits, or digits with a
+    # misread 'O') must not be "fixed" — the prefix swap below would turn a
+    # real '0' into 'O' (2590528 -> 259O528). Normalize O->0 and leave it for
+    # the caller to restore the prefix.
+    if len(cleaned) == 7 and re.fullmatch(r'[0-9O]{7}', cleaned):
+        return cleaned.replace('O', '0')
     prefix = cleaned[:4].replace('0', 'O')
     rest = cleaned[4:]
     digits_part, tail = rest[:7], rest[7:]

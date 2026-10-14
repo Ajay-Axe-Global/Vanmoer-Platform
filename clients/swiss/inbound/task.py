@@ -61,6 +61,7 @@ from .extractor import (
     extract_inbound_advice,
     extract_mbl,
     extract_packing_list_pdf,
+    repair_mbl_container_prefixes,
     validate,
     validate_product_references,
 )
@@ -156,7 +157,8 @@ class SwissInboundTask(BaseTask):
         # already-identified carrier — not a UI input. Product Reference
         # (per row) comes from product_reference_map, built above.
 
-        validation = validate(mbl_data, pkl_data)
+        prefix_notes = repair_mbl_container_prefixes(mbl_data, pkl_data)
+        validation = prefix_notes + validate(mbl_data, pkl_data)
         rows = build_rows(mbl_data, pkl_data, reference, eta_date, ship_name, product_reference_map)
         validation += validate_product_references(rows, len(inbound_advices))
 

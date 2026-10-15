@@ -63,7 +63,8 @@ _CONTAINER_RE = re.compile(r'^([A-Z]{4})(\d{7})')
 
 
 def _fix_container_id(raw: str, existing_seal: str = "") -> tuple[str, str]:
-    cleaned = raw.replace(" ", "").strip().upper()
+    existing_seal = "" if existing_seal is None else str(existing_seal)
+    cleaned = ("" if raw is None else str(raw)).replace(" ", "").strip().upper()
     m = _CONTAINER_RE.match(cleaned)
     if not m:
         return cleaned, existing_seal
@@ -225,6 +226,16 @@ RULES:
   - "id": Container number — exactly 4 letters + 7 digits = 11 characters. Remove spaces. NEVER include seal.
   - "type": Container type (e.g. "40' HIGH CUBE")
   - "seal": Seal number (separate field)
+  ⚠️ PAGE-SPLIT / HAPAG LAYOUT: on Hapag-Lloyd waybills the container list often
+  starts at the BOTTOM of the main page (e.g. "HAMU 3989298 40'HC SLAC*:990 BAGS")
+  and CONTINUES on the rider page ("Page 3 / 3"), where a "SEAL: xxxxxxx" line
+  comes BEFORE the next container line. A seal line always belongs to the
+  container printed on the line ABOVE it — which may be the last container of
+  the previous page. So the rider's first "SEAL: 1090918" is the seal of the
+  container at the bottom of the main page, NOT of the first container listed
+  on the rider. The container number may contain a space ("HAMU 3989298") —
+  remove it. Do NOT skip the container at the bottom of the main page, and
+  never return a container with a null "id".
   - "bags": Number of bags from the description (e.g. from "1020 BAG(S) LLDPE 318BJ 149" extract 1020)
   - "net_weight_mt": Net weight in MT from description (e.g. from "NET WEIGHT:25.500 MT" extract 25.5)
 
@@ -886,11 +897,30 @@ def _determine_pkg_type(net_weight_kg, bags):
 
 def extract_mbl(pdf_path: str) -> dict:
     data = call_gemini(MBL_PROMPT, pdf_path=pdf_path, max_output_tokens=16384)
+    if isinstance(data, list):
+        data = next((d for d in data if isinstance(d, dict)), None)
+    if not isinstance(data, dict):
+        raise RuntimeError("MBL extraction returned no usable data — check the MBL PDF is readable.")
     _dump_json(pdf_path, "mbl_raw.json", data)
-    for c in data.get("containers", []):
-        cid, seal = _fix_container_id(c.get("id", ""), c.get("seal", ""))
+
+    containers = []
+    for c in data.get("containers") or []:
+        if not isinstance(c, dict):
+            continue
+        cid, seal = _fix_container_id(c.get("id"), c.get("seal"))
+        if not cid:
+            # Gemini couldn't read this container's number (null id) — it can't
+            # be matched to anything downstream, so skip it rather than crash.
+            print(f"  [MBL WARNING] Container with no id skipped: {c}")
+            continue
         c["id"] = cid
         c["seal"] = seal
+        containers.append(c)
+    data["containers"] = containers
+    for key in ("ref_nos",):
+        data[key] = data.get(key) or []
+    for key in ("port_of_loading", "port_of_discharge", "delivery_no", "mbl_no", "vessel"):
+        data[key] = _s(data.get(key))
     _dump_json(pdf_path, "mbl.json", data)
     return data
 
@@ -1045,7 +1075,9 @@ def extract_packing_list(pdf_path: str, mbl: dict = None) -> dict:
         suffix = "" if attempt == 0 else f"_retry{attempt}"
         _dump_json(pdf_path, f"pkg_list_raw{suffix}.json", data)
  
-        rows = data.get("rows", [])
+        if isinstance(data, list):
+            data = next((d for d in data if isinstance(d, dict)), {})
+        rows = [r for r in (data.get("rows") or []) if isinstance(r, dict)]
         row_bag_sum = sum(_num(r.get("bags"), 0) for r in rows)
         doc_total_bags = _num(data.get("total_bags"), 0)
         # row_bag_sum == 0 means the layout has no per-row bags column at all
@@ -1071,7 +1103,9 @@ def extract_packing_list(pdf_path: str, mbl: dict = None) -> dict:
     data = best_data
     _dump_json(pdf_path, "pkg_list_raw.json", data)
  
-    data["rows"] = _repair_split_container_ids(data.get("rows", []))
+    data["rows"] = _repair_split_container_ids(
+        [r for r in (data.get("rows") or []) if isinstance(r, dict)]
+    )
     _dump_json(pdf_path, "pkg_list_repaired.json", data)
  
     flat_lines = []

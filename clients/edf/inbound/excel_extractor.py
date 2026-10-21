@@ -54,6 +54,10 @@ HEADER_ALIASES: dict[str, list[str]] = {
     "lot":            ["lot nr 2", "lot no 2", "lot number 2", "lot 2"],
     "quantity_mt":    ["quantity mt per fcl", "quantity mt", "quantity"],
     "bag_size":       ["sugar product 25kg 50 kg bb", "sugar product"],
+    # Optional OP columns — never required; the UI supplies a fallback.
+    "purchase_contract": ["purchase contract"],
+    "origin":         ["origin"],
+    "supplier":       ["supplier"],
 }
 
 # Product is taken from "Article number" first; the "Product" column is only
@@ -62,6 +66,17 @@ HEADER_ALIASES: dict[str, list[str]] = {
 REQUIRED_FIELDS = ("bl_no", "container", "container_type", "bags", "lot")
 
 HEADER_SCAN_ROWS = 40
+
+
+# Two sheet layouts:
+#   "old" — single sheet "Blad1", header ~row 14, lots as "lot - N bags" text,
+#           B/L / Origin / Supplier / Purchase contract on every row.
+#   "new" — sheet "Input_Data" (header row 1; B/L only on the first row; "Lot
+#           Nr. 2" is just a lot number, real bags per lot come from the lot
+#           image) + sheet "Notice of Arrival" holding Origin / Supplier.
+NEW_DATA_SHEET = "Input_Data"
+NEW_NOTICE_SHEET = "Notice of Arrival"
+SHIPMENT_FIELDS = ("bl_no", "product", "purchase_contract", "origin", "supplier")
 
 
 def _find_header_row(raw: pd.DataFrame) -> tuple[int, dict[str, int]]:
@@ -147,22 +162,69 @@ def _bag_size_kg(raw) -> float:
     return float(m.group(1)) if m else 0
 
 
+def _shipment_values(raw: pd.DataFrame) -> dict[str, str]:
+    """First non-blank value under each SHIPMENT_FIELDS header of a
+    single-shipment sheet (used for the new format's "Notice of Arrival")."""
+    for i in range(min(HEADER_SCAN_ROWS, len(raw))):
+        match: dict[str, int] = {}
+        for pos, cell in enumerate(raw.iloc[i].tolist()):
+            norm = _normalize_header(cell)
+            for field in SHIPMENT_FIELDS:
+                if field not in match and norm in HEADER_ALIASES[field]:
+                    match[field] = pos
+        if match:
+            out = {}
+            for field, pos in match.items():
+                for j in range(i + 1, len(raw)):
+                    val = s(raw.iloc[j, pos]).strip()
+                    if val:
+                        out[field] = val
+                        break
+            return out
+    return {}
+
+
+def extract_embedded_image(path: str, out_path: str) -> bool:
+    """Saves the first image embedded in the workbook (the new format ships its
+    lot table pasted into the sheet) to out_path. False if there is none."""
+    import openpyxl
+    try:
+        wb = openpyxl.load_workbook(path)
+    except Exception:
+        return False
+    for ws in wb.worksheets:
+        for img in getattr(ws, "_images", []):
+            with open(out_path, "wb") as f:
+                f.write(img._data())
+            return True
+    return False
+
+
 def extract_packing_list_excel(path: str) -> dict:
-    """Returns {"containers": [one entry per sheet row], "warnings": [...]}.
-    Each container entry: bl_no, container_id, container_type, product,
-    bags (total), lots [(lot, bags), ...], quantity_mt, bag_size_kg."""
-    raw = pd.read_excel(path, header=None, dtype=str)
+    """Returns {"format": "old"|"new", "containers": [one entry per sheet row],
+    "warnings": [...]}. Each container entry: bl_no, container_id,
+    container_type, product, purchase_contract, origin, supplier, bags (total),
+    lots [(lot, bags), ...], quantity_mt, bag_size_kg."""
+    book = pd.ExcelFile(path)
+    fmt = "new" if NEW_DATA_SHEET in book.sheet_names else "old"
+    raw = pd.read_excel(book, sheet_name=NEW_DATA_SHEET if fmt == "new" else 0, header=None, dtype=str)
     raw = raw.where(raw.notna(), "")
     header_idx, cols = _find_header_row(raw)
 
+    shipment: dict[str, str] = {}
+    if fmt == "new" and NEW_NOTICE_SHEET in book.sheet_names:
+        notice = pd.read_excel(book, sheet_name=NEW_NOTICE_SHEET, header=None, dtype=str)
+        shipment = _shipment_values(notice.where(notice.notna(), ""))
+
     def cell(row, field):
         pos = cols.get(field)
-        return row.iloc[pos] if pos is not None else ""
+        return s(row.iloc[pos]).strip() if pos is not None else ""
 
     containers, warnings = [], []
+    last_bl = last_type = ""
     for i in range(header_idx + 1, len(raw)):
         row = raw.iloc[i]
-        container_raw = s(cell(row, "container")).strip()
+        container_raw = cell(row, "container")
         if not container_raw:
             continue  # blank / spacer / footer row
 
@@ -172,17 +234,28 @@ def extract_packing_list_excel(path: str) -> dict:
         if lot_warning:
             warnings.append(f"[!]  LOT — {cid}: {lot_warning}")
 
+        # New format prints the B/L on the first row only -> carry it down.
+        last_bl = cell(row, "bl_no") or last_bl
+        # Same for CNT type in the new format (printed on the first row only).
+        row_type = cell(row, "container_type")
+        if fmt == "new":
+            row_type = row_type or last_type
+            last_type = row_type
+
         containers.append({
-            "bl_no":          s(cell(row, "bl_no")).strip(),
+            "bl_no":          last_bl or shipment.get("bl_no", ""),
             "container_id":   cid,
-            "container_type": s(cell(row, "container_type")).strip(),
+            "container_type": row_type,
             # Article number is the primary value; Product column only when
             # there is no Article number column (or this row's cell is blank).
-            "product":        s(cell(row, "article")).strip() or s(cell(row, "product")).strip(),
+            "product":        cell(row, "article") or cell(row, "product") or shipment.get("product", ""),
+            "purchase_contract": cell(row, "purchase_contract") or shipment.get("purchase_contract", ""),
+            "origin":         cell(row, "origin") or shipment.get("origin", ""),
+            "supplier":       cell(row, "supplier") or shipment.get("supplier", ""),
             "bags":           total_bags,
             "lots":           lots,
             "quantity_mt":    _parse_number(cell(row, "quantity_mt")),
             "bag_size_kg":    _bag_size_kg(cell(row, "bag_size")),
         })
 
-    return {"containers": containers, "warnings": warnings}
+    return {"format": fmt, "containers": containers, "warnings": warnings}

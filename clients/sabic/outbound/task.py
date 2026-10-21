@@ -52,6 +52,16 @@ BIGBAG_PRODUCTS = {s.upper() for s in {
     "COHERE 8600X",
 }}
 
+# SILO orders for these products are powder: their own operation type, EU vs
+# non-EU (export) decided the same way as every other operation type. Matched
+# on the description with the trailing 3-digit suffix stripped (the material
+# numbers 22000312 / 22000310 / 22000340 are not part of the match).
+POWDER_PRODUCTS = {s.upper() for s in {
+    "LLDPE MG500026",
+    "LLDPE MG200024",
+    "LLDPE RG50035",
+}}
+
 IO_MAP = {
     ("loading bulk/vrac from bigbag", "PO compound P1600A 00900"): "MET DE HAND LADEN",
     ("loading bulk/vrac from bigbag", "PP Compound G3135X 10000"): "MET DE HAND LADEN",
@@ -276,6 +286,9 @@ class SabicOutboundTask(BaseTask):
             return "Loading into truck" if is_eu else "Loading Truck export"
 
         key = self._norm_product(self._strip_suffix(product_desc)).upper()
+        if key in POWDER_PRODUCTS:
+            return "Loading Bulk/Vrac from Bag – powder" if is_eu else "Loading Bulk/Vrac from Bag Export – powder"
+
         is_bb = key in BIGBAG_PRODUCTS
         if is_bb:
             base = "Loading Bulk/Vrac from Bigbag"

@@ -400,7 +400,7 @@
     <div class="container">
         <div class="page-header">
             <h1>EDF Inbound</h1>
-            <p>Upload Packing List (Excel) + Arrival Notice (PDF, for Seal No) → Generate Outcome Excel</p>
+            <p>Upload Packing List (Excel, old or new format) + Lot Table Image (new format) + Arrival Notice (PDF, for Seal No) → Generate Outcome Excel</p>
         </div>
 
         <!-- Upload Section -->
@@ -413,6 +413,14 @@
                     <input type="file" id="pklFile" accept=".xlsx,.xls" onchange="onFileSelect(this, 'pklName')">
                     <button class="remove-btn"
                         onclick="event.stopPropagation(); clearFile('pklFile', 'pklName')">&times;</button>
+                </div>
+                <div class="upload-card" onclick="this.querySelector('input').click()">
+                    <span class="icon">🖼️</span>
+                    <div class="label">Lot Table Image <span style="color:#64748b;font-weight:400">— new format</span></div>
+                    <div class="filename" id="imgName" data-empty="Click to upload image (lot / container / bags)">Click to upload image (lot / container / bags)</div>
+                    <input type="file" id="imgFile" accept=".png,.jpg,.jpeg,.webp" onchange="onFileSelect(this, 'imgName')">
+                    <button class="remove-btn"
+                        onclick="event.stopPropagation(); clearFile('imgFile', 'imgName')">&times;</button>
                 </div>
                 <div class="upload-card" onclick="this.querySelector('input').click()">
                     <span class="icon">🚢</span>
@@ -450,6 +458,26 @@
             <div class="field-group">
                 <label for="etaDate">ETA Date <span class="required">*</span></label>
                 <input type="date" id="etaDate" required onchange="checkReady()">
+            </div>
+
+            <div class="field-group">
+                <label for="blInput">Bill of Lading <span style="color:#64748b;font-weight:400">— optional</span></label>
+                <input type="text" id="blInput" placeholder="Only used if the Excel has no B/L">
+            </div>
+
+            <div class="field-group">
+                <label for="originInput">Origin <span style="color:#64748b;font-weight:400">— optional</span></label>
+                <input type="text" id="originInput" placeholder="Only used if the Excel has no Origin">
+            </div>
+
+            <div class="field-group">
+                <label for="supplierInput">Formal processor <span style="color:#64748b;font-weight:400">— optional</span></label>
+                <input type="text" id="supplierInput" placeholder="Only used if the Excel has no Supplier">
+            </div>
+
+            <div class="field-group">
+                <label for="purchaseContractInput">Purchase Contract <span style="color:#64748b;font-weight:400">— optional</span></label>
+                <input type="text" id="purchaseContractInput" placeholder="Only used if the Excel has no Purchase contract">
             </div>
 
             <button class="generate-btn" id="generateBtn" disabled onclick="generate()">
@@ -555,6 +583,12 @@
             fd.append('packing_list', document.getElementById('pklFile').files[0]);
             const anFile = document.getElementById('anFile').files[0];
             if (anFile) fd.append('arrival_notice', anFile);
+            const imgFile = document.getElementById('imgFile').files[0];
+            if (imgFile) fd.append('lot_image', imgFile);
+            fd.append('bl_no', document.getElementById('blInput').value.trim());
+            fd.append('origin', document.getElementById('originInput').value.trim());
+            fd.append('supplier', document.getElementById('supplierInput').value.trim());
+            fd.append('purchase_contract', document.getElementById('purchaseContractInput').value.trim());
             fd.append('shipping_line', document.getElementById('shippingLine').value);
             fd.append('reference', document.getElementById('referenceInput').value.trim());
             fd.append('ship_name', document.getElementById('shipNameInput').value.trim());
@@ -648,6 +682,9 @@
             document.getElementById('errorMsg').classList.remove('visible');
             clearFile('pklFile', 'pklName');
             clearFile('anFile', 'anName');
+            clearFile('imgFile', 'imgName');
+            ['blInput', 'originInput', 'supplierInput', 'purchaseContractInput']
+                .forEach(id => document.getElementById(id).value = '');
             document.getElementById('shippingLine').value = '';
             document.getElementById('referenceInput').value = '';
             document.getElementById('shipNameInput').value = '';

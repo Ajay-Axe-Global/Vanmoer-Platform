@@ -90,15 +90,43 @@ def validate_seals(packing_list: dict, arrival_notice: dict | None) -> list[str]
     return results
 
 
+# Origin Cuba/Other is always OTHER for EDF.
+ORIGIN_CUBA_OTHER = "OTHER"
+
+# Optional UI fields -> packing-list container key. The Excel value wins; the UI
+# value only fills in where the Excel has no column or a blank cell.
+FALLBACK_FIELDS = {
+    "bl_no":             "Bill of Lading",
+    "origin":            "Origin",
+    "supplier":          "Formal processor",
+    "purchase_contract": "Purchase Contract",
+}
+
+
+def validate_fallbacks(packing_list: dict, fallbacks: dict) -> list[str]:
+    results = []
+    for key, label in FALLBACK_FIELDS.items():
+        blank = [c["container_id"] for c in packing_list.get("containers", []) if not c[key]]
+        if not blank:
+            continue
+        if fallbacks.get(key):
+            results.append(f"[OK] {label.upper()} — not in the Excel for {len(blank)} container(s), used the value entered in the form")
+        else:
+            results.append(f"[!]  {label.upper()} — blank in the Excel for {len(blank)} container(s) and none entered in the form")
+    return results
+
+
 def build_rows(packing_list: dict, reference: str, shipping_line: str, ship_name: str,
-               eta_date: str, seals: dict | None = None) -> list[dict]:
+               eta_date: str, seals: dict | None = None, fallbacks: dict | None = None) -> list[dict]:
     reference = s(reference).strip()
+    fallbacks = fallbacks or {}
     seals = seals or {}
     rows = []
     for c in packing_list.get("containers", []):
         cid = c["container_id"]
         container_type = normalize_container_type(c["container_type"]) if c["container_type"] else ""
-        mbl_container = f"{c['bl_no']}/{cid}" if c["bl_no"] else cid
+        bl_no = c["bl_no"] or fallbacks.get("bl_no", "")
+        mbl_container = f"{bl_no}/{cid}" if bl_no else cid
 
         for lot, bags in c["lots"]:
             rows.append({
@@ -113,5 +141,10 @@ def build_rows(packing_list: dict, reference: str, shipping_line: str, ship_name
                 "lot_no":        lot,
                 "bags_qty":      bags,
                 "eta_date":      eta_date,
+                "bill_of_lading":    bl_no,
+                "origin":            c["origin"] or fallbacks.get("origin", ""),
+                "formal_processor":  c["supplier"] or fallbacks.get("supplier", ""),
+                "purchase_contract": c["purchase_contract"] or fallbacks.get("purchase_contract", ""),
+                "origin_cuba_other": ORIGIN_CUBA_OTHER,
             })
     return rows

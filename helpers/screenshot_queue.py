@@ -86,7 +86,7 @@ def _claim_rows_for_enqueue(session, client, task, order_tracking_ids: list[int]
                 OrderTracking.task_id == task.id,
                 or_(*status_conditions),
             )
-            .values(screenshot_status="queued", screenshot_error=None)
+            .values(screenshot_status="queued", screenshot_error=None, screenshot_warning=None)
         )
         if result.rowcount == 1:
             row = session.query(OrderTracking).filter_by(id=otid).first()

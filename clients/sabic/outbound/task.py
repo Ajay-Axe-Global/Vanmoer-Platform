@@ -289,6 +289,11 @@ class SabicOutboundTask(BaseTask):
         if key in POWDER_PRODUCTS:
             return "Loading Bulk/Vrac from Bag – powder" if is_eu else "Loading Bulk/Vrac from Bag Export – powder"
 
+        # Greece counts as EU above, but SILO orders (other than the powder
+        # products) to GR are loaded as a truck export.
+        if transport_zone == "GR":
+            return "Loading Truck export"
+
         is_bb = key in BIGBAG_PRODUCTS
         if is_bb:
             base = "Loading Bulk/Vrac from Bigbag"
@@ -463,6 +468,7 @@ def _order_row_json(r: OrderTracking) -> dict:
         "itos_number": r.itos_number,
         "screenshot_status": r.screenshot_status,
         "screenshot_error": r.screenshot_error,
+        "screenshot_warning": r.screenshot_warning,
         "email_status": r.email_status,
         "email_error": r.email_error,
     }
@@ -669,6 +675,7 @@ def revoke_order(order_tracking_id):
         row.status = "pending"
         row.screenshot_status = None
         row.screenshot_error = None
+        row.screenshot_warning = None
         row.email_status = None
         row.email_error = None
         row.updated_by = g.user["user_id"]

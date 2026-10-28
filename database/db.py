@@ -54,6 +54,7 @@ def init_db():
     _add_missing_columns("order_tracking", {
         "screenshot_status": "VARCHAR(20)",
         "screenshot_error": "VARCHAR(500)",
+        "screenshot_warning": "VARCHAR(500)",
         "email_status": "VARCHAR(20)",
         "email_error": "VARCHAR(500)",
     })

@@ -33,6 +33,7 @@ if sys.platform == "win32":
                 pass
 import logging
 import os
+import re
 import subprocess
 
 import time
@@ -288,11 +289,270 @@ def _console_run(js_code, wait=0.5):
     time.sleep(wait)
 
 
+# How the page talks back to Python. There are two channels, both written by
+# reply(): the Edge WINDOW TITLE (document.title — Python reads it over UIA,
+# the same way it already finds the Edge window; works even with the console
+# closed and doesn't depend on RDP clipboard redirection, which is often
+# one-way, local -> remote, on Windows 365), and the clipboard via the
+# console-only copy() utility. `copy` isn't in scope inside timers, so it's
+# captured into a local up front. The title is put back after keepMs so the
+# tab doesn't show the token in the evidence screenshots.
+_REPLY_JS_PRELUDE = """
+    var _copy = copy;
+    if (!/^ITOS_/.test(document.title)) window.__itosT0 = document.title;
+    function reply(msg, keepMs) {
+        document.title = msg;
+        try { _copy(msg); } catch (e) {}
+        setTimeout(function() {
+            if (document.title === msg) document.title = window.__itosT0 || '';
+        }, keepMs);
+    }
+"""
+
+# Runs in the dev console: polls until the page is actually idle (document
+# loaded, no jQuery ajax in flight, no visible Kendo mask / "In Progress ..."
+# overlay) for ~0.6s straight, then replies "<token>:ok". Gives up (and
+# replies "<token>:timeout") after PAGE_IDLE_MAX_MS so a page that never
+# settles can't hang.
+_WAIT_IDLE_JS = """
+(function() {{
+    {prelude}
+    var stable = 0, t0 = Date.now();
+    function visible(el) {{
+        return !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+    }}
+    function ready() {{
+        try {{ return !!({ready_js}); }} catch (e) {{ return false; }}
+    }}
+    function busy() {{
+        if (!ready()) return true;
+        if (document.readyState !== 'complete') return true;
+        if (window.jQuery && jQuery.active > 0) return true;
+        var masks = document.querySelectorAll('.k-loading-mask, .k-loading-image, .k-loading, .blockUI');
+        for (var i = 0; i < masks.length; i++) {{ if (visible(masks[i])) return true; }}
+        var leaves = document.querySelectorAll('div, span, p');
+        for (var j = 0; j < leaves.length; j++) {{
+            var el = leaves[j];
+            if (!el.children.length && /^In Progress/i.test(el.textContent.trim()) && visible(el)) return true;
+        }}
+        return false;
+    }}
+    var iv = setInterval(function() {{
+        stable = busy() ? 0 : stable + 1;
+        if (stable >= 3 || Date.now() - t0 > {max_ms}) {{
+            clearInterval(iv);
+            reply('{token}:' + (ready() ? 'ok' : 'timeout'), 2500);
+        }}
+    }}, 200);
+}})();
+"""
+PAGE_IDLE_MAX_MS = int(os.getenv("ITOS_PAGE_IDLE_MAX_MS", "30000"))
+
+
+def _edge_titles() -> list[str]:
+    titles = []
+    try:
+        windows = Desktop(backend="uia").windows()
+    except Exception:
+        return titles
+    for w in windows:
+        try:
+            t = w.window_text()
+        except Exception:
+            continue
+        if t and "Edge" in t:
+            titles.append(t)
+    return titles
+
+
+def _poll_reply(token: str, use_clipboard: bool = True) -> str | None:
+    """One look at both reply channels (see _REPLY_JS_PRELUDE): the payload
+    after "<token>:", or None if neither carries it yet."""
+    pat = re.compile(re.escape(token) + r":(\w+)")
+    if use_clipboard:
+        try:
+            m = pat.match(pyperclip.paste())
+            if m:
+                return m.group(1)
+        except Exception:
+            pass
+    for title in _edge_titles():
+        m = pat.search(title)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _wait_reply(token: str, timeout: float) -> str | None:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        got = _poll_reply(token)
+        if got is not None:
+            return got
+        time.sleep(0.15)
+    return None
+
+
+def _wait_until_page_idle(label="", ready_js="true", required=False):
+    """Blocks until iTOS has finished loading/rendering what the last action
+    triggered. Console must be OPEN.
+
+    `ready_js` is a JS expression that must be truthy before the page counts
+    as ready — i.e. the element the NEXT step needs actually exists. This is
+    what stops a step firing against the previous page: the idle checks alone
+    pass on a fully-rendered search-results page that simply hasn't been
+    navigated away from yet.
+
+    required=True raises ScreenshotAutomationError if ready_js never became
+    true (so the worker retries instead of screenshotting/clicking the wrong
+    page). required=False just logs and carries on. A reply that never
+    comes back is never fatal on its own: the caller's fixed sleeps still
+    apply, same as before this wait existed."""
+    token = f"ITOS_IDLE_{int(time.time() * 1000)}"
+    pyperclip.copy("")
+    _console_run(
+        _WAIT_IDLE_JS.format(prelude=_REPLY_JS_PRELUDE, max_ms=PAGE_IDLE_MAX_MS, token=token, ready_js=ready_js),
+        0.2,
+    )
+    result = _wait_reply(token, PAGE_IDLE_MAX_MS / 1000 + 3)
+
+    if result == "ok":
+        time.sleep(0.4)  # let the final frame paint
+        return True
+    if result == "timeout":
+        msg = f"Page never became ready ({label}) within {PAGE_IDLE_MAX_MS // 1000}s"
+        if required:
+            raise ScreenshotAutomationError(msg)
+        logger.warning(msg)
+    else:
+        logger.warning("Page-idle wait got no reply from the page (%s)", label)
+    return False
+
+
+def _console_query(js_expr: str, timeout: float = 6.0) -> str | None:
+    """Evaluates `js_expr` in the (open) dev console and returns its string
+    value (a single word: digits/letters), handed back through the reply
+    channels. None if no reply came back — callers must treat that as
+    "unknown", never as a negative answer."""
+    token = f"ITOS_Q_{int(time.time() * 1000)}"
+    pyperclip.copy("")
+    _console_run(
+        "(function() {" + _REPLY_JS_PRELUDE +
+        f" var r; try {{ r = String({js_expr}); }} catch (e) {{ r = 'error'; }} "
+        f"reply('{token}:' + r, 2500); }})();",
+        0.2,
+    )
+    return _wait_reply(token, timeout)
+
+
+# Runs in the console right before it is closed for a screenshot: reports
+# whether DevTools is still docked (the page's inner size shrinks by the
+# panel's size) through the window title only — the clipboard can't be used
+# here, copy() needs the console. Keeps reporting until it has seen "closed"
+# for ~2s (so Python has time to read it), then puts the real title back.
+_CONSOLE_STATE_JS = """
+(function() {{
+    {prelude}
+    var t0 = Date.now(), closedTicks = 0;
+    var iv = setInterval(function() {{
+        var docked = (window.outerWidth - window.innerWidth) > 100 || (window.outerHeight - window.innerHeight) > 220;
+        document.title = '{token}:' + (docked ? 'open' : 'closed');
+        closedTicks = docked ? 0 : closedTicks + 1;
+        if (closedTicks >= 7 || Date.now() - t0 > 15000) {{
+            clearInterval(iv);
+            document.title = window.__itosT0 || '';
+        }}
+    }}, 300);
+}})();
+"""
+
+
+def _close_console_verified() -> bool:
+    """Closes the dev console and CONFIRMS it's gone before returning, so a
+    screenshot can never catch it open. Ctrl+Shift+J is a toggle, and it's
+    easy for it to land on an unfocused DevTools (e.g. right after the page
+    navigated) and not close anything — so the state is read back and the
+    key pressed again if needed. If the page can't report back at all, falls
+    back to the old blind 1s wait."""
+    token = f"ITOS_DT_{int(time.time() * 1000)}"
+    _console_run(_CONSOLE_STATE_JS.format(prelude=_REPLY_JS_PRELUDE, token=token), 0.1)
+
+    state = None
+    for _press in range(3):
+        pyautogui.hotkey('ctrl', 'shift', 'j')
+        time.sleep(0.8)
+        deadline = time.time() + 2.5
+        state = None
+        while time.time() < deadline:
+            state = _poll_reply(token, use_clipboard=False)
+            if state == "closed":
+                break
+            time.sleep(0.15)
+        if state in ("closed", None):
+            break
+
+    if state is None:
+        logger.warning("Could not read the DevTools state back; assuming it closed")
+        time.sleep(1)
+        return False
+    if state != "closed":
+        logger.warning("DevTools still open after 3 close attempts")
+        return False
+
+    # The token is in the tab title until the page restores it (~2s) — don't
+    # screenshot before that or the tab strip shows it.
+    deadline = time.time() + 4
+    while time.time() < deadline and any(token in t for t in _edge_titles()):
+        time.sleep(0.2)
+    return True
+
+
+# Counts the visible, non-placeholder rows of the Addresses grid.
+#
+# The grid is found by its own "Address Type" column header
+# (th[data-field="AddressTypeName"]) — identical on the order page and the
+# order-item page, so one script serves both address shots. Kendo splits a
+# scrollable grid into a header table and a content table, so rows are
+# counted in the whole .k-grid container, skipping thead. A row only counts
+# when one of its first 7 cells has text (placeholder/filler rows don't).
+# Returns a number, or 'nogrid' when no visible Addresses grid exists (i.e.
+# we can't tell).
+_ADDRESS_ROW_COUNT_JS = """(function() {
+    function visible(el) { return !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length); }
+    var header = [...document.querySelectorAll('th[data-field="AddressTypeName"]')].find(visible);
+    if (!header) return 'nogrid';
+    var grid = header.closest('.k-grid');
+    if (!grid) return 'nogrid';
+    var n = 0;
+    grid.querySelectorAll('tbody tr').forEach(function(row) {
+        if (row.closest('thead') || row.classList.contains('k-no-data')) return;
+        var cells = [...row.querySelectorAll('td')];
+        if (!cells.length) return;
+        if (cells.slice(0, 7).some(function(c) { return c.textContent.trim() !== ''; })) n++;
+    });
+    return n;
+})()"""
+
+
+def _check_addresses(where: str, warnings: list):
+    """Console must be OPEN with the Addresses tab showing. Appends a
+    warning when the grid has zero address rows; an unreadable result
+    (no clipboard reply / grid not found) adds nothing — never guess."""
+    res = _console_query(_ADDRESS_ROW_COUNT_JS)
+    logger.info("Address rows on the %s: %r", where, res)
+    if res == "0":
+        warnings.append(f"No address on the {where}")
+    elif res is None or not res.isdigit():
+        logger.warning("Could not read the address rows on the %s (got %r)", where, res)
+
+
 def _take_screenshot(path: Path, label=""):
-    """Close console, wait for a clean frame, screenshot, reopen console.
-    Console is OPEN both before and after this call."""
-    pyautogui.hotkey('ctrl', 'shift', 'j')
-    time.sleep(1)
+    """Wait for the page to finish loading, close console, wait for a clean
+    frame, screenshot, reopen console. Console is OPEN both before and after
+    this call."""
+    _wait_until_page_idle(label)
+    _close_console_verified()
+    time.sleep(0.3)
     pyautogui.screenshot(str(path))
     pyautogui.hotkey('ctrl', 'shift', 'j')
     time.sleep(0.5)
@@ -474,9 +734,10 @@ def _click_tab_js(tab_text: str) -> str:
 
 def _process_single_order(
     order_number: str, order_folder: Path, search_value: str, on_shot1_captured=None,
-    client_slug: str = "sabic",
+    client_slug: str = "sabic", warnings: list | None = None,
 ) -> list[Path]:
-    """3-screenshot flow for one order. Console must be open with paste
+    """3-screenshot flow for one order (4 for Sabic — see below). Non-fatal
+    findings (e.g. an empty Addresses tab) are appended to `warnings`. Console must be open with paste
     enabled when called; console is CLOSED when this returns.
 
     `order_number` names the output files; `search_value` is what actually
@@ -491,8 +752,11 @@ def _process_single_order(
     instead of adding its own latency after this function returns. Any
     exception it raises is swallowed (it must never break the screenshot
     flow); this module still has no idea what the callback does."""
+    if warnings is None:
+        warnings = []
     shot1_tab, shot2_tab = CLIENT_TABS.get(client_slug, CLIENT_TABS["sabic"])
     shot1 = order_folder / f"{order_number}_01_order.png"
+    shot1b = order_folder / f"{order_number}_01b_order_addresses.png"
     shot2 = order_folder / f"{order_number}_02_addresses.png"
     shot3 = order_folder / f"{order_number}_03_transport.png"
 
@@ -526,6 +790,15 @@ def _process_single_order(
     }})();
     """, 4)
 
+    # The search + tile click above only *starts* navigation to the order
+    # page; wait until it has really loaded (its tabs exist) before clicking
+    # anything, otherwise the tab click lands on the still-showing results page.
+    _wait_until_page_idle(
+        "order page after search",
+        ready_js="document.getElementById('orderItemsTab') && document.querySelector('a.header.ui-tabs-anchor')",
+        required=True,
+    )
+
     # Click the client's tab before capturing the order overview shot.
     _console_run(_click_tab_js(shot1_tab), 1.5)
     _take_screenshot(shot1, "Order overview")
@@ -535,14 +808,30 @@ def _process_single_order(
         except Exception:
             pass
 
+    # Sabic only: same order page, Addresses tab, captured right after the
+    # Attachments shot. "_01b_" sorts between _01_order and _02_addresses, so
+    # list_screenshot_files() / the email paste order stay in capture order.
+    if client_slug == "sabic":
+        _console_run("""
+            [...document.querySelectorAll('a.ui-tabs-anchor')]
+              .find(tab => tab.textContent.trim() === 'Addresses')
+              ?.click();
+        """, 1.5)
+        _take_screenshot(shot1b, "Order addresses")
+        _check_addresses("order", warnings)
+
     # ── SCREENSHOT 2 — Order Items → tile → Addresses ─
     _console_run("""document.getElementById("orderItemsTab").click();""", 1.5)
+    _wait_until_page_idle(
+        "order item tile", ready_js="document.querySelector('#orderItemsView .tile.orderItem')", required=True,
+    )
     _console_run("""
         (function() {
             var tile = document.querySelector("#orderItemsView .tile.orderItem");
             if (tile) { tile.click(); }
         })();
     """, 1.5)
+    _wait_until_page_idle("item detail tabs", ready_js="document.querySelector('#detailTabs')", required=True)
     if shot2_tab == "Addresses":
         _console_run("""
             (function() {
@@ -553,6 +842,8 @@ def _process_single_order(
     else:
         _console_run(_click_tab_js(shot2_tab), 1.5)
     _take_screenshot(shot2, shot2_tab)
+    if client_slug == "sabic" and shot2_tab == "Addresses":
+        _check_addresses("order item", warnings)
 
     # ── SCREENSHOT 3 — Stock Info → Transport ─────────
     _console_run("""
@@ -561,6 +852,17 @@ def _process_single_order(
             if (tab) { tab.click(); }
         })();
     """, 1.5)
+    # The transport link is only rendered once the stock info tab has loaded.
+    # Not required: the click below silently skips if it never shows up, as
+    # it always did.
+    _wait_until_page_idle(
+        "stock info transport link",
+        ready_js="""(function() {
+            var i = document.querySelector('input[data-bind*="ExternalId"]');
+            var v = i && i.value.trim();
+            return !!v && [...document.querySelectorAll('a')].some(function(a) { return a.textContent.includes(v); });
+        })()""",
+    )
     _console_run("""
         (function() {
             var externalId = (document.querySelector('input[data-bind*="ExternalId"]') || {}).value;
@@ -582,7 +884,7 @@ def _process_single_order(
     pyautogui.hotkey('ctrl', 'shift', 'j')
     time.sleep(0.3)
 
-    paths = [shot1, shot2, shot3]
+    paths = [shot1, shot1b, shot2, shot3] if client_slug == "sabic" else [shot1, shot2, shot3]
     missing = [p for p in paths if not p.exists()]
     if missing:
         raise ScreenshotAutomationError(
@@ -597,7 +899,7 @@ def _process_single_order(
 
 def capture_order_screenshots(
     order_number: str, output_dir: Path, search_value: str | None = None, on_shot1_captured=None,
-    client_slug: str = "sabic",
+    client_slug: str = "sabic", warnings: list | None = None,
 ) -> list[Path]:
     """
     Ensures Edge/iTOS is ready (reusing an existing session if one's already
@@ -633,7 +935,9 @@ def capture_order_screenshots(
         raise ScreenshotAutomationError("Could not prepare the iTOS index page (console/date filter).")
 
     try:
-        paths = _process_single_order(order_number, output_dir, search_value, on_shot1_captured, client_slug)
+        paths = _process_single_order(
+            order_number, output_dir, search_value, on_shot1_captured, client_slug, warnings,
+        )
     except ScreenshotAutomationError:
         raise
     except Exception as e:

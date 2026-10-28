@@ -142,6 +142,8 @@ def _process_job(session, job: ScreenshotJob):
         nonlocal itos_future
         itos_future = _itos_extract_executor.submit(extract_itos_number, shot1_path)
 
+    warnings: list[str] = []
+
     try:
         # order_number only names the PNG files, so it must be filesystem-safe
         # (Vinmar references contain "/"); the raw reference is what gets
@@ -149,7 +151,7 @@ def _process_job(session, job: ScreenshotJob):
         capture_order_screenshots(
             reference_dirname(job.reference), output_dir,
             search_value=job.reference, on_shot1_captured=_on_shot1_captured,
-            client_slug=client_slug,
+            client_slug=client_slug, warnings=warnings,
         )
     except ScreenshotAutomationError as e:
         _handle_failure(session, job, row, str(e))
@@ -168,6 +170,7 @@ def _process_job(session, job: ScreenshotJob):
         row.status = "done"
         row.screenshot_status = "done"
         row.screenshot_error = None
+        row.screenshot_warning = "; ".join(warnings)[:500] if warnings else None
         # Best-effort: never blocks or fails the job (see
         # helpers/itos_number_extractor.py). By now the background call
         # kicked off in _on_shot1_captured has usually already finished —

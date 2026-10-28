@@ -213,6 +213,7 @@
   .screenshot-note.queued, .screenshot-note.processing,
   .email-note.queued, .email-note.processing { color: #93c5fd; }
   .screenshot-note.failed, .email-note.failed { color: #f87171; }
+  .screenshot-note.warning { color: #fbbf24; }
   .email-note.sent { color: #6ee7b7; }
   .screenshot-note .retry-link, .email-note .retry-link {
     color: #f87171; text-decoration: underline; text-underline-offset: 2px;
@@ -780,6 +781,8 @@
           screenshotNote = `<div class="screenshot-note failed" title="${escapeHtml(o.screenshot_error || "")}">
             Screenshot failed <button type="button" class="retry-link" data-id="${o.id}">Retry</button>
           </div>`;
+        } else if (o.screenshot_warning) {
+          screenshotNote = `<div class="screenshot-note warning" title="${escapeHtml(o.screenshot_warning)}">⚠ ${escapeHtml(o.screenshot_warning)}</div>`;
         }
 
         let emailNote = "";

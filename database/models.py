@@ -160,6 +160,10 @@ class OrderTracking(Base):
     # helpers/screenshot_queue.py.
     screenshot_status = Column(String(20), nullable=True)
     screenshot_error = Column(String(500), nullable=True)
+    # Non-fatal findings from the last SUCCESSFUL capture (e.g. "No address on
+    # the order"). The screenshots still exist and the row is still "done" —
+    # this only flags it for a human to look at. None when the run was clean.
+    screenshot_warning = Column(String(500), nullable=True)
     # Lifecycle of the Outlook forward-with-screenshots automation, same
     # None/"queued"/"processing"/terminal shape as screenshot_status above
     # but independent of it — see helpers/email_worker.py. Only ever

@@ -400,7 +400,7 @@
     <div class="container">
         <div class="page-header">
             <h1>Sealogs Inbound</h1>
-            <p>Upload MBL (PDF) + Packing List (PDF) + Arrival Notice (PDF, optional) → Generate Outcome Excel</p>
+            <p>Upload MBL (PDF) + Packing List (PDF or image, optional) + Arrival Notice (PDF, optional) → Generate Outcome Excel</p>
         </div>
 
         <!-- Upload Section -->
@@ -416,9 +416,9 @@
                 </div>
                 <div class="upload-card" onclick="this.querySelector('input').click()">
                     <span class="icon">📦</span>
-                    <div class="label">Packing List</div>
-                    <div class="filename" id="pklName" data-empty="Click to upload PDF">Click to upload PDF</div>
-                    <input type="file" id="pklFile" accept=".pdf" onchange="onFileSelect(this, 'pklName')">
+                    <div class="label">Packing List <span style="color:#64748b;font-weight:400">— optional</span></div>
+                    <div class="filename" id="pklName" data-empty="Click to upload PDF or image (JPG / PNG)">Click to upload PDF or image (JPG / PNG)</div>
+                    <input type="file" id="pklFile" accept=".pdf,.jpg,.jpeg,.png" onchange="onFileSelect(this, 'pklName')">
                     <button class="remove-btn"
                         onclick="event.stopPropagation(); clearFile('pklFile', 'pklName')">&times;</button>
                 </div>
@@ -520,12 +520,11 @@
 
         function checkReady() {
             const mbl = document.getElementById('mblFile').files.length;
-            const pkl = document.getElementById('pklFile').files.length;
             const externalId = document.getElementById('externalIdInput').value.trim();
             const shippingLine = document.getElementById('shippingLine').value;
             const shipName = document.getElementById('shipNameInput').value.trim();
             const eta = document.getElementById('etaDate').value;
-            document.getElementById('generateBtn').disabled = !(mbl && pkl && externalId && shippingLine && shipName && eta);
+            document.getElementById('generateBtn').disabled = !(mbl && externalId && shippingLine && shipName && eta);
         }
 
         const LOADER_STEPS = [
@@ -556,7 +555,8 @@
         async function generate() {
             const fd = new FormData();
             fd.append('mbl', document.getElementById('mblFile').files[0]);
-            fd.append('packing_list', document.getElementById('pklFile').files[0]);
+            const pklFile = document.getElementById('pklFile').files[0];
+            if (pklFile) fd.append('packing_list', pklFile);
             const anFile = document.getElementById('anFile').files[0];
             if (anFile) fd.append('arrival_notice', anFile);
             fd.append('external_id', document.getElementById('externalIdInput').value.trim());

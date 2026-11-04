@@ -28,6 +28,8 @@ from helpers.excel_writer import write_excel
 from helpers.jobs import build_reference, job_output_path, log_job, new_job_dir
 
 from .extractor import (
+    EMPTY_PACKING_LIST,
+    PACKING_LIST_EXTENSIONS,
     SHIPPING_LINE_OPTIONS,
     build_rows,
     carrier_display,
@@ -73,7 +75,8 @@ class SealogsInboundTask(BaseTask):
 
     required_documents = [
         {"key": "mbl",            "label": "MBL (Bill of Lading)", "accept": ".pdf", "multiple": False},
-        {"key": "packing_list",   "label": "Packing List",         "accept": ".pdf", "multiple": False},
+        {"key": "packing_list",   "label": "Packing List (PDF / image)", "accept": ".pdf,.jpg,.jpeg,.png",
+         "multiple": False, "required": False},
         {"key": "arrival_notice", "label": "Arrival Notice (PDF)", "accept": ".pdf", "multiple": False,
          "required": False},
     ]
@@ -86,7 +89,7 @@ class SealogsInboundTask(BaseTask):
         mbl_data = extract_mbl(files["mbl"])
         an_data = extract_arrival_notice(files["arrival_notice"]) if files.get("arrival_notice") else None
         ref_ids = [c["id"] for c in (an_data or mbl_data).get("containers", []) if c.get("id")]
-        pl_data = extract_packing_list(files["packing_list"], ref_ids)
+        pl_data = extract_packing_list(files["packing_list"], ref_ids) if files.get("packing_list") else dict(EMPTY_PACKING_LIST)
 
         validation = validate(mbl_data, pl_data, an_data)
         rows = build_rows(mbl_data, pl_data, an_data, external_id, shipping_line, ship_name, eta_date)
@@ -129,16 +132,17 @@ def process():
     if not mbl_file or not mbl_file.filename:
         return jsonify({"error": "Missing document: MBL (Bill of Lading)"}), 400
     pkl_file = request.files.get("packing_list")
-    if not pkl_file or not pkl_file.filename:
-        return jsonify({"error": "Missing document: Packing List"}), 400
+    has_pkl = bool(pkl_file and pkl_file.filename)   # packing list is optional
     an_file = request.files.get("arrival_notice")
     has_an = bool(an_file and an_file.filename)
-    checks = [(mbl_file, "MBL"), (pkl_file, "Packing List")]
+    checks = [(mbl_file, "MBL")]
     if has_an:
         checks.append((an_file, "Arrival Notice"))
     for f, label in checks:
         if not f.filename.lower().endswith(".pdf"):
             return jsonify({"error": f"{label} must be a PDF file."}), 400
+    if has_pkl and not pkl_file.filename.lower().endswith(PACKING_LIST_EXTENSIONS):
+        return jsonify({"error": "Packing List must be a PDF or an image (JPG / PNG)."}), 400
 
     external_id = (request.form.get("external_id") or "").strip()
     if not external_id:
@@ -165,7 +169,9 @@ def process():
     session = SessionLocal()
     try:
         files = {}
-        for key, f in (("mbl", mbl_file), ("packing_list", pkl_file)):
+        for key, f in (("mbl", mbl_file), ("packing_list", pkl_file if has_pkl else None)):
+            if f is None:
+                continue
             files[key] = str(job_dir / secure_filename(f.filename))
             f.save(files[key])
         if has_an:
@@ -181,7 +187,7 @@ def process():
         write_excel(rows, COLUMN_CONFIG, output_path)
 
         reference_val, reference_count = build_reference([external_id])
-        names = [mbl_file.filename, pkl_file.filename] + ([an_file.filename] if has_an else [])
+        names = [mbl_file.filename] + ([pkl_file.filename] if has_pkl else []) + ([an_file.filename] if has_an else [])
         log_job(session, g.user["user_id"], CLIENT_SLUG, TASK_SLUG, f"{job_id}/output.xlsx", "success",
                 reference=reference_val, source_filename=", ".join(names),
                 row_count=len(rows), reference_count=reference_count)

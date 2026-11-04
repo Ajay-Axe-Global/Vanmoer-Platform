@@ -31,6 +31,7 @@ OP columns and where each value comes from
 UI inputs (External ID, Shipping Line, Ship Name, ETA) apply to every row.
 """
 
+import os
 import re
 
 from clients.swiss.inbound.extractor import (
@@ -51,6 +52,14 @@ FIXED_PRODUCT = "BUNDLES"
 GOODS_TYPES = ("BUNDLE", "BAGS", "PALLETS")
 DEFAULT_GOODS_TYPE = "BUNDLE"
 TOLERANCE_KG = 1.0
+
+# Packing list may be a PDF or a scanned/photographed image (read by Gemini).
+PACKING_LIST_EXTENSIONS = (".pdf", ".jpg", ".jpeg", ".png")
+_PL_MIME = {".pdf": "application/pdf", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png"}
+
+# Stand-in when no packing list is uploaded (it is optional).
+EMPTY_PACKING_LIST = {"package_kind": "", "total_packages": 0, "total_net_kg": 0,
+                      "total_gross_kg": 0, "containers": [], "_missing": True}
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SHARED PROMPT RULES
@@ -107,6 +116,10 @@ Find:
   (e.g. a "Container No." column or per-container sections), one entry per container:
   {"id": "...", "packages": 0, "net_weight_kg": 0, "gross_weight_kg": 0}
   (sum that container's lines). Otherwise return an empty array — do NOT invent containers.
+
+If the document is a scan or photo: read the printed table and totals only. Ignore any company
+stamp / chop / watermark / handwriting. A "QUANTITY (M)" or length column is metres, NOT packages.
+Cross-check "total_packages" with a "SAY TOTAL ... ONLY" line when present. Copy digits exactly as printed.
 @@RULES@@
 Return:
 {"package_kind": "", "total_packages": 0, "total_net_kg": 0, "total_gross_kg": 0,
@@ -197,7 +210,9 @@ def extract_packing_list(pdf_path: str, reference_ids: list[str] | None = None) 
     if reference_ids:
         prompt += (f"\n\nContainer ids of this shipment (from other documents): [{', '.join(reference_ids)}]. "
                    "Only if the packing list lists containers, use these spellings.")
-    data = _as_dict(call_gemini(prompt, pdf_path=pdf_path, max_output_tokens=8192, call_label="packing_list"))
+    ext = os.path.splitext(pdf_path)[1].lower()
+    data = _as_dict(call_gemini(prompt, pdf_path=pdf_path, mime_type=_PL_MIME.get(ext, "application/pdf"),
+                                max_output_tokens=8192, call_label="packing_list"))
     result = {
         "package_kind": s(data.get("package_kind")).strip(),
         "total_packages": int(_f(data.get("total_packages"))),
@@ -302,6 +317,9 @@ def validate(mbl: dict, pl: dict, an: dict | None) -> list[str]:
     if an is None:
         r.append("[!]  ARRIVAL NOTICE — not uploaded, container ids and per-container figures come from the MBL / Packing List only")
 
+    if pl.get("_missing"):
+        r.append("[!]  PACKING LIST — not uploaded, Qty / Gross taken from the MBL, Net left blank")
+
     rec = reconcile(mbl, pl, an)
     records = rec["records"]
     if not records:
@@ -324,7 +342,9 @@ def validate(mbl: dict, pl: dict, an: dict | None) -> list[str]:
             if not x[key]:
                 reason = "several containers and no per-container figure on the documents, left blank" \
                     if not rec["single"] else "not found on any document"
-                r.append(f"[X]  {label} — {cid}: {reason}")
+                # Net is expected to stay blank on multi-container shipments (only a shipment total exists).
+                tag = "[!] " if key == "net" and not rec["single"] else "[X] "
+                r.append(f"{tag} {label} — {cid}: {reason}")
             elif x["src"][key] and x["src"][key] != "Packing List":
                 r.append(f"[OK] {label} — {cid}: {x[key]:g} from the {x['src'][key]}")
 

@@ -96,6 +96,26 @@ IO_MAP = {
 
 SILO_SUFFIX = "BULK-REINIGINGSCERTIFICAAT-WEGEN / EX CONT.:   EX LOC"
 
+# Exactly these 10 (base product + material suffix) combinations get a blank
+# Description column instead of the usual computed "{net_weight} -
+# {product_desc}". Unlike BIGBAG_PRODUCTS/POWDER_PRODUCTS/IO_MAP, the suffix
+# is NOT stripped before matching here — e.g. "PP Compound G3135X 10000 148"
+# and "...153" are both listed below and blank out, but if some other
+# material suffix (not one of these 10) shows up on the same base product
+# name, it's a different material and must get the normal description.
+BLANK_DESCRIPTION_PRODUCTS = {s.upper() for s in {
+    "PO compound P1600A 00900 117",
+    "PP Compound G3135X 10000 148",
+    "PP Compound G3135X 10000 153",
+    "PP Compound G3220A 00900 148",
+    "PP Compound G3230A 10000 153",
+    "PP Compound G3230AE 10000 148",
+    "PP Compound G3230AE 10000 153",
+    "PP Compound G3240A 10000 148",
+    "LLDPE MG200024 549",
+    "LLDPE MG500026 549",
+}}
+
 FIXED_CLIENT = "SABIC PETROCHEMICAL BV (K0013323)"
 FIXED_COST_CENTER = "O-VMROKAAI1793"
 
@@ -302,8 +322,27 @@ class SabicOutboundTask(BaseTask):
             base = "Loading Bulk/Vrac from Bag"
             return base if is_eu else "Loading Bulk/Vrac from Bag Export"
 
+    def _io_loading_family(self, operation_type: str) -> str:
+        """
+        IO_MAP's keys are written for 3 physical loading methods — truck,
+        bag, bigbag — but _operation_type() names the same method
+        differently depending on EU vs export ("Loading into truck" vs
+        "Loading Truck export") and tacks on " – powder" for the 3 powder
+        SILO products ("Loading Bulk/Vrac from Bag – powder"). Canonicalize
+        both away so the lookup below only ever matches within the SAME
+        loading method — never across families. Without this, a truck-
+        loaded shipment of a product that *also* ships by bag/bigbag
+        elsewhere (e.g. LLDPE MG200024) would wrongly inherit that
+        product's bag/bigbag-only remark ("MET DE HAND LADEN") even though
+        this particular shipment was never hand-loaded from a bag.
+        """
+        s = operation_type.lower().replace(" export", "").replace(" – powder", "").strip()
+        if "bulk" not in s:
+            return "loading into truck"
+        return "loading bulk/vrac from bigbag" if "bigbag" in s else "loading bulk/vrac from bag"
+
     def _io_description(self, operation_type, product_description):
-        op_key = operation_type.lower().replace(" export", "").strip()
+        op_key = self._io_loading_family(operation_type)
         desc_key = self._norm_product(self._strip_suffix(product_description)).upper()
         is_silo = "bulk" in op_key
 
@@ -312,11 +351,6 @@ class SabicOutboundTask(BaseTask):
             if op == op_key and desc.upper() == desc_key:
                 extra_remark = val
                 break
-        if not extra_remark:
-            for (op, desc), val in IO_MAP.items():
-                if desc.upper() == desc_key:
-                    extra_remark = val
-                    break
 
         if is_silo:
             return f"{extra_remark} - {SILO_SUFFIX}" if extra_remark else SILO_SUFFIX
@@ -346,13 +380,16 @@ class SabicOutboundTask(BaseTask):
             operation_type = self._operation_type(packaging, transport_zone, product_desc)
             io_description = self._io_description(operation_type, product_desc)
 
+            desc_key = self._norm_product(product_desc).upper()
+            description = "" if desc_key in BLANK_DESCRIPTION_PRODUCTS else f"{net_weight} - {product_desc}"
+
             rows.append({
                 "client": FIXED_CLIENT,
                 "external_id": external_id,
                 "cost_center": FIXED_COST_CENTER,
                 "product_code": product_desc,
                 "net_weight": net_weight,
-                "description": f"{net_weight} - {product_desc}",
+                "description": description,
                 "operation_type": operation_type,
                 "io_description": io_description,
                 "ref_po_number": ref_po_number,

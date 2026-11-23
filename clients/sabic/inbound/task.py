@@ -31,6 +31,7 @@ from .extractor import (
     extract_invoice,
     extract_mbl,
     extract_packing_list,
+    reconcile_refs,
     repair_container_ids_via_mbl,
     validate,
 )
@@ -99,7 +100,8 @@ class SabicInboundTask(BaseTask):
         pkl_data = repair_container_ids_via_mbl(mbl_data, pkl_data)           # keep as safety net
         pkl_data = cross_check_containers(mbl_data, pkl_data)                 # keep as safety net
         inv_data = extract_invoice(files["invoice"])
-    
+        pkl_data = reconcile_refs(mbl_data, pkl_data, inv_data)
+
         # ── Step 2: Cross-document validation ───────────────────────
         validation = validate(mbl_data, pkl_data, inv_data)
     

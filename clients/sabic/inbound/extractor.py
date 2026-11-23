@@ -227,15 +227,18 @@ RULES:
   - "type": Container type (e.g. "40' HIGH CUBE")
   - "seal": Seal number (separate field)
   ⚠️ PAGE-SPLIT / HAPAG LAYOUT: on Hapag-Lloyd waybills the container list often
-  starts at the BOTTOM of the main page (e.g. "HAMU 3989298 40'HC SLAC*:990 BAGS")
+  starts at the BOTTOM of the main page (e.g. "XXXU 0000000 40'HC SLAC*:990 BAGS")
   and CONTINUES on the rider page ("Page 3 / 3"), where a "SEAL: xxxxxxx" line
   comes BEFORE the next container line. A seal line always belongs to the
   container printed on the line ABOVE it — which may be the last container of
-  the previous page. So the rider's first "SEAL: 1090918" is the seal of the
-  container at the bottom of the main page, NOT of the first container listed
-  on the rider. The container number may contain a space ("HAMU 3989298") —
-  remove it. Do NOT skip the container at the bottom of the main page, and
-  never return a container with a null "id".
+  the previous page. So the rider's first "SEAL: ..." line may be the seal of
+  the container at the bottom of the main page, NOT of the first container
+  listed on the rider. The container number may contain a space
+  ("XXXU 0000000") — remove it. Do NOT skip the container(s) at the bottom of
+  the main page, and never return a container with a null "id".
+  ⚠️ The "XXXU 0000000" above is a FORMAT PLACEHOLDER, not data. Every
+  container id you return must be read from THIS document — never copy an id
+  from these instructions.
   - "bags": Number of bags from the description (e.g. from "1020 BAG(S) LLDPE 318BJ 149" extract 1020)
   - "net_weight_mt": Net weight in MT from description (e.g. from "NET WEIGHT:25.500 MT" extract 25.5)
 
@@ -360,6 +363,28 @@ How to detect: a left block "Order/STO:"/"Delivery:"/"Shipment:" AND a
 right block "PO:"/"Delivery:"/"Shipment:" both present, side by side,
 with NO "Sabic PO:"/"Sabic Delivery:" literal label and NO plant-name
 prefix anywhere on the page.
+
+LAYOUT E — Kemya / "Sabic Partner" style: TWO label blocks side by side —
+a plant-prefixed PARTNER block ("Kemya - Sabic Partner Order/STO:",
+"Kemya - Sabic Partner Delivery:", "Kemya - Sabic Partner Shipment:" — the
+plant name may differ) AND a separate block with bare labels "SO/STO:",
+"Delivery:", "Shipment:". There is NO literal "Sabic PO:"/"Sabic Delivery:".
+  - bare "SO/STO:" → sto. This is the order number that matches the MBL and
+    the invoice.
+  - bare "Delivery:" → delivery_no.
+  - "... Partner Order/STO:" → partner_sto (a DIFFERENT number, usually one
+    digit off — e.g. 4506702880 vs 4506702879). NEVER put it in sto.
+  - "... Partner Delivery:" / any "Shipment:" → ignore.
+  - Leave sabic_po and sabic_delivery empty for this layout.
+  WORKED EXAMPLE:
+    Kemya - Sabic Partner Order/STO: 4506702880    SO/STO:   4506702879
+    Kemya - Sabic Partner Delivery:  809287872     Delivery: 809284981
+  Correct: sto = "4506702879", delivery_no = "809284981",
+  partner_sto = "4506702880".
+
+On ANY layout: if a plant-prefixed "Partner Order/STO" number is printed,
+also return it as "partner_sto" (else ""). Python uses it only to detect a
+swapped reference.
 
 - Total pallets: some layouts print a summary line like "112 PALLETIZED 3920 BAGS(of 98 MT)"
   (often near "PKG DESCRIPTION"). If present, extract the leading number (112) as
@@ -819,6 +844,7 @@ OUTPUT FORMAT
   "sto": "string",
   "sabic_po": "string",
   "sabic_delivery": "string",
+  "partner_sto": "string",
   "total_pallets": 0,
   "total_bags": 0,
   "container_ids_seen": ["AAAA1111111", "BBBB2222222"],
@@ -904,6 +930,8 @@ def extract_mbl(pdf_path: str) -> dict:
     _dump_json(pdf_path, "mbl_raw.json", data)
 
     containers = []
+    prompt_text = MBL_PROMPT.upper().replace(" ", "")
+    data["prompt_echo_ids"] = []
     for c in data.get("containers") or []:
         if not isinstance(c, dict):
             continue
@@ -912,6 +940,14 @@ def extract_mbl(pdf_path: str) -> dict:
             # Gemini couldn't read this container's number (null id) — it can't
             # be matched to anything downstream, so skip it rather than crash.
             print(f"  [MBL WARNING] Container with no id skipped: {c}")
+            continue
+        if len(cid) == 11 and cid in prompt_text:
+            # The model copied an example id out of the prompt instead of
+            # reading the document (seen live: a prompt example id replaced
+            # the real container at the bottom of a Hapag main page). It is
+            # never real data — drop it and let validate() report it.
+            print(f"  [MBL WARNING] Container {cid} is copied from the prompt, not the PDF — dropped")
+            data["prompt_echo_ids"].append(cid)
             continue
         c["id"] = cid
         c["seal"] = seal
@@ -986,7 +1022,147 @@ def _missing_container_ids(data: dict) -> list[str]:
             missing.append(cid)
     return missing
 
- 
+
+_SUMMARY_PRODUCTS = ("TOTAL", "SUB TOTAL", "SUBTOTAL", "GRAND TOTAL")
+
+
+def _group_rows(rows: list) -> list[dict]:
+    """Flat, order-preserved Gemini rows → lines carrying their container id.
+
+    A row opens a new container when it prints its own container id AND
+    either has a VGM value or the id is a complete, well-formed id. The old
+    rule required has_vgm too, so a row whose id was read correctly but
+    whose VGM cell was missed got silently folded into the container ABOVE
+    (its id dropped, its bags/weights added to the wrong container). A
+    complete printed id is the stronger signal, so it wins. Truncated ids
+    still need has_vgm, as before (page-break fragments).
+    """
+    lines = []
+    current_cid, current_seal = None, None
+    for row in rows:
+        has_vgm = row.get("has_vgm")
+        if isinstance(has_vgm, str):
+            has_vgm = has_vgm.strip().lower() == "true"
+
+        raw_cid = (row.get("container_id") or "").strip()
+        if raw_cid:
+            cid, seal = _fix_container_id(raw_cid, row.get("seal", ""))
+            complete = len(cid) == 11 and bool(_CONTAINER_RE.match(cid))
+            if has_vgm or complete:
+                if cid != current_cid:
+                    current_cid, current_seal = cid, seal
+                elif seal:
+                    current_seal = seal
+
+        if current_cid is None:
+            continue
+
+        product = (row.get("product") or "").strip()
+        if product.upper().replace(":", "").strip() in _SUMMARY_PRODUCTS:
+            continue
+
+        lines.append({
+            "container_id": current_cid,
+            "seal":         current_seal,
+            "product":      product,
+            "pkg_code":     row.get("pkg_code", ""),
+            "lot":          row.get("lot", ""),
+            "pallet_qty":   _num(row.get("pallet_qty"), 0),
+            "bags":         _num(row.get("bags"), 0),
+            "gross_weight": _num(row.get("gross_weight"), 0),
+            "net_weight":   _num(row.get("net_weight"), 0),
+            "weight_unit":  (row.get("weight_unit") or "MT").strip().upper(),
+            "delivery_number": _s(row.get("delivery_number")).strip(),
+        })
+    return lines
+
+
+def _expected_bags(cid: str, expected: dict):
+    """MBL bag count for this container. When every MBL container carries the
+    SAME count (the common full-load case, e.g. all 1020), a container the
+    MBL misread or missed is assumed to carry it too — only used for checks,
+    never written to the output."""
+    if cid in expected:
+        return expected[cid]
+    values = set(expected.values())
+    if len(expected) >= 2 and len(values) == 1:
+        return next(iter(values))
+    return None
+
+
+def _container_sums(lines: list) -> dict:
+    sums = {}
+    for ln in lines:
+        sums[ln["container_id"]] = sums.get(ln["container_id"], 0) + ln["bags"]
+    return sums
+
+
+def _bad_containers(lines: list, expected: dict) -> list:
+    """[(cid, packing-list bags, MBL bags)] for every container in `lines`
+    whose own rows don't add up to the MBL's count for it."""
+    if not expected:
+        return []
+    bad = []
+    for cid, got in _container_sums(lines).items():
+        exp = _expected_bags(cid, expected)
+        if exp is not None and got != exp:
+            bad.append((cid, got, exp))
+    return bad
+
+
+def _assemble_from_attempts(attempts: list, best_idx: int, expected: dict):
+    """Keep the best attempt, but replace each container whose bags are wrong
+    there with that container's rows from another attempt where they match
+    the MBL exactly; also restore a container the best attempt lost entirely.
+    Returns None when nothing could be improved."""
+    base = attempts[best_idx][1]
+    by_attempt = []
+    for _, lines, _, _ in attempts:
+        groups = {}
+        order = []
+        for ln in lines:
+            if ln["container_id"] not in groups:
+                groups[ln["container_id"]] = []
+                order.append(ln["container_id"])
+            groups[ln["container_id"]].append(ln)
+        by_attempt.append((order, groups))
+
+    def good_rows(cid):
+        exp = _expected_bags(cid, expected)
+        if exp is None:
+            return None
+        for i, (_, groups) in enumerate(by_attempt):
+            if i != best_idx and cid in groups and sum(l["bags"] for l in groups[cid]) == exp:
+                return groups[cid]
+        return None
+
+    base_order, base_groups = by_attempt[best_idx]
+    order = list(base_order)
+    # Containers another attempt found (with a correct count) that the best
+    # attempt lost entirely — insert after the same neighbour as there.
+    for i, (o, groups) in enumerate(by_attempt):
+        if i == best_idx:
+            continue
+        for pos, cid in enumerate(o):
+            if cid in order or cid not in expected or good_rows(cid) is None:
+                continue
+            prev = o[pos - 1] if pos else None
+            order.insert(order.index(prev) + 1 if prev in order else len(order), cid)
+
+    changed = False
+    out = []
+    for cid in order:
+        rows = base_groups.get(cid)
+        exp = _expected_bags(cid, expected)
+        if rows is None or (exp is not None and sum(l["bags"] for l in rows) != exp):
+            alt = good_rows(cid)
+            if alt is not None:
+                rows, changed = alt, True
+        if rows:
+            out.extend(dict(l) for l in rows)
+    return out if changed else None
+
+
 MBL_CONTAINER_HINT_BLOCK = """
 ══════════════════════════════════════════
 KNOWN CONTAINER IDS (from the Master Bill of Lading)
@@ -1011,8 +1187,10 @@ output container_id="" for a row, check this list first: the ID is
 probably printed on that line but was hard to read due to the layout.
  
 Also use this list to validate container IDs you extract — if what you
-read doesn't match any ID in this list, you likely misread a character.
-Find the closest match from the list and use that instead.
+read differs from an ID in this list by only one or two characters, you
+likely misread a character; use the listed ID instead. If what you read is
+clearly a different number, keep what is PRINTED — the list itself can be
+wrong, and the packing list is the source for its own rows.
 """
  
  
@@ -1065,85 +1243,80 @@ def extract_packing_list(pdf_path: str, mbl: dict = None) -> dict:
                 prompt = prompt + "\n" + hint
             print(f"  [EXTRACT] Injected {len(container_ids)} known container IDs from MBL into prompt")
  
+    # Per-container bag counts printed on the MBL (e.g. "SLAC*:1020 BAGS").
+    # When present they are an answer key PER CONTAINER, much stronger than
+    # the document-wide total: a row dropped from container A, or a lot
+    # pushed from A onto B, leaves the total check blind in some cases but
+    # always breaks A's (and B's) own count.
+    mbl_expected = {}
+    for c in (mbl or {}).get("containers", []) or []:
+        b = _num(c.get("bags"), 0)
+        if c.get("id") and b:
+            mbl_expected[c["id"]] = int(b)
+
     MAX_ATTEMPTS = 3
-    best_data, best_diff = None, None
- 
+    attempts = []   # (data, flat_lines, diff, per-container status)
+    best = None
+
     for attempt in range(MAX_ATTEMPTS):
         temperature = 0.0 if attempt == 0 else 0.4
         data = call_gemini(prompt, pdf_path=pdf_path,
                             max_output_tokens=16384, temperature=temperature)
         suffix = "" if attempt == 0 else f"_retry{attempt}"
         _dump_json(pdf_path, f"pkg_list_raw{suffix}.json", data)
- 
+
         if isinstance(data, list):
             data = next((d for d in data if isinstance(d, dict)), {})
-        rows = [r for r in (data.get("rows") or []) if isinstance(r, dict)]
-        row_bag_sum = sum(_num(r.get("bags"), 0) for r in rows)
+        if not isinstance(data, dict):
+            data = {}
+        data["rows"] = _repair_split_container_ids(
+            [r for r in (data.get("rows") or []) if isinstance(r, dict)]
+        )
+        lines = _group_rows(data["rows"])
+        row_bag_sum = sum(ln["bags"] for ln in lines)
         doc_total_bags = _num(data.get("total_bags"), 0)
         # row_bag_sum == 0 means the layout has no per-row bags column at all
         # (e.g. SABIC-direct/US export) — nothing to reconcile here; bags are
         # derived later from the MBL's per-container counts (see build_rows).
         diff = abs(row_bag_sum - doc_total_bags) if (doc_total_bags and row_bag_sum) else 0
+        bad = _bad_containers(lines, mbl_expected) if row_bag_sum else []
 
         print(f"  [EXTRACT] Attempt {attempt + 1} (temp={temperature}): "
               f"row-sum bags={row_bag_sum} vs document total={doc_total_bags} "
-              f"(diff={diff})")
- 
-        if best_diff is None or diff < best_diff:
-            best_data, best_diff = data, diff
-        if diff == 0:
+              f"(diff={diff}); containers off vs MBL: {bad or 'none'}")
+
+        attempts.append((data, lines, diff, bad))
+        score = (diff, len(bad))
+        if best is None or score < best[0]:
+            best = (score, len(attempts) - 1)
+        if diff == 0 and not bad:
             break
- 
-    if best_diff:
-        print(f"  [EXTRACT WARNING] Packing list bag count never reconciled "
-              f"after {MAX_ATTEMPTS} attempts — off by {best_diff} bags from "
-              f"the document's own total. A row is likely missing or "
-              f"misattributed; this shipment needs manual verification.")
- 
-    data = best_data
+
+    data, flat_lines, best_diff, best_bad = attempts[best[1]]
+
+    # Nothing fully reconciled — assemble per container: for every container
+    # whose rows are wrong in the best attempt, take its rows from another
+    # attempt where that container's own bags match the MBL exactly.
+    if (best_diff or best_bad) and len(attempts) > 1 and mbl_expected:
+        assembled = _assemble_from_attempts(attempts, best[1], mbl_expected)
+        if assembled is not None:
+            a_sum = sum(ln["bags"] for ln in assembled)
+            doc_total_bags = _num(data.get("total_bags"), 0)
+            a_diff = abs(a_sum - doc_total_bags) if doc_total_bags else 0
+            a_bad = _bad_containers(assembled, mbl_expected)
+            if (a_diff, len(a_bad)) < (best_diff, len(best_bad)):
+                print(f"  [EXTRACT] Assembled per-container from {len(attempts)} attempts: "
+                      f"diff={a_diff}, containers off: {a_bad or 'none'}")
+                flat_lines, best_diff, best_bad = assembled, a_diff, a_bad
+
+    if best_diff or best_bad:
+        print(f"  [EXTRACT WARNING] Packing list never fully reconciled after "
+              f"{len(attempts)} attempts — off by {best_diff} bags from the "
+              f"document total; containers off vs MBL: {best_bad or 'none'}. "
+              f"This shipment needs manual verification.")
+
     _dump_json(pdf_path, "pkg_list_raw.json", data)
- 
-    data["rows"] = _repair_split_container_ids(
-        [r for r in (data.get("rows") or []) if isinstance(r, dict)]
-    )
-    _dump_json(pdf_path, "pkg_list_repaired.json", data)
- 
-    flat_lines = []
-    current_cid, current_seal = None, None
- 
-    for row in data.get("rows", []):
-        has_vgm = row.get("has_vgm")
-        if isinstance(has_vgm, str):
-            has_vgm = has_vgm.strip().lower() == "true"
- 
-        raw_cid = (row.get("container_id") or "").strip()
- 
-        if has_vgm and raw_cid:
-            cid, seal = _fix_container_id(raw_cid, row.get("seal", ""))
-            current_cid, current_seal = cid, seal
- 
-        if current_cid is None:
-            continue
- 
-        # Skip total/summary rows
-        product = (row.get("product") or "").strip()
-        if product.upper().replace(":", "").strip() in ("TOTAL", "SUB TOTAL", "SUBTOTAL", "GRAND TOTAL"):
-            continue
- 
-        flat_lines.append({
-            "container_id": current_cid,
-            "seal":         current_seal,
-            "product":      product,
-            "pkg_code":     row.get("pkg_code", ""),
-            "lot":          row.get("lot", ""),
-            "pallet_qty":   _num(row.get("pallet_qty"), 0),
-            "bags":         _num(row.get("bags"), 0),
-            "gross_weight": _num(row.get("gross_weight"), 0),
-            "net_weight":   _num(row.get("net_weight"), 0),
-            "weight_unit":  (row.get("weight_unit") or "MT").strip().upper(),
-            "delivery_number": _s(row.get("delivery_number")).strip(),
-        })
- 
+
     document_delivery_no = _s(data.get("delivery_no", "")).strip()
     if not document_delivery_no:
         # Layout C's table carries "delivery_number" per row instead of a
@@ -1161,6 +1334,7 @@ def extract_packing_list(pdf_path: str, mbl: dict = None) -> dict:
         "sto":            _fix_sales_order_no(data.get("sto", "")),
         "sabic_po":       _fix_sales_order_no(data.get("sabic_po", "")),
         "sabic_delivery": data.get("sabic_delivery", ""),
+        "partner_sto":    _fix_sales_order_no(data.get("partner_sto", "")),
         "total_pallets":  _num(data.get("total_pallets"), 0),
         "total_bags":     _num(data.get("total_bags"), 0),
         "lines":          flat_lines,
@@ -1170,6 +1344,9 @@ def extract_packing_list(pdf_path: str, mbl: dict = None) -> dict:
         # dropped or its data got misattributed to the wrong container.
         # Surfaced in validate() so this isn't a console-only warning.
         "bag_reconciliation_diff": best_diff or 0,
+        # Containers whose packing-list bag sum never matched the MBL's own
+        # per-container count in any attempt: [(cid, pkl_bags, mbl_bags)].
+        "container_bag_mismatches": best_bad,
     }
  
     _dump_json(pdf_path, "pkg_list.json", result)
@@ -1459,8 +1636,74 @@ def _build_ref(ref_nos: list) -> str:
     return " ".join(cleaned)
 
 
+def reconcile_refs(mbl: dict, pkl: dict, inv: dict) -> dict:
+    """Packing lists with a plant "Partner Order/STO" block print two order
+    numbers that are often one digit apart. If the model put the partner
+    number in sto while the partner_sto slot holds the number the MBL /
+    invoice carry, swap them back (and say so in validate())."""
+    sto = _s(pkl.get("sto")).strip()
+    partner = _s(pkl.get("partner_sto")).strip()
+    if not partner or pkl.get("sabic_po"):
+        return pkl
+    targets = {_build_ref(mbl.get("ref_nos", [])), _build_ref([inv.get("sales_ref", "")])} - {""}
+    if targets and sto not in targets and partner in targets:
+        print(f"  [REF FIX] Packing list sto {sto} is the partner order — using {partner}")
+        pkl["sto"], pkl["partner_sto"] = partner, sto
+        pkl["ref_swapped"] = (sto, partner)
+    return pkl
+
+
 def validate(mbl: dict, pkl: dict, inv: dict) -> list[str]:
     results = []
+
+    for cid in mbl.get("prompt_echo_ids", []) or []:
+        results.append(
+            f"[!]  MBL — extraction returned {cid}, which is an example id from the "
+            f"instructions, not from the PDF; it was discarded. Check the MBL's "
+            f"container list against the PDF."
+        )
+
+    if pkl.get("ref_swapped"):
+        wrong, right = pkl["ref_swapped"]
+        results.append(
+            f"[OK] REF FIX — Packing List partner order {wrong} was read as SO/STO; "
+            f"corrected to {right}"
+        )
+
+    # Recomputed on the FINAL lines (after ID repair / cross-check), not the
+    # list stored at extraction time, which those later passes may have fixed.
+    expected = {c["id"]: int(_num(c.get("bags"), 0)) for c in mbl.get("containers", [])
+                if c.get("id") and _num(c.get("bags"), 0)}
+    final_lines = pkl.get("lines", [])
+    if not any(_num(ln.get("bags"), 0) for ln in final_lines):
+        expected = {}   # layout without a per-row bags column — nothing to compare
+    for cid, got, exp in _bad_containers(final_lines, expected):
+        results.append(
+            f"[X]  BAGS PER CONTAINER — {cid}: packing list rows give {got} bags, "
+            f"MBL says {exp}. A lot is missing or sits on the wrong container — "
+            f"check {cid} and its neighbours against the PDF."
+        )
+
+    # Weight-per-bag sanity: within one shipment every bag weighs the same
+    # (e.g. 25 kg), so a row whose net weight / bags differs from the rest
+    # has had its weight (or bags) shifted from another row.
+    per_bag = []
+    for ln in pkl.get("lines", []):
+        bags = _num(ln.get("bags"), 0)
+        kg = _to_kg(ln.get("net_weight", 0), ln.get("weight_unit", "MT"))
+        if bags and kg:
+            per_bag.append((ln, kg / bags))
+    if len(per_bag) >= 3:
+        ratios = sorted(r for _, r in per_bag)
+        median = ratios[len(ratios) // 2]
+        for ln, r in per_bag:
+            if abs(r - median) > 0.02 * median:
+                results.append(
+                    f"[X]  WEIGHT — {ln['container_id']} lot {ln.get('lot', '')}: "
+                    f"{ln.get('net_weight')} {ln.get('weight_unit', 'MT')} for "
+                    f"{ln.get('bags')} bags ({r:.1f} kg/bag vs {median:.1f} on other rows) "
+                    f"— weight or bags likely taken from another row."
+                )
 
     bag_diff = pkl.get("bag_reconciliation_diff", 0)
     if bag_diff:

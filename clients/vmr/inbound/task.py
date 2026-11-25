@@ -36,7 +36,7 @@ from flask import (
 from werkzeug.utils import secure_filename
 
 from database.db import SessionLocal
-from helpers.base_task import BaseTask
+from helpers.base_task import BaseTask, safe_validate
 from helpers.decorators import task_access_required
 from helpers.excel_writer import write_excel
 from helpers.jobs import build_reference, job_output_path, log_job, new_job_dir
@@ -127,7 +127,7 @@ class VmrInboundTask(BaseTask):
         pkl_data = extract_packing_list(files["packing_list"]) if needs_packing_list and files.get("packing_list") else None
 
         # ── Step 2: validation + row-building ───────────────────────
-        validation = validate(mbl_data, pkl_data, needs_packing_list)
+        validation = safe_validate(validate, mbl_data, pkl_data, needs_packing_list)
         rows = build_rows(mbl_data, pkl_data, needs_packing_list, reference, ship_name, eta_date, etd_date)
 
         # ── Summary stats ───────────────────────────────────────────

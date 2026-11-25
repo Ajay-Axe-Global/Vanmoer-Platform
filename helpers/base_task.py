@@ -9,7 +9,20 @@ To add a new client/task:
   4. Register the blueprint in clients/__init__.py's TASK_REGISTRY
 """
 
+import traceback
 from abc import ABC, abstractmethod
+
+
+def safe_validate(validate_fn, *args, **kwargs) -> list[str]:
+    """Run a task's cross-document validate(): a check is a warning list for the user, so a bug inside one (an
+    extraction shape it did not expect) must never stop the upload. On a crash the output is still built and the
+    crash becomes one warning line (the traceback goes to the console for the developer)."""
+    try:
+        return list(validate_fn(*args, **kwargs) or [])
+    except Exception as e:                                   # noqa: BLE001 — see above
+        traceback.print_exc()
+        return [f"[!]  The cross-document check could not finish ({type(e).__name__}: {e}) — the output was still "
+                f"built; compare the references / totals with the documents by hand and report this to the developer."]
 
 
 class BaseTask(ABC):

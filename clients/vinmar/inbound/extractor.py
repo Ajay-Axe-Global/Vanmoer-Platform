@@ -1136,27 +1136,37 @@ def build_ref(ref_nos: list) -> str:
     shippers (e.g. QatarEnergy) print a genuine multi-segment reference like
     "250524/80497158/90744676/38730" that must survive whole, not get
     truncated to its first segment.
+
+    Never raises on what an extraction returns: None, a single string instead
+    of a list, numbers or nested lists are all accepted. The same ref printed
+    both bare and with a suffix ("3610963" + "3610963-01") is one ref:
+    "3610963-01" (that mix used to crash here).
     """
-    groups: dict[str, list[str]] = {}
+    # whatever shape the model returned -> a flat list of non-empty strings
+    if ref_nos is None:
+        items = []
+    elif isinstance(ref_nos, (list, tuple, set)):
+        items = []
+        for r in ref_nos:
+            items.extend(r if isinstance(r, (list, tuple, set)) else [r])
+    else:
+        items = [ref_nos]
+
+    groups: dict[str, list[str]] = {}   # prefix -> its suffixes in order (empty = only seen bare)
     order: list[str] = []
-    for r in ref_nos or []:
-        if not r:
+    for r in items:
+        if r is None:
             continue
         base = s(r).strip()
         if not base:
             continue
         m = _REF_RE.match(base)
-        if m:
-            prefix, suffix = m.group(1), m.group(2)
-        else:
-            prefix, suffix = base, None
+        prefix, suffix = (m.group(1), m.group(2)) if m else (base, None)
         if prefix not in groups:
             groups[prefix] = []
             order.append(prefix)
         if suffix is not None and suffix not in groups[prefix]:
             groups[prefix].append(suffix)
-        elif suffix is None:
-            groups[prefix] = None  # marker: whole ref has no suffix to merge
 
     parts = []
     for prefix in order:

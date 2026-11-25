@@ -1163,6 +1163,89 @@ def _assemble_from_attempts(attempts: list, best_idx: int, expected: dict):
     return out if changed else None
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# EXACT ROWS FROM THE PDF TEXT — the standard SABIC packing-list table
+# ═══════════════════════════════════════════════════════════════════════════
+# A text PDF prints every table line on one line of text:
+#   SEKU6367928 LLDPE P438J 149 149 0063986861 60 1.5280 MT 29.7380 MT 1.5000 MT   <- container's first row (+ VGM)
+#   1093501                                                                           <- its seal
+#   LLDPE P438J 149 149 0063986879 960 24.4480 MT 24.0000 MT                          <- more lots of that container
+#   Total: 0 17340 441.5920 MT 505.5460 MT 433.5000 MT
+# Read this way nothing can shift between containers (the model sometimes moved a lot across a page break or a
+# multi-lot container). Used only when it reconciles exactly; any other layout / a scanned PDF falls back to Gemini.
+
+_W = r"([\d.,]+)\s*(MT|KGS?|KG)"
+_PKL_ROW_RE = re.compile(
+    r"^(?:(?P<cid>[A-Z]{4}\s?\d{7})\s+)?(?P<product>\S.*?)\s+(?P<pkg>\d{2,4})\s+(?P<lot>[0-9A-Z]{8,12})\s+"
+    r"(?:(?P<pal>\d+)\s*PAL\s+)?(?P<bags>\d+)\s+" + _W + r"\s+(?:" + _W + r"\s+)?" + _W + r"\s*$")
+_PKL_SEAL_RE = re.compile(r"^[A-Z0-9]{5,12}$")
+_PKL_TOTAL_RE = re.compile(r"^Total:\s+(?:\d+\s+)?(\d+)\s+[\d.,]+\s*(?:MT|KGS?)", re.I)
+
+
+def _w(text: str) -> float:
+    t = text.strip()
+    if "," in t and "." in t:                     # 1,234.5 / 1.234,5
+        t = t.replace(",", "") if t.rfind(".") > t.rfind(",") else t.replace(".", "").replace(",", ".")
+    elif "," in t:
+        t = t.replace(",", ".")
+    return float(t)
+
+
+def _parse_pkl_text(pdf_path: str) -> dict | None:
+    """{"rows": [...same shape as the model's rows...], "total_bags": int} read from the PDF's text, or None when the
+    PDF has no such table (scan, other layout)."""
+    try:
+        import pdfplumber
+        with pdfplumber.open(pdf_path) as pdf:
+            text = "\n".join((p.extract_text() or "") for p in pdf.pages)
+    except Exception as e:                                   # noqa: BLE001 — Gemini stays the fallback
+        print(f"  [PKL TEXT] could not read the PDF text ({e}) — using the model's rows")
+        return None
+    rows, total, last_cid_row = [], 0, None
+    for raw in text.splitlines():
+        line = " ".join(raw.split())
+        if not line:
+            continue
+        m = _PKL_ROW_RE.match(line)
+        if m:
+            cid = (m.group("cid") or "").replace(" ", "")
+            vgm = m.group(9) is not None
+            row = {"container_id": cid, "seal": "", "has_vgm": bool(cid) and vgm,
+                   "product": m.group("product").strip(), "pkg_code": m.group("pkg"), "lot": m.group("lot"),
+                   "pallet_qty": int(m.group("pal") or 0), "bags": int(m.group("bags")),
+                   "gross_weight": _w(m.group(7)), "net_weight": _w(m.group(11)),
+                   "weight_unit": "MT" if m.group(8).upper() == "MT" else "KG", "delivery_number": ""}
+            rows.append(row)
+            last_cid_row = row if cid else None
+            continue
+        if last_cid_row is not None and not last_cid_row["seal"] and _PKL_SEAL_RE.match(line) and any(c.isdigit() for c in line):
+            last_cid_row["seal"] = line                        # the line under a container's first row
+            last_cid_row = None
+            continue
+        t = _PKL_TOTAL_RE.match(line)
+        if t:
+            total = int(t.group(1))
+        last_cid_row = None
+    if not rows or not rows[0]["container_id"]:
+        return None
+    return {"rows": rows, "total_bags": total}
+
+
+def _pkl_text_rows_ok(parsed: dict, expected: dict) -> tuple[bool, str]:
+    """Use the text rows only when they add up: the printed Total, and (when the MBL gives them) every container's
+    own bag count."""
+    lines = _group_rows(parsed["rows"])
+    got = sum(l["bags"] for l in lines)
+    if not parsed["total_bags"]:
+        return False, "no Total line"
+    if got != parsed["total_bags"]:
+        return False, f"rows add up to {got} bags, the Total line says {parsed['total_bags']}"
+    bad = _bad_containers(lines, expected)
+    if bad:
+        return False, f"containers off vs MBL: {bad}"
+    return True, f"{len(parsed['rows'])} rows, {len({l['container_id'] for l in lines})} containers, {got} bags"
+
+
 MBL_CONTAINER_HINT_BLOCK = """
 ══════════════════════════════════════════
 KNOWN CONTAINER IDS (from the Master Bill of Lading)
@@ -1254,7 +1337,16 @@ def extract_packing_list(pdf_path: str, mbl: dict = None) -> dict:
         if c.get("id") and b:
             mbl_expected[c["id"]] = int(b)
 
-    MAX_ATTEMPTS = 3
+    # The table read straight from the PDF text: exact when it reconciles, so the model's rows are not needed
+    # (the model still reads the header: STO, PO, delivery ...).
+    text_rows = _parse_pkl_text(pdf_path)
+    if text_rows:
+        ok, why = _pkl_text_rows_ok(text_rows, mbl_expected)
+        print(f"  [PKL TEXT] {'using the PDF text rows' if ok else 'not used'}: {why}")
+        if not ok:
+            text_rows = None
+
+    MAX_ATTEMPTS = 1 if text_rows else 3
     attempts = []   # (data, flat_lines, diff, per-container status)
     best = None
 
@@ -1272,6 +1364,9 @@ def extract_packing_list(pdf_path: str, mbl: dict = None) -> dict:
         data["rows"] = _repair_split_container_ids(
             [r for r in (data.get("rows") or []) if isinstance(r, dict)]
         )
+        if text_rows:                                # exact rows from the PDF text replace the model's
+            data["rows"] = [dict(r) for r in text_rows["rows"]]
+            data["total_bags"] = text_rows["total_bags"]
         lines = _group_rows(data["rows"])
         row_bag_sum = sum(ln["bags"] for ln in lines)
         doc_total_bags = _num(data.get("total_bags"), 0)
@@ -1627,6 +1722,12 @@ def cross_check_containers(mbl: dict, pkl: dict) -> dict:
 
 def _build_ref(ref_nos: list) -> str:
     cleaned = []
+    # never raises on what an extraction returns: None, one string instead of a list, nested lists
+    if ref_nos is None:
+        ref_nos = []
+    elif not isinstance(ref_nos, (list, tuple, set)):
+        ref_nos = [ref_nos]
+    ref_nos = [x for r in ref_nos for x in (r if isinstance(r, (list, tuple, set)) else [r])]
     for r in ref_nos:
         if not r:
             continue

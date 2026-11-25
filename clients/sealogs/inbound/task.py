@@ -22,7 +22,7 @@ from flask import (
 from werkzeug.utils import secure_filename
 
 from database.db import SessionLocal
-from helpers.base_task import BaseTask
+from helpers.base_task import BaseTask, safe_validate
 from helpers.decorators import task_access_required
 from helpers.excel_writer import write_excel
 from helpers.jobs import build_reference, job_output_path, log_job, new_job_dir
@@ -91,7 +91,7 @@ class SealogsInboundTask(BaseTask):
         ref_ids = [c["id"] for c in (an_data or mbl_data).get("containers", []) if c.get("id")]
         pl_data = extract_packing_list(files["packing_list"], ref_ids) if files.get("packing_list") else dict(EMPTY_PACKING_LIST)
 
-        validation = validate(mbl_data, pl_data, an_data)
+        validation = safe_validate(validate, mbl_data, pl_data, an_data)
         rows = build_rows(mbl_data, pl_data, an_data, external_id, shipping_line, ship_name, eta_date)
 
         summary = {

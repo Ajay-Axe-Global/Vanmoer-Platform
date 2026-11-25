@@ -26,7 +26,7 @@ from flask import (
 from werkzeug.utils import secure_filename
 
 from database.db import SessionLocal
-from helpers.base_task import BaseTask
+from helpers.base_task import BaseTask, safe_validate
 from helpers.decorators import task_access_required
 from helpers.excel_writer import write_excel
 from helpers.jobs import build_reference, job_output_path, log_job, new_job_dir
@@ -98,7 +98,7 @@ class ContinentalInboundTask(BaseTask):
         pkl_data = extract_packing_list(files["packing_list"])
 
         # ── Step 2: Cross-document validation ───────────────────────
-        validation = validate(mbl_data, pkl_data)
+        validation = safe_validate(validate, mbl_data, pkl_data)
 
         # ── Step 3: Build outcome rows ──────────────────────────────
         # reference/eta_date are UI-entered (not extracted from the

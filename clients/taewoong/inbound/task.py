@@ -21,7 +21,7 @@ from flask import (
 from werkzeug.utils import secure_filename
 
 from database.db import SessionLocal
-from helpers.base_task import BaseTask
+from helpers.base_task import BaseTask, safe_validate
 from helpers.decorators import task_access_required
 from helpers.excel_writer import write_excel
 from helpers.jobs import build_reference, job_output_path, log_job, new_job_dir
@@ -103,7 +103,8 @@ class TaewoongInboundTask(BaseTask):
 
         arrival_notice = extract_seals(files["arrival_notice"]) if files.get("arrival_notice") else None
 
-        validation = validate(mbl_data, pl_data) + validate_seals(mbl_data, pl_data, arrival_notice)
+        validation = (safe_validate(validate, mbl_data, pl_data)
+                      + safe_validate(validate_seals, mbl_data, pl_data, arrival_notice))
         rows = build_rows(mbl_data, pl_data, external_id, shipping_line, ship_name, eta_date,
                           an_seals=arrival_notice["seals"] if arrival_notice else None)
 

@@ -28,7 +28,7 @@ from flask import (
 from werkzeug.utils import secure_filename
 
 from database.db import SessionLocal
-from helpers.base_task import BaseTask
+from helpers.base_task import BaseTask, safe_validate
 from helpers.decorators import task_access_required
 from helpers.excel_writer import write_excel
 from helpers.jobs import build_reference, job_output_path, log_job, new_job_dir
@@ -98,7 +98,7 @@ class SunriseInboundTask(BaseTask):
         packing_lists = [extract_packing_list_excel(p) for p in files["packing_lists"]]
 
         # ── Step 2: cross-document validation ───────────────────────
-        validation = validate(mbl_data, packing_lists)
+        validation = safe_validate(validate, mbl_data, packing_lists)
 
         # ── Step 3: build outcome rows ──────────────────────────────
         rows = build_rows(mbl_data, packing_lists, reference, eta_date)

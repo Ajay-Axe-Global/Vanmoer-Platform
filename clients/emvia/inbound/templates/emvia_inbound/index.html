@@ -215,6 +215,24 @@
             margin-bottom: 20px;
         }
 
+        .template-btn {
+            width: 100%;
+            padding: 12px 14px;
+            font-size: 14px;
+            font-weight: 600;
+            font-family: inherit;
+            color: #e2e8f0;
+            background: #1e293b;
+            border: 2px solid #3b82f6;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: background .2s;
+        }
+
+        .template-btn:hover {
+            background: #1d4ed8;
+        }
+
         .field-group label {
             display: block;
             font-size: 13px;
@@ -526,7 +544,7 @@
                         <option value="KRUIPIN 1147 (VMR) [765]">KRUIPIN 1147 (VMR) [765]</option>
                         <option value="NNRC 660">NNRC 660</option>
                     </select>
-                    <span class="hint">Selected warehouse is written to the Warehouse column as shown.</span>
+
                 </div>
 
                 <div class="field-group" id="plTypeGroup">
@@ -535,7 +553,15 @@
                         <option value="STANDARD">Standard (VE Staal)</option>
                         <option value="MKK">MKK</option>
                     </select>
-                    <span class="hint" id="plTypeHint">One row per bundle, as on the Packing List.</span>
+
+                </div>
+
+                <div class="field-group" id="templateGroup">
+                    <label>Packing List Template</label>
+                    <button type="button" class="template-btn" onclick="downloadTemplate(event)">
+                        &#11015; Download Template
+                    </button>
+
                 </div>
             </div>
 
@@ -633,10 +659,7 @@
 
         /* ── Warehouse / Type ─────────────────────────────── */
 
-        const TYPE_HINTS = {
-            STANDARD: 'One row per bundle, as on the Packing List.',
-            MKK: 'Excel Packing List. One row per lot (size x thickness); qty = bundles x pcs/bdl.',
-        };
+
 
         function is1147() {
             return !document.getElementById('warehouse').value.toUpperCase().includes('NNRC');
@@ -644,6 +667,7 @@
 
         function onWarehouseChange() {
             document.getElementById('plTypeGroup').style.display = is1147() ? '' : 'none';
+            document.getElementById('templateGroup').style.display = is1147() ? '' : 'none';
             if (!is1147()) document.getElementById('plType').value = 'STANDARD';
             onTypeChange();
         }
@@ -660,6 +684,13 @@
                 toggle.disabled = false;
             }
             checkReady();
+        }
+
+        async function downloadTemplate(e) {
+            e.preventDefault();
+            // Same auth-carrying download as the outcome file (JWT is in
+            // localStorage, so a plain <a href> would be rejected).
+            await VanmoerAuth.downloadFile(window.location.pathname + 'template', 'PL-EMVIA 1147.xlsx');
         }
 
         /* ── Loader steps ─────────────────────────────────── */

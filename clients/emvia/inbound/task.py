@@ -84,6 +84,11 @@ COLUMN_CONFIG = [
 
 OUTPUT_FILENAME = "Emvia_Inbound_Outcome.xlsx"
 
+# Blank Packing List template for warehouse 1147 (MKK type) — users fill
+# this in so the column headers always match what extract_packing_list_mkk
+# expects. Lives in the project-root "Template" folder.
+PL_TEMPLATE_PATH = Path(__file__).resolve().parents[3] / "Template" / "PL-EMVIA 1147.xlsx"
+
 # HTML <input type="date"> always submits "YYYY-MM-DD" regardless of browser
 # locale; the OP column must read "YYYYMMDD 00:00:00" (same convention as
 # Sabic/Vinmar Inbound).
@@ -250,6 +255,14 @@ def process():
         return jsonify({"error": str(e)}), 500
     finally:
         session.close()
+
+
+@bp.route("/template")
+@task_access_required(CLIENT_SLUG, TASK_SLUG)
+def download_template():
+    if not PL_TEMPLATE_PATH.exists():
+        return jsonify({"error": "Template file not found."}), 404
+    return send_file(PL_TEMPLATE_PATH, as_attachment=True, download_name=PL_TEMPLATE_PATH.name)
 
 
 @bp.route("/download/<job_id>")

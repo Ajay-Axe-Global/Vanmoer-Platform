@@ -241,6 +241,12 @@ RULES:
   from these instructions.
   - "bags": Number of bags from the description (e.g. from "1020 BAG(S) LLDPE 318BJ 149" extract 1020)
   - "net_weight_mt": Net weight in MT from description (e.g. from "NET WEIGHT:25.500 MT" extract 25.5)
+  ⚠️ After the LAST container, many waybills print a SHIPMENT SUMMARY block (e.g. "432.000 MT LLDPE ...",
+  "NO. OF PACKAGES:21600 BAGS", "CARGO NET WEIGHT:432.000 MT", "SALES ORDER NO.", "DELIVERY NO."). That block
+  is for the WHOLE shipment — it is NOT part of the last container. The last container's bags/net weight come
+  only from its OWN "<n> BAG(S)" / "NET WEIGHT:" lines, exactly like every other container.
+- "total_packages": the shipment's total bag/package count ("NO. OF PACKAGES:21600 BAGS", "Total Items : 21600",
+  "10200 BAGS" in the main description). 0 if not printed.
 
 Return:
 {
@@ -250,6 +256,7 @@ Return:
   "port_of_loading": "string",
   "port_of_discharge": "string",
   "vessel": "string",
+  "total_packages": 0,
   "containers": [
     {"id": "string", "type": "string", "seal": "string", "bags": number, "net_weight_mt": number}
   ]
@@ -952,6 +959,24 @@ def extract_mbl(pdf_path: str) -> dict:
         c["id"] = cid
         c["seal"] = seal
         containers.append(c)
+
+    # One container whose bags differ from all the others, where the MBL's own printed total proves the common
+    # value is right for it too → the model took the shipment summary (or similar) for that container.
+    data["bags_repaired"] = []
+    total_pk = int(_num(data.get("total_packages"), 0))
+    bag_vals = [int(_num(c.get("bags"), 0)) for c in containers]
+    if total_pk and len(containers) >= 3 and sum(bag_vals) != total_pk:
+        from collections import Counter
+        common, n = Counter(bag_vals).most_common(1)[0]
+        odd = [c for c, b in zip(containers, bag_vals) if b != common]
+        if common and n == len(containers) - 1 and common * len(containers) == total_pk:
+            c = odd[0]
+            others_wt = [_num(o.get("net_weight_mt"), 0) for o in containers if o is not c]
+            print(f"  [MBL FIX] {c['id']}: bags {c.get('bags')} -> {common} (MBL total {total_pk} BAGS)")
+            data["bags_repaired"].append((c["id"], c.get("bags"), common))
+            c["bags"] = common
+            if others_wt and len(set(others_wt)) == 1:
+                c["net_weight_mt"] = others_wt[0]
     data["containers"] = containers
     for key in ("ref_nos",):
         data[key] = data.get(key) or []
@@ -1037,17 +1062,26 @@ def _group_rows(rows: list) -> list[dict]:
     complete printed id is the stronger signal, so it wins. Truncated ids
     still need has_vgm, as before (page-break fragments).
     """
+    def _vgm(row):
+        v = row.get("has_vgm")
+        return v.strip().lower() == "true" if isinstance(v, str) else bool(v)
+
     lines = []
     current_cid, current_seal = None, None
-    for row in rows:
-        has_vgm = row.get("has_vgm")
-        if isinstance(has_vgm, str):
-            has_vgm = has_vgm.strip().lower() == "true"
+    for idx, row in enumerate(rows):
+        has_vgm = _vgm(row)
 
         raw_cid = (row.get("container_id") or "").strip()
         if raw_cid:
             cid, seal = _fix_container_id(raw_cid, row.get("seal", ""))
             complete = len(cid) == 11 and bool(_CONTAINER_RE.match(cid))
+            # Page-break case: a continuation lot at the top of a page (no VGM) sometimes comes back labelled
+            # with the NEXT container's id, whose real opening row (with VGM) follows. Such a row belongs to
+            # the container already open, not to the next one.
+            if not has_vgm and current_cid and any(
+                    _vgm(r) and _fix_container_id((r.get("container_id") or "").strip())[0] == cid
+                    for r in rows[idx + 1:]):
+                complete = False
             if has_vgm or complete:
                 if cid != current_cid:
                     current_cid, current_seal = cid, seal
@@ -1179,7 +1213,8 @@ _PKL_ROW_RE = re.compile(
     r"^(?:(?P<cid>[A-Z]{4}\s?\d{7})\s+)?(?P<product>\S.*?)\s+(?P<pkg>\d{2,4})\s+(?P<lot>[0-9A-Z]{8,12})\s+"
     r"(?:(?P<pal>\d+)\s*PAL\s+)?(?P<bags>\d+)\s+" + _W + r"\s+(?:" + _W + r"\s+)?" + _W + r"\s*$")
 _PKL_SEAL_RE = re.compile(r"^[A-Z0-9]{5,12}$")
-_PKL_TOTAL_RE = re.compile(r"^Total:\s+(?:\d+\s+)?(\d+)\s+[\d.,]+\s*(?:MT|KGS?)", re.I)
+# "Total: 0 17340 441.5920 MT ..." and "Total: 360 PAL 21600 443.3800 MT ..." (pallet count may carry "PAL")
+_PKL_TOTAL_RE = re.compile(r"^Total:?\s+(?:\d+\s*(?:PAL\w*\s+)?)?(\d+)\s+[\d.,]+\s*(?:MT|KGS?)", re.I)
 
 
 def _w(text: str) -> float:
@@ -1204,6 +1239,8 @@ def _parse_pkl_text(pdf_path: str) -> dict | None:
     rows, total, last_cid_row = [], 0, None
     for raw in text.splitlines():
         line = " ".join(raw.split())
+        if line.startswith("-->"):                          # Kemya marks continuation lots with "-->"
+            line = line[3:].strip()
         if not line:
             continue
         m = _PKL_ROW_RE.match(line)
@@ -1237,12 +1274,20 @@ def _pkl_text_rows_ok(parsed: dict, expected: dict) -> tuple[bool, str]:
     lines = _group_rows(parsed["rows"])
     got = sum(l["bags"] for l in lines)
     if not parsed["total_bags"]:
+        # No readable Total line — still exact when the MBL lists the same containers and every one of them
+        # adds up to its own MBL bag count.
+        ids = {l["container_id"] for l in lines}
+        if expected and ids == set(expected) and not _bad_containers(lines, expected):
+            return True, f"no Total line, but all {len(ids)} containers match the MBL ({got} bags)"
         return False, "no Total line"
     if got != parsed["total_bags"]:
         return False, f"rows add up to {got} bags, the Total line says {parsed['total_bags']}"
+    # Rows read from the PDF text that add up to the document's own Total are exact. Do NOT reject them because
+    # the MBL disagrees — the MBL is itself a model extraction and can be the wrong side (seen: the shipment
+    # summary "432.000 MT" read as the last container's bag count). validate() reports any MBL difference.
     bad = _bad_containers(lines, expected)
     if bad:
-        return False, f"containers off vs MBL: {bad}"
+        print(f"  [PKL TEXT] rows match the printed Total; MBL differs on {bad} — keeping the PDF rows")
     return True, f"{len(parsed['rows'])} rows, {len({l['container_id'] for l in lines})} containers, {got} bags"
 
 
@@ -1763,6 +1808,9 @@ def validate(mbl: dict, pkl: dict, inv: dict) -> list[str]:
             f"instructions, not from the PDF; it was discarded. Check the MBL's "
             f"container list against the PDF."
         )
+
+    for cid, wrong, right in mbl.get("bags_repaired", []) or []:
+        results.append(f"[OK] MBL FIX — {cid}: bags read as {wrong}, corrected to {right} from the MBL's own total")
 
     if pkl.get("ref_swapped"):
         wrong, right = pkl["ref_swapped"]

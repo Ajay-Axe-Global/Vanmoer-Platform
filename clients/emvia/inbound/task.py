@@ -40,10 +40,15 @@ from helpers.decorators import task_access_required
 from helpers.excel_writer import write_excel
 from helpers.jobs import build_reference, job_output_path, log_job, new_job_dir
 
-from .excel_extractor import extract_packing_list_excel
+from .excel_extractor import extract_packing_list_excel, extract_packing_list_mkk
 from .extractor import build_rows, extract_mbl, extract_packing_list, extract_packing_list_nnrc, validate
 
 EXCEL_EXTENSIONS = {".xlsx", ".xls"}
+
+# Warehouse 1147 packing-list types (chosen in the UI). "STANDARD" is the
+# original VE Staal PDF / Excel path; "MKK" is MKK Metal Sections' Excel
+# sheet (one row per lot, qty = bundles x pcs/bdl).
+PL_TYPES = {"STANDARD", "MKK"}
 
 CLIENT_SLUG = "emvia"
 TASK_SLUG = "inbound"
@@ -109,7 +114,8 @@ class EmviaInboundTask(BaseTask):
     writes_own_output = False
 
     def process(self, files: dict, output_path: str | None = None, reference: str = "",
-                warehouse: str = "KRUIPIN 1147(VMR)[765]", eta_date: str = "") -> dict:
+                warehouse: str = "KRUIPIN 1147(VMR)[765]", eta_date: str = "",
+                pl_type: str = "STANDARD") -> dict:
         # ── Step 1: extraction ──────────────────────────────────────
         mbl_data = extract_mbl(files["mbl"])
 
@@ -118,6 +124,10 @@ class EmviaInboundTask(BaseTask):
             # NNRC 660's Export Packing List is PDF-only — no Excel format
             # for this warehouse, so the file extension isn't consulted.
             pkl_data = extract_packing_list_nnrc(pkl_path)
+        elif pl_type == "MKK":
+            if Path(pkl_path).suffix.lower() not in EXCEL_EXTENSIONS:
+                raise ValueError("MKK type needs the Packing List as an Excel file (.xlsx/.xls).")
+            pkl_data = extract_packing_list_mkk(pkl_path)
         elif Path(pkl_path).suffix.lower() in EXCEL_EXTENSIONS:
             pkl_data = extract_packing_list_excel(pkl_path)
         else:
@@ -143,6 +153,7 @@ class EmviaInboundTask(BaseTask):
             "carrier":          mbl_data.get("carrier", ""),
             "reference":        reference,
             "warehouse":        warehouse,
+            "pl_type":          pl_type if "NNRC" not in warehouse.upper() else "",
             "eta_date":         eta_date,
             "total_rows":       len(rows),
             "total_containers": len(containers),
@@ -191,6 +202,9 @@ def process():
 
     reference = (request.form.get("reference") or "").strip()
     warehouse = (request.form.get("warehouse") or "KRUIPIN 1147(VMR)[765]").strip()
+    pl_type = (request.form.get("pl_type") or "STANDARD").strip().upper()
+    if pl_type not in PL_TYPES:
+        return jsonify({"error": f"Unknown type: {pl_type}"}), 400
 
     job_id, job_dir = new_job_dir()
     session = SessionLocal()
@@ -205,7 +219,8 @@ def process():
 
         # ── Run the task ────────────────────────────────────────────
         output_path = str(job_output_path(job_id))
-        result = _task.process(saved, output_path, reference=reference, warehouse=warehouse, eta_date=eta_date)
+        result = _task.process(saved, output_path, reference=reference, warehouse=warehouse,
+                               eta_date=eta_date, pl_type=pl_type)
 
         rows = result["rows"]
         summary = result["summary"]

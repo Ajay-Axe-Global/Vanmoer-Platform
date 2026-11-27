@@ -1341,6 +1341,21 @@ def validate(mbl: dict, pkl: dict) -> list[str]:
                             f"extraction returned only {gemini_bundle_row_count} rows — one or more rows were "
                             f"SKIPPED; re-check the Packing List pages manually")
 
+    if pkl.get("pl_type") == "MKK":
+        lot_rows = [b for c in pkl.get("containers", []) for b in c.get("bundles", [])]
+        bundles_sum = sum(num(b.get("pallet_count"), 0) for b in lot_rows)
+        pieces_sum = sum(num(b.get("pieces"), 0) for b in lot_rows)
+        results.append(f"[OK] MKK — {len(lot_rows)} lot row(s), {bundles_sum} bundles, {pieces_sum} pcs "
+                        f"(qty = bundles x pcs/bdl); TOT weight read as {pkl.get('mkk_weight_unit', '?')}")
+        sheet_bundles = num(pkl.get("sheet_total_bundles"), 0)
+        if sheet_bundles and sheet_bundles != bundles_sum:
+            results.append(f"[X]  MKK BUNDLES — lot rows sum to {bundles_sum} bundles but the sheet's total "
+                            f"row says {sheet_bundles} — check the Packing List rows")
+        for b in lot_rows:
+            if not s(b.get("batch_no")).strip():
+                results.append("[!]  MKK LOT NO — a row has no Size x thickness value (Lot No left blank)")
+                break
+
     if s(mbl.get("mbl_no")).strip():
         results.append(f"[OK] MBL No — {s(mbl.get('mbl_no')).strip()}")
     else:

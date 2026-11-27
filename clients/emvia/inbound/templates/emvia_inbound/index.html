@@ -522,11 +522,20 @@
 
                 <div class="field-group">
                     <label for="warehouse">Warehouse</label>
-                    <select id="warehouse" onchange="checkReady()">
+                    <select id="warehouse" onchange="onWarehouseChange()">
                         <option value="KRUIPIN 1147 (VMR) [765]">KRUIPIN 1147 (VMR) [765]</option>
                         <option value="NNRC 660">NNRC 660</option>
                     </select>
                     <span class="hint">Selected warehouse is written to the Warehouse column as shown.</span>
+                </div>
+
+                <div class="field-group" id="plTypeGroup">
+                    <label for="plType">Type</label>
+                    <select id="plType" onchange="onTypeChange()">
+                        <option value="STANDARD">Standard (VE Staal)</option>
+                        <option value="MKK">MKK</option>
+                    </select>
+                    <span class="hint" id="plTypeHint">One row per bundle, as on the Packing List.</span>
                 </div>
             </div>
 
@@ -622,6 +631,37 @@
             pklLabel.textContent = isExcel ? 'Packing List (Excel)' : 'Packing List (PDF)';
         }
 
+        /* ── Warehouse / Type ─────────────────────────────── */
+
+        const TYPE_HINTS = {
+            STANDARD: 'One row per bundle, as on the Packing List.',
+            MKK: 'Excel Packing List. One row per lot (size x thickness); qty = bundles x pcs/bdl.',
+        };
+
+        function is1147() {
+            return !document.getElementById('warehouse').value.toUpperCase().includes('NNRC');
+        }
+
+        function onWarehouseChange() {
+            document.getElementById('plTypeGroup').style.display = is1147() ? '' : 'none';
+            if (!is1147()) document.getElementById('plType').value = 'STANDARD';
+            onTypeChange();
+        }
+
+        function onTypeChange() {
+            const type = document.getElementById('plType').value;
+            const toggle = document.getElementById('excelToggle');
+            document.getElementById('plTypeHint').textContent = TYPE_HINTS[type] || '';
+            if (type === 'MKK') {
+                // MKK sends its Packing List only as Excel.
+                if (!toggle.checked) { toggle.checked = true; onExcelToggle(); }
+                toggle.disabled = true;
+            } else {
+                toggle.disabled = false;
+            }
+            checkReady();
+        }
+
         /* ── Loader steps ─────────────────────────────────── */
 
         const LOADER_STEPS = [
@@ -656,6 +696,7 @@
             fd.append('packing_list', document.getElementById('pklFile').files[0]);
             fd.append('reference', document.getElementById('reference').value);
             fd.append('warehouse', document.getElementById('warehouse').value);
+            fd.append('pl_type', is1147() ? document.getElementById('plType').value : 'STANDARD');
             // Native <input type="date"> always yields "YYYY-MM-DD" regardless
             // of browser locale — the backend formats it into the OP's
             // "YYYYMMDD 00:00:00" convention.
@@ -704,6 +745,7 @@
                 { value: s.mbl_no || '—', label: 'MBL No' },
                 { value: s.carrier || '—', label: 'Carrier' },
                 { value: s.warehouse || '—', label: 'Warehouse' },
+                ...(s.pl_type ? [{ value: s.pl_type, label: 'Type' }] : []),
                 { value: s.total_containers || 0, label: 'Containers' },
                 { value: s.total_rows || 0, label: 'Rows' },
                 { value: (s.total_pieces || 0).toLocaleString(), label: 'Total Pieces' },
@@ -750,6 +792,8 @@
             clearFile('pklFile', 'pklName');
             document.getElementById('reference').value = '';
             document.getElementById('warehouse').selectedIndex = 0;
+            document.getElementById('plType').value = 'STANDARD';
+            onWarehouseChange();
             document.getElementById('etaDate').value = '';
             checkReady();
             document.getElementById('uploadSection').style.display = 'block';
